@@ -4,9 +4,10 @@ A provider-agnostic data backend for the Yoroi Classic wallet. It exposes one st
 HTTP API and is designed to serve it from any configured Cardano data source, so the
 wallet never has to care where the data comes from.
 
-This is early. Right now it serves the chain tip and protocol parameters, and Koios is
-the only wired provider. Blockfrost and a bring-your-own Dingo node are planned behind
-the same contract, and selecting them today fails fast until their drivers land.
+This is early. It covers the barebones reads and writes a wallet needs (chain tip and
+protocol parameters, account state and UTxOs, transaction submit and status), and Koios
+is the only wired provider. Blockfrost and a bring-your-own Dingo node are planned
+behind the same contract, and selecting them today fails fast until their drivers land.
 
 ## Requirements
 
@@ -35,9 +36,14 @@ curl localhost:3010/v1/chain/protocol-params
 | GET    | `/health`                   | liveness                                         |
 | GET    | `/v1/chain/tip`             | `{ block, slot, epoch, hash }`                   |
 | GET    | `/v1/chain/protocol-params` | normalized protocol parameters incl. cost models |
+| GET    | `/v1/account/{stake}/state` | `{ registered, balance, rewardsAvailable, ... }` |
+| GET    | `/v1/account/{stake}/utxos` | array of UTxOs incl. assets and inline datums    |
+| POST   | `/v1/tx/submit`             | `{ txHash }` from `{ "cbor": "<hex tx>" }`       |
+| GET    | `/v1/tx/{hash}/status`      | `{ seen, confirmations }`                        |
 
 Errors come back as `{ "error": { "code", "message" } }` with a stable status code
-(`502` upstream error, `504` upstream timeout, `404` unknown route, `500` otherwise).
+(`502` upstream error, `504` upstream timeout, `400` bad request, `404` unknown route,
+`500` otherwise).
 
 ## Configuration
 

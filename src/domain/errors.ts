@@ -50,6 +50,13 @@ export class MalformedUpstreamError extends AppError {
   }
 }
 
+/** The caller sent something invalid. */
+export class BadRequestError extends AppError {
+  constructor(message: string, details?: unknown) {
+    super('BAD_REQUEST', 400, message, details)
+  }
+}
+
 /** Bad configuration, surfaced at startup. */
 export class ConfigError extends AppError {
   constructor(message: string, details?: unknown) {

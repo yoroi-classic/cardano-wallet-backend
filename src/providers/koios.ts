@@ -1,12 +1,22 @@
 import { z } from 'zod'
-import type { ProtocolParams, Tip } from '../domain/types.js'
-import { MalformedUpstreamError, ProviderError, ProviderTimeoutError } from '../domain/errors.js'
+import type { AccountState, ProtocolParams, Tip, TxStatus, Utxo } from '../domain/types.js'
+import {
+  BadRequestError,
+  MalformedUpstreamError,
+  ProviderError,
+  ProviderTimeoutError,
+} from '../domain/errors.js'
 import type { ChainProvider } from './provider.js'
 
 /** A minimal fetch signature so tests can inject a fake without pulling in DOM types. */
 export type FetchLike = (
   input: string,
-  init?: { method?: string; headers?: Record<string, string>; signal?: AbortSignal },
+  init?: {
+    method?: string
+    headers?: Record<string, string>
+    body?: string | Uint8Array
+    signal?: AbortSignal
+  },
 ) => Promise<{
   ok: boolean
   status: number
@@ -62,19 +72,60 @@ const epochParamsRow = z.object({
   cost_models: z.record(z.string(), z.unknown()).nullish(),
 })
 
+const accountInfoRow = z.object({
+  stake_address: z.string(),
+  // Koios documents exactly these two values; anything else is unexpected upstream data
+  // and should follow the malformed path rather than silently read as unregistered.
+  status: z.enum(['registered', 'not registered']),
+  delegated_pool: z.string().nullish(),
+  delegated_drep: z.string().nullish(),
+  total_balance: numeric,
+  rewards_available: numeric,
+})
+
+const accountUtxoRow = z.object({
+  tx_hash: z.string(),
+  tx_index: z.number(),
+  address: z.string(),
+  value: numeric,
+  asset_list: z
+    .array(z.object({ policy_id: z.string(), asset_name: z.string(), quantity: numeric }))
+    .nullish(),
+  datum_hash: z.string().nullish(),
+  inline_datum: z.object({ bytes: z.string() }).nullish(),
+  reference_script: z.object({ hash: z.string() }).nullish(),
+})
+
+const txStatusRow = z.object({
+  tx_hash: z.string(),
+  num_confirmations: z.number().nullish(),
+})
+
+interface KoiosRequestInit {
+  method?: 'GET' | 'POST'
+  body?: string | Uint8Array
+  contentType?: string
+}
+
 export function createKoiosProvider(config: KoiosConfig): ChainProvider {
   const baseUrl = config.baseUrl.replace(/\/+$/, '')
   const timeoutMs = config.timeoutMs ?? 10_000
   const doFetch: FetchLike = config.fetchImpl ?? (globalThis.fetch as unknown as FetchLike)
 
-  async function request(path: string): Promise<unknown> {
+  async function request(path: string, init: KoiosRequestInit = {}): Promise<unknown> {
     const url = `${baseUrl}${path}`
     const headers: Record<string, string> = { accept: 'application/json' }
     if (config.token) headers.authorization = `Bearer ${config.token}`
+    if (init.contentType) headers['content-type'] = init.contentType
 
     let res: Awaited<ReturnType<FetchLike>>
     try {
-      res = await doFetch(url, { method: 'GET', headers, signal: AbortSignal.timeout(timeoutMs) })
+      res = await doFetch(url, {
+        method: init.method ?? 'GET',
+        headers,
+        body: init.body,
+        signal: AbortSignal.timeout(timeoutMs),
+      })
     } catch (cause) {
       if (cause instanceof Error && cause.name === 'TimeoutError') {
         throw new ProviderTimeoutError(`koios request timed out: ${path}`, cause)
@@ -100,15 +151,16 @@ export function createKoiosProvider(config: KoiosConfig): ChainProvider {
     }
   }
 
-  function parseFirst<T>(schema: z.ZodType<T>, data: unknown, path: string): T {
-    const rows = z.array(z.unknown()).safeParse(data)
-    if (!rows.success) {
-      throw new MalformedUpstreamError(`koios returned non-array data for ${path}`)
-    }
-    if (rows.data.length === 0) {
-      throw new MalformedUpstreamError(`koios returned no rows for ${path}`)
-    }
-    const parsed = schema.safeParse(rows.data[0])
+  function postJson(path: string, body: unknown): Promise<unknown> {
+    return request(path, {
+      method: 'POST',
+      body: JSON.stringify(body),
+      contentType: 'application/json',
+    })
+  }
+
+  function parseWith<T>(schema: z.ZodType<T>, data: unknown, path: string): T {
+    const parsed = schema.safeParse(data)
     if (!parsed.success) {
       throw new MalformedUpstreamError(
         `koios response shape mismatch for ${path}`,
@@ -116,6 +168,31 @@ export function createKoiosProvider(config: KoiosConfig): ChainProvider {
       )
     }
     return parsed.data
+  }
+
+  function parseFirst<T>(schema: z.ZodType<T>, data: unknown, path: string): T {
+    const rows = parseWith(z.array(z.unknown()), data, path)
+    if (rows.length === 0) {
+      throw new MalformedUpstreamError(`koios returned no rows for ${path}`)
+    }
+    return parseWith(schema, rows[0], path)
+  }
+
+  function mapUtxo(row: z.infer<typeof accountUtxoRow>): Utxo {
+    return {
+      txHash: row.tx_hash,
+      outputIndex: row.tx_index,
+      address: row.address,
+      value: String(row.value),
+      assets: (row.asset_list ?? []).map((a) => ({
+        policyId: a.policy_id,
+        assetName: a.asset_name,
+        quantity: String(a.quantity),
+      })),
+      datumHash: row.datum_hash ?? undefined,
+      inlineDatum: row.inline_datum?.bytes ?? undefined,
+      referenceScriptHash: row.reference_script?.hash ?? undefined,
+    }
   }
 
   return {
@@ -150,6 +227,54 @@ export function createKoiosProvider(config: KoiosConfig): ChainProvider {
         protocolVersion: { major: row.protocol_major, minor: row.protocol_minor },
         costModels: row.cost_models ?? {},
       }
+    },
+
+    async getAccountState(stakeAddress: string): Promise<AccountState> {
+      const data = await postJson('/account_info', { _stake_addresses: [stakeAddress] })
+      const rows = parseWith(z.array(accountInfoRow), data, '/account_info')
+      const row = rows[0]
+      // An unknown or never-used stake key legitimately has no row. Report it as an
+      // unregistered, zero-balance account rather than treating it as an error.
+      if (!row) {
+        return { stakeAddress, registered: false, balance: '0', rewardsAvailable: '0' }
+      }
+      return {
+        stakeAddress: row.stake_address,
+        registered: row.status === 'registered',
+        balance: String(row.total_balance),
+        rewardsAvailable: String(row.rewards_available),
+        delegatedPool: row.delegated_pool ?? undefined,
+        delegatedDrep: row.delegated_drep ?? undefined,
+      }
+    },
+
+    async getAccountUtxos(stakeAddress: string): Promise<Utxo[]> {
+      const data = await postJson('/account_utxos', {
+        _stake_addresses: [stakeAddress],
+        _extended: true,
+      })
+      const rows = parseWith(z.array(accountUtxoRow), data, '/account_utxos')
+      return rows.map(mapUtxo)
+    },
+
+    async submitTx(cborHex: string): Promise<{ txHash: string }> {
+      if (!/^[0-9a-fA-F]+$/.test(cborHex) || cborHex.length % 2 !== 0) {
+        throw new BadRequestError('transaction must be a hex-encoded CBOR string')
+      }
+      const data = await request('/submittx', {
+        method: 'POST',
+        body: Uint8Array.from(Buffer.from(cborHex, 'hex')),
+        contentType: 'application/cbor',
+      })
+      const txHash = parseWith(z.string().regex(/^[0-9a-fA-F]{64}$/), data, '/submittx')
+      return { txHash }
+    },
+
+    async getTxStatus(txHash: string): Promise<TxStatus> {
+      const data = await postJson('/tx_status', { _tx_hashes: [txHash] })
+      const rows = parseWith(z.array(txStatusRow), data, '/tx_status')
+      const confirmations = rows[0]?.num_confirmations ?? null
+      return { seen: confirmations !== null, confirmations: confirmations ?? 0 }
     },
   }
 }

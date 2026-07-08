@@ -52,3 +52,57 @@ export interface ProtocolParams {
    */
   costModels: Record<string, unknown>
 }
+
+/** A native (non-ADA) asset held in a UTxO. */
+export interface Asset {
+  /** Policy id (hex). */
+  policyId: string
+  /** Asset name (hex). */
+  assetName: string
+  /** Quantity, as a string to avoid precision loss. */
+  quantity: string
+}
+
+/** An unspent transaction output belonging to a wallet. */
+export interface Utxo {
+  /** Transaction hash (hex). */
+  txHash: string
+  /** Output index within that transaction. */
+  outputIndex: number
+  /** Bech32 address that controls the output. */
+  address: string
+  /** Lovelace value, as a string. */
+  value: string
+  /** Native assets in the output. */
+  assets: Asset[]
+  /** Datum hash (hex), if the output carries one. */
+  datumHash?: string
+  /** Inline datum (hex), if present. Needed by script-spending flows. */
+  inlineDatum?: string
+  /** Reference script hash (hex), if the output carries a reference script. */
+  referenceScriptHash?: string
+}
+
+/** Confirmation status for a submitted transaction. */
+export interface TxStatus {
+  /** Whether the transaction has been seen on chain. */
+  seen: boolean
+  /** Number of confirmations (blocks on top), 0 if seen but not yet confirmed. */
+  confirmations: number
+}
+
+/** Stake-account level state: balance, rewards, and current delegations. */
+export interface AccountState {
+  /** Bech32 stake address. */
+  stakeAddress: string
+  /** Whether the stake key is registered on chain. */
+  registered: boolean
+  /** Total controlled lovelace (UTxO plus withdrawable rewards), as a string. */
+  balance: string
+  /** Rewards available to withdraw, as a string. */
+  rewardsAvailable: string
+  /** Pool the account currently delegates to (bech32), if any. */
+  delegatedPool?: string
+  /** DRep the account currently delegates its vote to, if any. */
+  delegatedDrep?: string
+}

@@ -16,5 +16,7 @@ async function main(): Promise<void> {
 
 main().catch((err) => {
   console.error('failed to start cardano-wallet-backend', err)
-  process.exit(1)
+  // Set a non-zero exit code but let Node flush logs and finish teardown naturally
+  // rather than forcing an immediate exit.
+  process.exitCode = 1
 })

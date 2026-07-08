@@ -206,4 +206,32 @@ describe('koios provider — unhappy path', () => {
 
     await expect(provider.getTip()).rejects.toBeInstanceOf(MalformedUpstreamError)
   })
+
+  it('rejects a non-numeric protocol-param value as malformed', async () => {
+    const rows = [{ ...EPOCH_PARAM_ROWS[0], key_deposit: 'not-a-number' }]
+    const { fetchImpl } = fakeFetch({ json: async () => rows })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getProtocolParams()).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+
+  it('throws MalformedUpstreamError when Koios returns a non-array body', async () => {
+    const { fetchImpl } = fakeFetch({ json: async () => ({ unexpected: 'object' }) })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getTip()).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+
+  it('maps a timeout during body parsing to ProviderTimeoutError', async () => {
+    const timeout = new Error('timed out')
+    timeout.name = 'TimeoutError'
+    const { fetchImpl } = fakeFetch({
+      json: async () => {
+        throw timeout
+      },
+    })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getTip()).rejects.toBeInstanceOf(ProviderTimeoutError)
+  })
 })

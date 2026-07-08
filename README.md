@@ -1,12 +1,12 @@
 # cardano-wallet-backend
 
 A provider-agnostic data backend for the Yoroi Classic wallet. It exposes one stable
-HTTP API and serves it from whichever Cardano data source is configured, Koios,
-Blockfrost, or a bring-your-own Dingo node, so the wallet never has to care where the
-data comes from.
+HTTP API and is designed to serve it from any configured Cardano data source, so the
+wallet never has to care where the data comes from.
 
-This is early. Right now it serves the chain tip and protocol parameters from Koios,
-with the rest of the surface and the other providers landing behind the same contract.
+This is early. Right now it serves the chain tip and protocol parameters, and Koios is
+the only wired provider. Blockfrost and a bring-your-own Dingo node are planned behind
+the same contract, and selecting them today fails fast until their drivers land.
 
 ## Requirements
 
@@ -37,7 +37,8 @@ curl localhost:3010/v1/chain/protocol-params
 | GET    | `/v1/chain/protocol-params` | normalized protocol parameters incl. cost models |
 
 Errors come back as `{ "error": { "code", "message" } }` with a stable status code
-(`502` upstream error, `504` upstream timeout, `404` unknown route, `500` otherwise).
+(`502` upstream error, `504` upstream timeout, `501` capability not implemented by the
+active provider, `404` unknown route, `500` otherwise).
 
 ## Configuration
 

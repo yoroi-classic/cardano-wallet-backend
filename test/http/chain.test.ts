@@ -28,12 +28,16 @@ const PARAMS: ProtocolParams = {
   costModels: { PlutusV1: [100] },
 }
 
-/** A provider whose behavior each test controls. */
+/**
+ * A provider whose behavior each test controls. The defaults return clones so an
+ * accidental in-place mutation in a route or serializer would fail the assertion
+ * instead of silently mutating the shared fixture too.
+ */
 function providerWith(overrides: Partial<ChainProvider>): ChainProvider {
   return {
     name: 'fake',
-    getTip: async () => TIP,
-    getProtocolParams: async () => PARAMS,
+    getTip: async () => structuredClone(TIP),
+    getProtocolParams: async () => structuredClone(PARAMS),
     ...overrides,
   }
 }

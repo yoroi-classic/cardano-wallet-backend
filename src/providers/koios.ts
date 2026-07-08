@@ -25,8 +25,12 @@ export interface KoiosConfig {
   fetchImpl?: FetchLike
 }
 
-/** Koios returns lovelace-scale values as either numbers or numeric strings. */
-const numeric = z.union([z.number(), z.string()])
+/**
+ * Koios returns lovelace-scale values as either numbers or numeric strings. The string
+ * branch is constrained to digits so a malformed upstream value fails validation and
+ * lands on the MalformedUpstreamError path rather than propagating as junk.
+ */
+const numeric = z.union([z.number(), z.string().regex(/^\d+$/)])
 
 const tipRow = z.object({
   hash: z.string(),
@@ -88,13 +92,19 @@ export function createKoiosProvider(config: KoiosConfig): ChainProvider {
     try {
       return await res.json()
     } catch (cause) {
+      if (cause instanceof Error && cause.name === 'TimeoutError') {
+        throw new ProviderTimeoutError(`koios response timed out: ${path}`, cause)
+      }
       throw new MalformedUpstreamError(`koios returned invalid json for ${path}`, cause)
     }
   }
 
   function parseFirst<T>(schema: z.ZodType<T>, data: unknown, path: string): T {
     const rows = z.array(z.unknown()).safeParse(data)
-    if (!rows.success || rows.data.length === 0) {
+    if (!rows.success) {
+      throw new MalformedUpstreamError(`koios returned non-array data for ${path}`)
+    }
+    if (rows.data.length === 0) {
       throw new MalformedUpstreamError(`koios returned no rows for ${path}`)
     }
     const parsed = schema.safeParse(rows.data[0])

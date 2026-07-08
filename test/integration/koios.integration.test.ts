@@ -15,6 +15,9 @@ describe('koios preprod (integration)', () => {
     expect(tip.epoch).toBeGreaterThan(0)
     expect(tip.slot).toBeGreaterThan(0)
     expect(tip.hash).toMatch(/^[0-9a-f]+$/i)
+    // A Cardano block hash is a 64-char Blake2b-256 hex string; guard against a
+    // truncated, padded, or mis-mapped field that still happens to look like hex.
+    expect(tip.hash).toHaveLength(64)
   })
 
   it('returns protocol params including plutus cost models', async () => {

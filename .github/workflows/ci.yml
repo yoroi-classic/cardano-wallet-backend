@@ -1,0 +1,32 @@
+name: ci
+
+# Baseline gate for every branch in the flow. Lint, format, types, and the full
+# unit suite with coverage. This is the check required on development and up.
+on:
+  push:
+    branches: [development, preview, preprod, main]
+  pull_request:
+    branches: [development, preview, preprod, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm run test:coverage

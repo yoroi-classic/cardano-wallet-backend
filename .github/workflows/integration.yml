@@ -1,0 +1,38 @@
+name: integration
+
+# Tighter gate for the release-bound branches. Runs the live-preprod integration
+# suite and a dependency audit. Only on PRs into preprod and main.
+on:
+  pull_request:
+    branches: [preprod, main]
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Integration tests against preprod
+        run: npm run test:integration
+        env:
+          NETWORK: preprod
+          KOIOS_URL: https://preprod.koios.rest/api/v1
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high

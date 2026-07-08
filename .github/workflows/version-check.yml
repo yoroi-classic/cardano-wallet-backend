@@ -1,0 +1,27 @@
+name: version-check
+
+# From preview onward, every PR must carry a semver bump over its base branch.
+# Development is intentionally exempt so day-to-day work stays fast.
+on:
+  pull_request:
+    branches: [preview, preprod, main]
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - name: Ensure the base branch is available
+        run: git fetch origin ${{ github.base_ref }} --depth=1
+      - name: Check version bump
+        run: node scripts/check-version-bump.mjs
+        env:
+          BASE_REF: origin/${{ github.base_ref }}

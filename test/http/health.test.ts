@@ -13,6 +13,7 @@ const stubProvider: ChainProvider = {
   getProtocolParams: unused,
   getAccountState: unused,
   getAccountUtxos: unused,
+  getTxHistory: unused,
   submitTx: unused,
   getTxStatus: unused,
 }

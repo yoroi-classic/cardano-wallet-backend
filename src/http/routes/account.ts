@@ -32,4 +32,18 @@ export function registerAccountRoutes(app: FastifyInstance, provider: ChainProvi
     const { stake } = request.params as { stake: string }
     return provider.getAccountUtxos(assertStakeAddress(stake))
   })
+
+  app.get('/v1/account/:stake/txs', async (request) => {
+    const { stake } = request.params as { stake: string }
+    const { after } = request.query as { after?: string }
+    let afterBlock: number | undefined
+    if (after !== undefined) {
+      const n = Number(after)
+      if (!Number.isInteger(n) || n < 0) {
+        throw new BadRequestError('after must be a non-negative block height')
+      }
+      afterBlock = n
+    }
+    return provider.getTxHistory(assertStakeAddress(stake), afterBlock)
+  })
 }

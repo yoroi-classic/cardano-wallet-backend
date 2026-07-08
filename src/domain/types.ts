@@ -83,6 +83,52 @@ export interface Utxo {
   referenceScriptHash?: string
 }
 
+/** One side (input or output) of a transaction. */
+export interface TxIo {
+  /** Bech32 address, or empty when the provider can't express it (e.g. some Byron outputs). */
+  address: string
+  /** Lovelace value, as a string. */
+  value: string
+  /** Native assets carried on this input/output. */
+  assets: Asset[]
+}
+
+/** A reward withdrawal within a transaction. */
+export interface Withdrawal {
+  stakeAddress: string
+  amount: string
+}
+
+/** A certificate within a transaction, passed through in the provider's normalized form. */
+export interface TxCertificate {
+  /** Certificate kind (e.g. stake delegation, drep registration), as the provider labels it. */
+  type: string
+  /** Position of the certificate within the transaction. */
+  index: number
+  /** Kind-specific detail, shape varies, so it's opaque here. */
+  info?: unknown
+}
+
+/** A historical transaction that touched the account, normalized for display. */
+export interface WalletTransaction {
+  txHash: string
+  block: number
+  blockHash: string
+  slot: number
+  epoch: number
+  /** Unix timestamp (seconds) of the containing block. */
+  blockTime: number
+  fee: string
+  /** Time-to-live (invalid-after slot), if the transaction set one. */
+  ttl?: number
+  inputs: TxIo[]
+  outputs: TxIo[]
+  withdrawals: Withdrawal[]
+  certificates: TxCertificate[]
+  /** Transaction metadata, opaque here. */
+  metadata?: unknown
+}
+
 /** Confirmation status for a submitted transaction. */
 export interface TxStatus {
   /** Whether the transaction has been seen on chain. */

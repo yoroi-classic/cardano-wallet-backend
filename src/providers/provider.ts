@@ -1,4 +1,11 @@
-import type { AccountState, ProtocolParams, Tip, TxStatus, Utxo } from '../domain/types.js'
+import type {
+  AccountState,
+  ProtocolParams,
+  Tip,
+  TxStatus,
+  Utxo,
+  WalletTransaction,
+} from '../domain/types.js'
 
 /**
  * The provider contract. Every data source (Koios, Blockfrost, a bring-your-own
@@ -22,6 +29,12 @@ export interface ChainProvider {
 
   /** All UTxOs controlled by a stake account, in one call. */
   getAccountUtxos(stakeAddress: string): Promise<Utxo[]>
+
+  /**
+   * Transaction history for a stake account, oldest first. `afterBlock` pages forward:
+   * pass the block height of the last transaction already seen to get the next page.
+   */
+  getTxHistory(stakeAddress: string, afterBlock?: number): Promise<WalletTransaction[]>
 
   /** Submit a serialized (CBOR hex) signed transaction. Returns the transaction hash. */
   submitTx(cborHex: string): Promise<{ txHash: string }>

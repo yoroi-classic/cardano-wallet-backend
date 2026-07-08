@@ -24,7 +24,10 @@ function comparePre(a, b) {
     const xn = /^\d+$/.test(x)
     const yn = /^\d+$/.test(y)
     if (xn && yn) {
-      if (Number(x) !== Number(y)) return Number(x) < Number(y) ? -1 : 1
+      // BigInt so very large numeric identifiers compare without precision loss.
+      const xb = BigInt(x)
+      const yb = BigInt(y)
+      if (xb !== yb) return xb < yb ? -1 : 1
     } else if (xn) {
       return -1
     } else if (yn) {
@@ -49,6 +52,14 @@ function compare(a, b) {
 }
 
 function baseHasPackageJson(baseRef) {
+  // A missing or unfetched ref is an operational error, not the first-scaffold case, so
+  // fail loudly rather than silently comparing against 0.0.0 and passing anything.
+  try {
+    execSync(`git rev-parse --verify --quiet ${baseRef}^{commit}`, { stdio: 'ignore' })
+  } catch {
+    throw new Error(`base ref ${baseRef} not found; fetch it before running the check`)
+  }
+  // Ref exists. Only an absent package.json on it counts as the first-scaffold case.
   try {
     execSync(`git cat-file -e ${baseRef}:package.json`, { stdio: 'ignore' })
     return true

@@ -204,7 +204,33 @@ unhappy path')`.
 - No secrets in code and none committed. They come from the environment, and the
   loader treats an empty value as absent.
 
+## Recurring pitfalls to avoid
+
+These are concrete mistakes we've hit and don't want to repeat. Check for them before
+opening a PR.
+
+- Validate every branch of a union to the same constraint. If a field can arrive as a
+  number or a string, constrain both to the same domain (a non-negative integer, say),
+  not just one. Tightening the string branch while leaving the number branch open lets
+  malformed values through.
+- Narrow a catch-and-fallback to the exact expected condition. A broad `catch` that
+  turns any failure into a benign default hides real errors. Detect the specific case
+  you mean to tolerate (the file is absent, the ref exists) and let everything else
+  throw. Silent fallbacks that make a gate pass are worse than a loud failure.
+- Docs must match real behavior. Don't document a status code, endpoint, or capability
+  that no code path actually produces. Add the doc when the path exists, not before.
+- Use `BigInt` for integers that can exceed the safe range, never `Number()`. This is
+  the comparison-and-parsing companion to keeping money as strings.
+- A fatal path must actually terminate. Setting `process.exitCode` while a listening
+  server (or any open handle) keeps the event loop alive leaves a zombie that a health
+  check might still call healthy. Close resources on failure so the process can drain
+  and exit.
+
 ## Commits, PRs, and versioning
 
 Those live in `CONTRIBUTING.md`. The short version: conventional-commit prefixes,
 semver bump per advancing PR, reference the issues a PR addresses, and no self-merges.
+
+CI hardening we standardize on: pin third-party GitHub Actions to a full commit SHA (a
+tag is mutable), and have a self-validating gate run the trusted base-branch copy of its
+own check script, so a PR can't weaken the gate by editing it in the same change.

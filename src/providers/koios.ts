@@ -26,11 +26,12 @@ export interface KoiosConfig {
 }
 
 /**
- * Koios returns lovelace-scale values as either numbers or numeric strings. The string
- * branch is constrained to digits so a malformed upstream value fails validation and
- * lands on the MalformedUpstreamError path rather than propagating as junk.
+ * Koios returns lovelace-scale values as either numbers or numeric strings. Both
+ * branches are constrained to non-negative integers so a malformed upstream value
+ * (a negative, a float, a non-numeric string) fails validation and lands on the
+ * MalformedUpstreamError path rather than propagating as junk.
  */
-const numeric = z.union([z.number(), z.string().regex(/^\d+$/)])
+const numeric = z.union([z.number().int().nonnegative(), z.string().regex(/^\d+$/)])
 
 const tipRow = z.object({
   hash: z.string(),

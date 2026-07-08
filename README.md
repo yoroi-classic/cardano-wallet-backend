@@ -37,8 +37,7 @@ curl localhost:3010/v1/chain/protocol-params
 | GET    | `/v1/chain/protocol-params` | normalized protocol parameters incl. cost models |
 
 Errors come back as `{ "error": { "code", "message" } }` with a stable status code
-(`502` upstream error, `504` upstream timeout, `501` capability not implemented by the
-active provider, `404` unknown route, `500` otherwise).
+(`502` upstream error, `504` upstream timeout, `404` unknown route, `500` otherwise).
 
 ## Configuration
 

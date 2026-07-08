@@ -215,6 +215,14 @@ describe('koios provider — unhappy path', () => {
     await expect(provider.getProtocolParams()).rejects.toBeInstanceOf(MalformedUpstreamError)
   })
 
+  it('rejects a negative numeric protocol-param value as malformed', async () => {
+    const rows = [{ ...EPOCH_PARAM_ROWS[0], key_deposit: -5 }]
+    const { fetchImpl } = fakeFetch({ json: async () => rows })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getProtocolParams()).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+
   it('throws MalformedUpstreamError when Koios returns a non-array body', async () => {
     const { fetchImpl } = fakeFetch({ json: async () => ({ unexpected: 'object' }) })
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })

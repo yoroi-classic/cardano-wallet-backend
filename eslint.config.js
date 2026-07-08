@@ -3,7 +3,8 @@ import tseslint from 'typescript-eslint'
 
 export default tseslint.config(
   {
-    ignores: ['dist/**', 'coverage/**', 'node_modules/**'],
+    // e2e/ is a self-contained harness with its own package.json and tooling.
+    ignores: ['dist/**', 'coverage/**', 'node_modules/**', 'e2e/**'],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

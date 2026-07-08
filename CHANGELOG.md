@@ -3,6 +3,18 @@
 All notable changes to this project are recorded here. The format follows
 Keep a Changelog, and the project uses semantic versioning.
 
+## [0.3.0] - 2026-07-08
+
+### Added
+
+- `e2e/`: a self-contained end-to-end vertical slice that drives the `/v1` surface on a
+  real network using the same CSL the Yoroi extension pins. It derives an address, reads
+  balance and UTxOs, and builds, signs, submits, and confirms a self-payment. Kept
+  minimal (plain ADA, one account) and separate from the backend's own tooling and CI.
+- `.github/dependabot.yml`: npm and GitHub Actions updates with a 7-14 day cooldown to
+  avoid installing brand-new (potentially compromised) releases, and dev-dependency
+  grouping so overlapping bumps don't open conflicting PRs.
+
 ## [0.2.0] - 2026-07-08
 
 Completes the barebones Koios read/write surface for a wallet.

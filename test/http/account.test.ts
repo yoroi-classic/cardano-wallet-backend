@@ -122,11 +122,17 @@ describe('account routes', () => {
     expect(res.json()).toEqual(TXS)
   })
 
-  it('rejects a non-numeric after with 400', async () => {
+  it('rejects a non-numeric or empty after with 400', async () => {
     app = buildServer({ provider: providerWith({}) })
-    const res = await app.inject({ method: 'GET', url: `/v1/account/${STAKE}/txs?after=abc` })
 
-    expect(res.statusCode).toBe(400)
-    expect(res.json()).toMatchObject({ error: { code: 'BAD_REQUEST' } })
+    const nonNumeric = await app.inject({
+      method: 'GET',
+      url: `/v1/account/${STAKE}/txs?after=abc`,
+    })
+    expect(nonNumeric.statusCode).toBe(400)
+    expect(nonNumeric.json()).toMatchObject({ error: { code: 'BAD_REQUEST' } })
+
+    const empty = await app.inject({ method: 'GET', url: `/v1/account/${STAKE}/txs?after=` })
+    expect(empty.statusCode).toBe(400)
   })
 })

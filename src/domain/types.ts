@@ -85,8 +85,8 @@ export interface Utxo {
 
 /** One side (input or output) of a transaction. */
 export interface TxIo {
-  /** Bech32 address, or empty when the provider can't express it (e.g. some Byron outputs). */
-  address: string
+  /** Bech32 address. Omitted when the provider can't express it (e.g. some Byron outputs). */
+  address?: string
   /** Lovelace value, as a string. */
   value: string
   /** Native assets carried on this input/output. */
@@ -99,14 +99,37 @@ export interface Withdrawal {
   amount: string
 }
 
-/** A certificate within a transaction, passed through in the provider's normalized form. */
+/**
+ * Normalized, provider-agnostic certificate kind. Providers map their own labels onto
+ * this stable set so the API shape doesn't leak Koios (or Blockfrost) terminology.
+ */
+export type CertificateKind =
+  | 'stake_registration'
+  | 'stake_deregistration'
+  | 'stake_delegation'
+  | 'pool_registration'
+  | 'pool_retirement'
+  | 'vote_delegation'
+  | 'drep_registration'
+  | 'drep_update'
+  | 'drep_deregistration'
+  | 'committee_hot_auth'
+  | 'committee_cold_resign'
+  | 'move_instantaneous_rewards'
+  | 'genesis_key_delegation'
+  | 'other'
+
+/** A certificate within a transaction. */
 export interface TxCertificate {
-  /** Certificate kind (e.g. stake delegation, drep registration), as the provider labels it. */
-  type: string
+  /** Normalized certificate kind. */
+  kind: CertificateKind
   /** Position of the certificate within the transaction. */
   index: number
-  /** Kind-specific detail, shape varies, so it's opaque here. */
-  info?: unknown
+  /**
+   * Kind-specific detail as the provider reports it (e.g. pool id, stake address). For an
+   * unrecognized kind (`other`), this includes the provider's raw type so nothing is lost.
+   */
+  details?: Record<string, unknown>
 }
 
 /** A historical transaction that touched the account, normalized for display. */

@@ -342,12 +342,13 @@ describe('koios getTxHistory', () => {
         },
       ],
       withdrawals: [{ stakeAddress: 'stake_w', amount: '250000' }],
-      certificates: [{ type: 'delegation', index: 0, info: { pool: 'p' } }],
+      certificates: [{ kind: 'stake_delegation', index: 0, details: { pool: 'p' } }],
       metadata: undefined,
     })
     expect(history[1]?.metadata).toEqual({ '674': { msg: ['hi'] } })
     const accountCall = calls.find((c) => c.url.includes('/account_txs'))
-    expect(JSON.parse(String(accountCall?.body))).toEqual({ _stake_address: STAKE })
+    expect(accountCall?.method ?? 'GET').toBe('GET')
+    expect(accountCall?.url).toContain(`_stake_address=${STAKE}`)
   })
 
   it('passes afterBlock to account_txs', async () => {
@@ -360,10 +361,39 @@ describe('koios getTxHistory', () => {
     await provider.getTxHistory(STAKE, 500)
 
     const accountCall = calls.find((c) => c.url.includes('/account_txs'))
-    expect(JSON.parse(String(accountCall?.body))).toEqual({
-      _stake_address: STAKE,
-      _after_block_height: 500,
-    })
+    expect(accountCall?.url).toContain(`_stake_address=${STAKE}`)
+    expect(accountCall?.url).toContain('_after_block_height=500')
+  })
+
+  it('normalizes known certificates and preserves unknown ones as "other"', async () => {
+    const info = [
+      {
+        ...TX_INFO[1],
+        certificates: [
+          { index: 0, type: 'stake_registration', info: { stake_address: 's' } },
+          { index: 1, type: 'some_future_cert', info: { foo: 'bar' } },
+        ],
+      },
+    ]
+    const { fetchImpl } = fakeFetchByPath({ '/account_txs': [ACCOUNT_TXS[0]], '/tx_info': info })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [tx] = await provider.getTxHistory(STAKE)
+
+    expect(tx?.certificates).toEqual([
+      { kind: 'stake_registration', index: 0, details: { stake_address: 's' } },
+      { kind: 'other', index: 1, details: { providerType: 'some_future_cert', foo: 'bar' } },
+    ])
+  })
+
+  it('accepts invalid_after delivered as a numeric string', async () => {
+    const info = [{ ...TX_INFO[1], invalid_after: '12345' }]
+    const { fetchImpl } = fakeFetchByPath({ '/account_txs': [ACCOUNT_TXS[0]], '/tx_info': info })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [tx] = await provider.getTxHistory(STAKE)
+
+    expect(tx?.ttl).toBe(12345)
   })
 
   it('returns empty and skips tx_info when the account has no transactions', async () => {

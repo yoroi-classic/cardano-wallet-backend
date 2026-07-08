@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import type {
   AccountState,
+  CertificateKind,
   ProtocolParams,
   Tip,
   TxCertificate,
@@ -132,7 +133,29 @@ const txIoRow = z.object({
 })
 
 const withdrawalRow = z.object({ stake_addr: z.string(), amount: numeric })
-const certRow = z.object({ index: z.number(), type: z.string(), info: z.unknown().optional() })
+const certRow = z.object({
+  index: z.number(),
+  type: z.string(),
+  info: z.record(z.string(), z.unknown()).nullish(),
+})
+
+// Koios certificate type -> our normalized kind. Unrecognized types fall to 'other'.
+const CERT_KIND: Record<string, CertificateKind> = {
+  stake_registration: 'stake_registration',
+  stake_deregistration: 'stake_deregistration',
+  delegation: 'stake_delegation',
+  pool_update: 'pool_registration',
+  pool_retire: 'pool_retirement',
+  vote_delegation: 'vote_delegation',
+  drep_registration: 'drep_registration',
+  drep_update: 'drep_update',
+  drep_deregistration: 'drep_deregistration',
+  committee_hot_auth: 'committee_hot_auth',
+  committee_cold_resign: 'committee_cold_resign',
+  treasury_MIR: 'move_instantaneous_rewards',
+  reserve_MIR: 'move_instantaneous_rewards',
+  genesis: 'genesis_key_delegation',
+}
 
 const txInfoRow = z.object({
   tx_hash: z.string(),
@@ -143,13 +166,25 @@ const txInfoRow = z.object({
   tx_timestamp: z.number(),
   tx_block_index: z.number(),
   fee: numeric,
-  invalid_after: z.number().nullish(),
+  invalid_after: numeric.nullish(),
   inputs: z.array(txIoRow).nullish(),
   outputs: z.array(txIoRow).nullish(),
   withdrawals: z.array(withdrawalRow).nullish(),
   certificates: z.array(certRow).nullish(),
   metadata: z.unknown().nullish(),
 })
+
+function mapCertificate(c: z.infer<typeof certRow>): TxCertificate {
+  const kind = CERT_KIND[c.type] ?? 'other'
+  const info = c.info ?? undefined
+  // For an unrecognized kind, keep the provider's raw type so nothing is lost.
+  const details = kind === 'other' ? { providerType: c.type, ...(info ?? {}) } : info
+  return {
+    kind,
+    index: c.index,
+    details: details && Object.keys(details).length > 0 ? details : undefined,
+  }
+}
 
 // How many transactions we detail per page. Matches the extension's request size.
 const HISTORY_PAGE_SIZE = 50
@@ -250,7 +285,7 @@ export function createKoiosProvider(config: KoiosConfig): ChainProvider {
 
   function mapTxIo(row: z.infer<typeof txIoRow>): TxIo {
     return {
-      address: row.payment_addr?.bech32 ?? '',
+      address: row.payment_addr?.bech32 ?? undefined,
       value: String(row.value),
       assets: (row.asset_list ?? []).map((a) => ({
         policyId: a.policy_id,
@@ -265,11 +300,7 @@ export function createKoiosProvider(config: KoiosConfig): ChainProvider {
       stakeAddress: w.stake_addr,
       amount: String(w.amount),
     }))
-    const certificates: TxCertificate[] = (row.certificates ?? []).map((c) => ({
-      type: c.type,
-      index: c.index,
-      info: c.info,
-    }))
+    const certificates: TxCertificate[] = (row.certificates ?? []).map(mapCertificate)
     return {
       txHash: row.tx_hash,
       block: row.block_height,
@@ -278,7 +309,7 @@ export function createKoiosProvider(config: KoiosConfig): ChainProvider {
       epoch: row.epoch_no,
       blockTime: row.tx_timestamp,
       fee: String(row.fee),
-      ttl: row.invalid_after ?? undefined,
+      ttl: row.invalid_after != null ? Number(row.invalid_after) : undefined,
       inputs: (row.inputs ?? []).map(mapTxIo),
       outputs: (row.outputs ?? []).map(mapTxIo),
       withdrawals,
@@ -350,9 +381,10 @@ export function createKoiosProvider(config: KoiosConfig): ChainProvider {
     },
 
     async getTxHistory(stakeAddress: string, afterBlock?: number): Promise<WalletTransaction[]> {
-      const listBody: Record<string, unknown> = { _stake_address: stakeAddress }
-      if (afterBlock !== undefined) listBody._after_block_height = afterBlock
-      const listData = await postJson('/account_txs', listBody)
+      // account_txs is the single-account form; use GET with query params.
+      const query = new URLSearchParams({ _stake_address: stakeAddress })
+      if (afterBlock !== undefined) query.set('_after_block_height', String(afterBlock))
+      const listData = await request(`/account_txs?${query.toString()}`)
       const list = parseWith(z.array(accountTxRow), listData, '/account_txs')
       if (list.length === 0) return []
 

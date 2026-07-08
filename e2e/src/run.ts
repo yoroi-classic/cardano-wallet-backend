@@ -21,6 +21,17 @@ async function main(): Promise<void> {
 
   const client = createV1Client(cfg.backendUrl)
 
+  // Fail clearly if BACKEND_URL points at something that isn't this backend (a common
+  // mix-up when another service, e.g. a local Dingo/Blockfrost, is on the expected port).
+  const health = await client.getHealth().catch(() => null)
+  if (!health || health.service !== 'cardano-wallet-backend') {
+    throw new Error(
+      `${cfg.backendUrl} does not look like a cardano-wallet-backend instance ` +
+        `(GET /health did not return service "cardano-wallet-backend"). ` +
+        `Check BACKEND_URL and that the backend is running on that port.`,
+    )
+  }
+
   const tip = await client.getTip()
   console.log(`tip:          block ${tip.block}, epoch ${tip.epoch}`)
 

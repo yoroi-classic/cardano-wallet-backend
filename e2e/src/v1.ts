@@ -45,6 +45,7 @@ export interface V1TxStatus {
 }
 
 export interface V1Client {
+  getHealth(): Promise<{ status?: string; service?: string }>
   getTip(): Promise<V1Tip>
   getProtocolParams(): Promise<V1ProtocolParams>
   getAccountState(stake: string): Promise<V1AccountState>
@@ -63,6 +64,7 @@ export function createV1Client(baseUrl: string): V1Client {
   }
 
   return {
+    getHealth: () => get<{ status?: string; service?: string }>('/health'),
     getTip: () => get<V1Tip>('/v1/chain/tip'),
     getProtocolParams: () => get<V1ProtocolParams>('/v1/chain/protocol-params'),
     getAccountState: (stake) => get<V1AccountState>(`/v1/account/${stake}/state`),

@@ -34,10 +34,17 @@ const PARAMS: ProtocolParams = {
  * instead of silently mutating the shared fixture too.
  */
 function providerWith(overrides: Partial<ChainProvider>): ChainProvider {
+  const unused = async () => {
+    throw new Error('unused')
+  }
   return {
     name: 'fake',
     getTip: async () => structuredClone(TIP),
     getProtocolParams: async () => structuredClone(PARAMS),
+    getAccountState: unused,
+    getAccountUtxos: unused,
+    submitTx: unused,
+    getTxStatus: unused,
     ...overrides,
   }
 }

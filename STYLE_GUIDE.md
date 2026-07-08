@@ -225,6 +225,9 @@ opening a PR.
   server (or any open handle) keeps the event loop alive leaves a zombie that a health
   check might still call healthy. Close resources on failure so the process can drain
   and exit.
+- Never build a shell command string from untrusted or external input (an env var, a
+  branch name, a request field). Use `execFile`/`spawn` with an argument array so no
+  shell parses it. On a fork PR even a branch name is attacker-influenced.
 
 ## Commits, PRs, and versioning
 

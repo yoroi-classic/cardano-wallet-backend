@@ -3,12 +3,18 @@ import type { FastifyInstance } from 'fastify'
 import { buildServer } from '../../src/http/server.js'
 import type { ChainProvider } from '../../src/providers/provider.js'
 
+const unused = async () => {
+  throw new Error('unused')
+}
+
 const stubProvider: ChainProvider = {
   name: 'stub',
   getTip: async () => ({ block: 1, slot: 1, epoch: 1, hash: 'x' }),
-  getProtocolParams: async () => {
-    throw new Error('unused')
-  },
+  getProtocolParams: unused,
+  getAccountState: unused,
+  getAccountUtxos: unused,
+  submitTx: unused,
+  getTxStatus: unused,
 }
 
 let app: FastifyInstance

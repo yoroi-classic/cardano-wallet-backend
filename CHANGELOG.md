@@ -3,6 +3,21 @@
 All notable changes to this project are recorded here. The format follows
 Keep a Changelog, and the project uses semantic versioning.
 
+## [0.2.0] - 2026-07-08
+
+Completes the barebones Koios read/write surface for a wallet.
+
+### Added
+
+- `GET /v1/account/{stake}/state` for balance, rewards, and current pool/DRep
+  delegation, keyed by stake address.
+- `GET /v1/account/{stake}/utxos` for the account's UTxOs in one call, including native
+  assets and inline datums.
+- `POST /v1/tx/submit` to submit a signed (CBOR hex) transaction and return its hash.
+- `GET /v1/tx/{hash}/status` for confirmation status.
+- `BadRequestError` (400) and boundary validation of stake addresses, transaction
+  hashes, and the submit body.
+
 ## [0.1.0] - 2026-07-08
 
 Initial scaffold.

@@ -1,7 +1,14 @@
 // Fails if package.json version wasn't bumped above the base branch. Used by the
 // version-check CI gate so every PR that advances the codebase carries a semver bump.
-import { execSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
+
+// Run git with an argument array (never a shell string) so a value like BASE_REF, which
+// can contain attacker-influenced characters on a fork PR, is passed as a literal arg
+// and can't inject shell commands.
+function git(args, opts = {}) {
+  return execFileSync('git', args, opts)
+}
 
 function parseSemver(v) {
   const m = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(v)
@@ -55,13 +62,13 @@ function baseHasPackageJson(baseRef) {
   // A missing or unfetched ref is an operational error, not the first-scaffold case, so
   // fail loudly rather than silently comparing against 0.0.0 and passing anything.
   try {
-    execSync(`git rev-parse --verify --quiet ${baseRef}^{commit}`, { stdio: 'ignore' })
+    git(['rev-parse', '--verify', '--quiet', `${baseRef}^{commit}`], { stdio: 'ignore' })
   } catch {
     throw new Error(`base ref ${baseRef} not found; fetch it before running the check`)
   }
   // Ref exists. Only an absent package.json on it counts as the first-scaffold case.
   try {
-    execSync(`git cat-file -e ${baseRef}:package.json`, { stdio: 'ignore' })
+    git(['cat-file', '-e', `${baseRef}:package.json`], { stdio: 'ignore' })
     return true
   } catch {
     return false
@@ -80,7 +87,7 @@ let baseVersion = '0.0.0'
 if (baseRef && baseHasPackageJson(baseRef)) {
   // The base has a package.json, so any failure reading or parsing it is a real problem.
   // Let it throw and fail the gate rather than silently falling back and passing.
-  const baseJson = execSync(`git show ${baseRef}:package.json`, {
+  const baseJson = git(['show', `${baseRef}:package.json`], {
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   baseVersion = JSON.parse(baseJson.toString()).version ?? '0.0.0'

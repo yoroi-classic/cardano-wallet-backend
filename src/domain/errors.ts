@@ -7,7 +7,6 @@ export type ErrorCode =
   | 'UPSTREAM_ERROR'
   | 'UPSTREAM_TIMEOUT'
   | 'UPSTREAM_MALFORMED'
-  | 'NOT_IMPLEMENTED'
   | 'BAD_REQUEST'
   | 'CONFIG_ERROR'
   | 'INTERNAL'
@@ -48,13 +47,6 @@ export class ProviderTimeoutError extends AppError {
 export class MalformedUpstreamError extends AppError {
   constructor(message: string, details?: unknown) {
     super('UPSTREAM_MALFORMED', 502, message, details)
-  }
-}
-
-/** A capability the selected provider doesn't offer yet. */
-export class NotImplementedError extends AppError {
-  constructor(message: string) {
-    super('NOT_IMPLEMENTED', 501, message)
   }
 }
 

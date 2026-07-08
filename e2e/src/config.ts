@@ -1,3 +1,11 @@
+// Load a local .env file if present (Node 22 built-in) so config can come from a file
+// rather than only inline env vars. Missing file is fine; we fall back to the ambient env.
+try {
+  process.loadEnvFile()
+} catch {
+  // No .env file next to the run; rely on the ambient environment.
+}
+
 export interface E2eConfig {
   backendUrl: string
   network: 'mainnet' | 'preprod' | 'preview'

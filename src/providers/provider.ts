@@ -3,8 +3,9 @@ import type { AccountState, ProtocolParams, Tip, TxStatus, Utxo } from '../domai
 /**
  * The provider contract. Every data source (Koios, Blockfrost, a bring-your-own
  * Dingo node) implements this so the HTTP layer never has to know which one is
- * serving a request. The interface grows one capability at a time as endpoints
- * land; today it covers the chain-tip and protocol-parameter reads.
+ * serving a request. It covers the barebones surface a wallet needs: chain tip and
+ * protocol parameters, account state and UTxOs, and transaction submit and status.
+ * The interface grows one capability at a time as endpoints land.
  */
 export interface ChainProvider {
   /** A short name for logs and diagnostics, e.g. "koios". */

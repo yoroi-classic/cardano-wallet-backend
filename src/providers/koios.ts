@@ -74,7 +74,9 @@ const epochParamsRow = z.object({
 
 const accountInfoRow = z.object({
   stake_address: z.string(),
-  status: z.string(),
+  // Koios documents exactly these two values; anything else is unexpected upstream data
+  // and should follow the malformed path rather than silently read as unregistered.
+  status: z.enum(['registered', 'not registered']),
   delegated_pool: z.string().nullish(),
   delegated_drep: z.string().nullish(),
   total_balance: numeric,
@@ -264,7 +266,7 @@ export function createKoiosProvider(config: KoiosConfig): ChainProvider {
         body: Uint8Array.from(Buffer.from(cborHex, 'hex')),
         contentType: 'application/cbor',
       })
-      const txHash = parseWith(z.string(), data, '/submittx')
+      const txHash = parseWith(z.string().regex(/^[0-9a-fA-F]{64}$/), data, '/submittx')
       return { txHash }
     },
 

@@ -53,6 +53,13 @@ describe('tx submit', () => {
       payload: { cbor: 'zzzz' },
     })
     expect(nonHex.statusCode).toBe(400)
+
+    const oddLength = await app.inject({
+      method: 'POST',
+      url: '/v1/tx/submit',
+      payload: { cbor: 'abc' },
+    })
+    expect(oddLength.statusCode).toBe(400)
   })
 
   it('maps a provider rejection to 502', async () => {

@@ -3,7 +3,8 @@ import { z } from 'zod'
 import { BadRequestError } from '../../domain/errors.js'
 import type { ChainProvider } from '../../providers/provider.js'
 
-const submitBody = z.object({ cbor: z.string().regex(/^[0-9a-fA-F]+$/) })
+// Even-length hex (whole bytes), matching what the provider will accept.
+const submitBody = z.object({ cbor: z.string().regex(/^([0-9a-fA-F]{2})+$/) })
 const TX_HASH = /^[0-9a-fA-F]{64}$/
 
 /** Transaction submit and status. */

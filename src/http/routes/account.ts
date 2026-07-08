@@ -1,12 +1,18 @@
 import type { FastifyInstance } from 'fastify'
+import { bech32 } from '@scure/base'
 import { BadRequestError } from '../../domain/errors.js'
 import type { ChainProvider } from '../../providers/provider.js'
 
-// A bech32 stake address: stake1... on mainnet, stake_test1... on testnets.
-const STAKE_ADDRESS = /^stake(_test)?1[0-9a-z]+$/
+// Stake addresses use a longer payload than the default bech32 length limit.
+const BECH32_LIMIT = 1023
+const STAKE_PREFIXES = new Set(['stake', 'stake_test'])
 
+// Decode the address and verify it's a well-formed bech32 stake address (valid charset
+// and checksum, stake HRP), so a malformed value is rejected rather than quietly
+// treated as an unknown zero-balance account.
 function assertStakeAddress(value: string): string {
-  if (!STAKE_ADDRESS.test(value)) {
+  const decoded = bech32.decodeUnsafe(value, BECH32_LIMIT)
+  if (!decoded || !STAKE_PREFIXES.has(decoded.prefix)) {
     throw new BadRequestError('invalid stake address')
   }
   return value

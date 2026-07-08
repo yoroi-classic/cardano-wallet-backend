@@ -92,6 +92,13 @@ describe('koios getAccountState', () => {
     expect(state.delegatedDrep).toBeUndefined()
   })
 
+  it('rejects an unexpected account status as malformed', async () => {
+    const { fetchImpl } = fakeFetch({ json: async () => [{ ...ROW, status: 'weird' }] })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getAccountState(STAKE)).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+
   it('surfaces an upstream error', async () => {
     const { fetchImpl } = fakeFetch({ ok: false, status: 500, text: async () => 'boom' })
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
@@ -168,19 +175,27 @@ describe('koios getAccountUtxos', () => {
 
 describe('koios submitTx', () => {
   const CBOR = '84a400818258' // even-length hex, shape not validated here
+  const TXID = 'ab'.repeat(32) // a 64-char hex transaction id
 
   it('submits cbor bytes and returns the tx hash', async () => {
-    const { fetchImpl, calls } = fakeFetch({ json: async () => 'ffee0011' })
+    const { fetchImpl, calls } = fakeFetch({ json: async () => TXID })
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
     const result = await provider.submitTx(CBOR)
 
-    expect(result).toEqual({ txHash: 'ffee0011' })
+    expect(result).toEqual({ txHash: TXID })
     expect(calls[0]?.url).toBe(`${BASE}/submittx`)
     expect(calls[0]?.method).toBe('POST')
     expect(calls[0]?.contentType).toBe('application/cbor')
     expect(calls[0]?.body).toBeInstanceOf(Uint8Array)
     expect(Buffer.from(calls[0]?.body as Uint8Array).toString('hex')).toBe(CBOR)
+  })
+
+  it('rejects a submit response that is not a 64-char hex hash', async () => {
+    const { fetchImpl } = fakeFetch({ json: async () => 'not-a-tx-id' })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.submitTx(CBOR)).rejects.toBeInstanceOf(MalformedUpstreamError)
   })
 
   it('rejects a non-hex transaction as a bad request without calling upstream', async () => {

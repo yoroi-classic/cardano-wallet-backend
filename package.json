@@ -25,6 +25,7 @@
     "check:version": "node scripts/check-version-bump.mjs"
   },
   "dependencies": {
+    "@scure/base": "^2.2.0",
     "fastify": "^5.2.0",
     "zod": "^3.24.1"
   },

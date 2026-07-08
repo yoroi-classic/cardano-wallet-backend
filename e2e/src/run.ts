@@ -73,7 +73,11 @@ async function main(): Promise<void> {
   const submitted = await client.submitTx(tx.cborHex)
   console.log(`submitted:    ${submitted.txHash}`)
   if (submitted.txHash !== tx.txHash) {
-    console.log('WARN: backend returned a different hash than we built')
+    // A mismatch means the submitted bytes differ from what we hashed, a serialization
+    // problem worth stopping on rather than polling a hash that will never confirm.
+    throw new Error(
+      `submit hash mismatch: built ${tx.txHash} but backend reported ${submitted.txHash}`,
+    )
   }
 
   console.log(`waiting for ${cfg.confirmations} confirmation(s)...`)

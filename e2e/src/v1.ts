@@ -54,9 +54,15 @@ export interface V1Client {
   getTxStatus(hash: string): Promise<V1TxStatus>
 }
 
+// Per-request timeout so a hung or unresponsive backend fails the harness with a clear
+// error instead of blocking the process indefinitely.
+const REQUEST_TIMEOUT_MS = 20_000
+
 export function createV1Client(baseUrl: string): V1Client {
   async function get<T>(path: string): Promise<T> {
-    const res = await fetch(`${baseUrl}${path}`)
+    const res = await fetch(`${baseUrl}${path}`, {
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    })
     if (!res.ok) {
       throw new Error(`GET ${path} -> ${res.status} ${await res.text().catch(() => '')}`)
     }
@@ -75,6 +81,7 @@ export function createV1Client(baseUrl: string): V1Client {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ cbor: cborHex }),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       })
       if (!res.ok) {
         throw new Error(`POST /v1/tx/submit -> ${res.status} ${await res.text().catch(() => '')}`)

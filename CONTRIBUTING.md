@@ -1,5 +1,11 @@
 # Contributing
 
+## Code style
+
+Read `STYLE_GUIDE.md` before writing code here. It covers the conventions the tooling
+can't enforce: when to use a function versus a factory versus a class, when to break
+long code into smaller pieces, types, validation, errors, and the testing policy.
+
 ## Branch flow
 
 Work flows in one direction and the gates get stricter as it goes:

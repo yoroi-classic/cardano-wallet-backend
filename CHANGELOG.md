@@ -21,3 +21,5 @@ Initial scaffold.
   smoke test.
 - CI gates that tighten from development through to main, a semver bump check, and a
   release job that tags from `package.json`.
+- Contributor docs: a code style guide covering the conventions the tooling can't
+  enforce, referenced from `CONTRIBUTING.md`.

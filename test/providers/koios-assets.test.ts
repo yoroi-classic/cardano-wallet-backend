@@ -76,6 +76,7 @@ describe('koios getTokenMetadata', () => {
       assetNameAscii: 'HOSKY',
       fingerprint: 'asset17q7r59zlc3dgw0venc80pdv566q6yguw03f0d9',
       supply: '1000000000000001',
+      source: 'registry',
       name: 'HOSKY Token',
       ticker: 'HOSKY',
       description: 'A meme token.',
@@ -135,6 +136,7 @@ describe('koios getTokenMetadata', () => {
       assetName: '',
       fingerprint: 'asset1jerjvx30k3duyjmavp20lex0sxwhyx4p07g00v',
       supply: '54',
+      source: 'none',
     })
     // Empty ascii name and absent registry fields are undefined (so JSON omits them),
     // not emitted as empty strings.
@@ -159,6 +161,145 @@ describe('koios getTokenMetadata', () => {
 
     expect(await provider.getTokenMetadata([])).toEqual([])
     expect(calls).toHaveLength(0)
+  })
+
+  it('falls back to CIP-25 mint metadata for an NFT (image + name), keyed by hex name', async () => {
+    const POLICY = 'c'.repeat(56)
+    const NAME_HEX = '4d794e4654' // "MyNFT"
+    const subject = POLICY + NAME_HEX
+    const known = {
+      [subject]: {
+        policy_id: POLICY,
+        asset_name: NAME_HEX,
+        fingerprint: 'asset1nft',
+        total_supply: '1',
+        name: null,
+        ticker: null,
+        description: null,
+        url: null,
+        decimals: null,
+        minting_tx_metadata: {
+          '721': {
+            [POLICY]: {
+              [NAME_HEX]: {
+                name: 'My NFT',
+                image: 'ipfs://QmImageHash',
+                description: 'a picture',
+                mediaType: 'image/png',
+              },
+            },
+          },
+        },
+      },
+    }
+    const { fetchImpl } = assetFetch(known)
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [token] = await provider.getTokenMetadata([subject])
+
+    expect(token?.source).toBe('cip25')
+    expect(token?.name).toBe('My NFT')
+    expect(token?.image).toBe('ipfs://QmImageHash')
+    expect(token?.description).toBe('a picture')
+  })
+
+  it('reads a CIP-25 entry keyed by the decoded asset name and joins a chunked image', async () => {
+    const POLICY = 'd'.repeat(56)
+    const NAME_HEX = '4d794e4654'
+    const subject = POLICY + NAME_HEX
+    const known = {
+      [subject]: {
+        policy_id: POLICY,
+        asset_name: NAME_HEX,
+        asset_name_ascii: 'MyNFT',
+        fingerprint: 'asset1nft2',
+        total_supply: '1',
+        name: null,
+        ticker: null,
+        description: null,
+        url: null,
+        decimals: null,
+        minting_tx_metadata: {
+          '721': {
+            [POLICY]: {
+              // Keyed by the human-readable name, and the image split into CIP-25 chunks.
+              MyNFT: { name: 'My NFT', image: ['ipfs://Qm', 'ImageHash'] },
+            },
+          },
+        },
+      },
+    }
+    const { fetchImpl } = assetFetch(known)
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [token] = await provider.getTokenMetadata([subject])
+
+    expect(token?.source).toBe('cip25')
+    expect(token?.image).toBe('ipfs://QmImageHash')
+  })
+
+  it('prefers the registry over CIP-25 when both are present', async () => {
+    const POLICY = 'e'.repeat(56)
+    const NAME_HEX = '41'
+    const subject = POLICY + NAME_HEX
+    const known = {
+      [subject]: {
+        policy_id: POLICY,
+        asset_name: NAME_HEX,
+        fingerprint: 'asset1both',
+        total_supply: '1',
+        name: 'Registry Name',
+        ticker: 'REG',
+        description: null,
+        url: null,
+        decimals: null,
+        minting_tx_metadata: {
+          '721': { [POLICY]: { [NAME_HEX]: { name: 'Onchain Name', image: 'ipfs://x' } } },
+        },
+      },
+    }
+    const { fetchImpl } = assetFetch(known)
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [token] = await provider.getTokenMetadata([subject])
+
+    expect(token?.source).toBe('registry')
+    expect(token?.name).toBe('Registry Name')
+    expect(token?.image).toBeUndefined()
+  })
+
+  // A registry entry carrying only decimals (or only a url) is unusual but legitimate. If
+  // the registry check tested just the display fields, this token would fall through to the
+  // CIP-25 branch, be labelled the wrong source, and lose its decimals, which is the value
+  // the wallet needs to render a balance correctly.
+  it.each([
+    ['decimals', { decimals: 6 }],
+    ['url', { url: 'https://token.example' }],
+  ])('treats a registry entry with only %s as a registry token', async (_field, registry) => {
+    const POLICY = 'd'.repeat(56)
+    const NAME_HEX = '42'
+    const subject = POLICY + NAME_HEX
+    const known = {
+      [subject]: {
+        policy_id: POLICY,
+        asset_name: NAME_HEX,
+        fingerprint: 'asset1sparse',
+        total_supply: '1000',
+        name: null,
+        ticker: null,
+        description: null,
+        url: null,
+        decimals: null,
+        ...registry,
+      },
+    }
+    const { fetchImpl } = assetFetch(known)
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [token] = await provider.getTokenMetadata([subject])
+
+    expect(token?.source).toBe('registry')
+    expect({ decimals: token?.decimals, url: token?.url }).toMatchObject(registry)
   })
 
   it('splits a large batch into multiple bounded upstream requests', async () => {

@@ -3,6 +3,25 @@
 All notable changes to this project are recorded here. The format follows
 Keep a Changelog, and the project uses semantic versioning.
 
+## [0.10.0] - 2026-07-08
+
+Resolves NFT and non-registry token metadata from on-chain CIP-25.
+
+### Added
+
+- `POST /v1/assets/info` now falls back to CIP-25 on-chain mint metadata when a token has
+  no CIP-26 registry entry (the usual NFT case): `name`, `description`, and an `image`
+  pointer. A new `source` field (`registry` | `cip25` | `none`) says where the display
+  fields came from; the registry is preferred over CIP-25. CIP-25 chunked strings are
+  joined, and the asset key is matched by either its hex or decoded name. All of this comes
+  from the `asset_info` response already fetched, so no extra upstream calls.
+- Live preprod integration coverage that resolves CIP-25 metadata for a real NFT.
+
+### Note
+
+- `image` is a pointer (e.g. `ipfs://...`), not image bytes. CIP-68 datum metadata is the
+  next asset addition; it needs PlutusData decoding and is deliberately separate.
+
 ## [0.9.0] - 2026-07-08
 
 Adds native-token metadata for the assets a wallet holds.

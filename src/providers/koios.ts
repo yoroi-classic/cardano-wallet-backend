@@ -296,6 +296,9 @@ const assetInfoRow = z.object({
   description: z.string().nullish(),
   url: z.string().nullish(),
   decimals: registryDecimals,
+  // Raw transaction metadata from the mint; CIP-25 (label "721") lives here. Kept opaque
+  // and walked defensively because its shape is attacker-influenced on-chain data.
+  minting_tx_metadata: z.unknown().nullish(),
 })
 
 // Ask Koios for exactly the fields we map, pulling the registry values out of the
@@ -307,12 +310,16 @@ const assetInfoRow = z.object({
 // brings that row to 326 bytes. A wallet asking about a full batch of held tokens would
 // otherwise pull megabytes of images that we parse straight into the bin. Token and NFT
 // images are served from a separate media surface.
+//
+// `minting_tx_metadata` has to be named explicitly: with a projection in place, anything
+// not listed here does not come back, and the CIP-25 fallback below reads it.
 const ASSET_INFO_SELECT = [
   'policy_id',
   'asset_name',
   'asset_name_ascii',
   'fingerprint',
   'total_supply',
+  'minting_tx_metadata',
   'name:token_registry_metadata->>name',
   'ticker:token_registry_metadata->>ticker',
   'description:token_registry_metadata->>description',
@@ -320,8 +327,50 @@ const ASSET_INFO_SELECT = [
   'decimals:token_registry_metadata->decimals',
 ].join(',')
 
+// CIP-25 allows a long string to be split across an array of chunks; join them. Anything
+// that is not a string or array of strings is ignored rather than trusted.
+function cip25String(value: unknown): string | undefined {
+  if (typeof value === 'string') return value
+  if (Array.isArray(value) && value.every((v) => typeof v === 'string')) {
+    return value.length > 0 ? value.join('') : undefined
+  }
+  return undefined
+}
+
+interface Cip25Fields {
+  name?: string
+  description?: string
+  image?: string
+}
+
+// Pull the CIP-25 entry for this asset out of the mint metadata. The asset key under the
+// policy is either the hex asset name or its decoded text form, so try both.
+function extractCip25(
+  minting: unknown,
+  policyId: string,
+  assetNameHex: string,
+  assetNameAscii: string | null | undefined,
+): Cip25Fields | undefined {
+  if (minting === null || typeof minting !== 'object') return undefined
+  const nft = (minting as Record<string, unknown>)['721']
+  if (nft === null || typeof nft !== 'object') return undefined
+  const byPolicy = (nft as Record<string, unknown>)[policyId]
+  if (byPolicy === null || typeof byPolicy !== 'object') return undefined
+  const assets = byPolicy as Record<string, unknown>
+  const entryRaw =
+    assets[assetNameHex] ?? (assetNameAscii != null ? assets[assetNameAscii] : undefined)
+  if (entryRaw === null || typeof entryRaw !== 'object') return undefined
+  const entry = entryRaw as Record<string, unknown>
+  const fields: Cip25Fields = {
+    name: cip25String(entry.name),
+    description: cip25String(entry.description),
+    image: cip25String(entry.image),
+  }
+  return fields.name || fields.description || fields.image ? fields : undefined
+}
+
 function mapTokenMetadata(row: z.infer<typeof assetInfoRow>): TokenMetadata {
-  return {
+  const base = {
     subject: row.policy_id + row.asset_name,
     policyId: row.policy_id,
     assetName: row.asset_name,
@@ -331,12 +380,49 @@ function mapTokenMetadata(row: z.infer<typeof assetInfoRow>): TokenMetadata {
     assetNameAscii: emptyToUndefined(row.asset_name_ascii),
     fingerprint: row.fingerprint,
     supply: String(row.total_supply),
-    name: row.name ?? undefined,
-    ticker: row.ticker ?? undefined,
-    description: row.description ?? undefined,
-    decimals: row.decimals ?? undefined,
-    url: row.url ?? undefined,
   }
+
+  // Registry is preferred; CIP-25 mint metadata is the fallback (the usual NFT case).
+  //
+  // Every registry field counts as "has a registry entry", not just the display ones. A
+  // token registered with only `decimals` (or only a `url`) is unusual but legitimate, and
+  // testing a subset here would drop that value on the floor and mislabel the source as
+  // cip25 or none.
+  const hasRegistry =
+    row.name != null ||
+    row.ticker != null ||
+    row.description != null ||
+    row.url != null ||
+    row.decimals != null
+  if (hasRegistry) {
+    return {
+      ...base,
+      source: 'registry',
+      name: row.name ?? undefined,
+      ticker: row.ticker ?? undefined,
+      description: row.description ?? undefined,
+      decimals: row.decimals ?? undefined,
+      url: row.url ?? undefined,
+    }
+  }
+
+  const cip25 = extractCip25(
+    row.minting_tx_metadata,
+    row.policy_id,
+    row.asset_name,
+    row.asset_name_ascii,
+  )
+  if (cip25) {
+    return {
+      ...base,
+      source: 'cip25',
+      name: cip25.name,
+      description: cip25.description,
+      image: cip25.image,
+    }
+  }
+
+  return { ...base, source: 'none' }
 }
 
 function emptyToUndefined(value: string | null | undefined): string | undefined {

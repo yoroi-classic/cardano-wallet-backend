@@ -15,6 +15,7 @@ function token(subject: string): TokenMetadata {
     assetName: subject.slice(56),
     fingerprint: 'asset1abc',
     supply: '1',
+    source: 'none',
   }
 }
 

@@ -197,15 +197,20 @@ export interface PoolInfo {
   metadata?: PoolMetadata
 }
 
+/** Where a token's display metadata was resolved from. */
+export type TokenMetadataSource = 'registry' | 'cip25' | 'none'
+
 /**
  * Normalized metadata for a native token. On-chain basics (fingerprint, supply, names)
- * always apply; the registry fields (name, ticker, description, decimals, url) come from
- * the CIP-26 off-chain token registry and are only present for tokens that registered.
+ * always apply. Display fields (name, ticker, description, decimals, url, image) are
+ * resolved with the CIP-26 off-chain token registry preferred, then the CIP-25 on-chain
+ * mint metadata (the usual NFT case); `source` says which supplied them.
  *
  * Editorial curation the closed backend layered on top (scam/verified status, an
  * "application" category, a display symbol) is not chain data and is intentionally not
- * produced here. Token/NFT images are served from a separate media surface, so the raw
- * registry logo is not inlined.
+ * produced here. `image` is a pointer (e.g. an ipfs:// or https URL), not image bytes: the
+ * bytes are served from a separate media surface, and the registry's base64 logo is not
+ * inlined.
  */
 export interface TokenMetadata {
   /** CIP-26 subject: policy id concatenated with the hex asset name. */
@@ -220,16 +225,20 @@ export interface TokenMetadata {
   fingerprint: string
   /** Total supply across all mints/burns, as a string. */
   supply: string
-  /** Human-readable name, from the token registry. */
+  /** Which metadata source supplied the display fields below. */
+  source: TokenMetadataSource
+  /** Human-readable name. */
   name?: string
-  /** Ticker, from the token registry. */
+  /** Ticker (registry only). */
   ticker?: string
-  /** Description, from the token registry. */
+  /** Description. */
   description?: string
-  /** Decimal places, from the token registry. */
+  /** Decimal places (registry only). */
   decimals?: number
-  /** Project URL, from the token registry. */
+  /** Project URL (registry only). */
   url?: string
+  /** Image pointer (URL/URI), from CIP-25 mint metadata. Not image bytes. */
+  image?: string
 }
 
 /** Query for a page of the stake-pool list. */

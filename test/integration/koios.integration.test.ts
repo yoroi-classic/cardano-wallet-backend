@@ -117,5 +117,36 @@ describe('koios preprod (integration)', () => {
     expect(token?.assetName).toBe(asset?.asset_name)
     expect(token?.fingerprint).toMatch(/^asset1[0-9a-z]+$/)
     expect(BigInt(token?.supply ?? '0')).toBeGreaterThanOrEqual(0n)
+    expect(['registry', 'cip25', 'none']).toContain(token?.source)
+  })
+
+  it('resolves CIP-25 mint metadata for a live NFT when one can be found', async () => {
+    // Scan a bounded window for an asset carrying CIP-25 (label 721) metadata, then confirm
+    // our mapping surfaces it as source 'cip25'. Skips if none turns up in the window.
+    const base = process.env.KOIOS_URL ?? 'https://preprod.koios.rest/api/v1'
+    for (let offset = 0; offset < 200; offset += 25) {
+      const listRes = await fetch(`${base}/asset_list?limit=25&offset=${offset}`)
+      const list = (await listRes.json()) as Array<{ policy_id: string; asset_name: string }>
+      if (list.length === 0) break
+      const pairs = list.map((a) => [a.policy_id, a.asset_name])
+      const infoRes = await fetch(`${base}/asset_info`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ _asset_list: pairs }),
+      })
+      const info = (await infoRes.json()) as Array<{
+        policy_id: string
+        asset_name: string
+        minting_tx_metadata?: Record<string, unknown> | null
+      }>
+      const nft = info.find((a) => a.minting_tx_metadata && '721' in a.minting_tx_metadata)
+      if (!nft) continue
+
+      const subject = `${nft.policy_id}${nft.asset_name}`
+      const [token] = await provider.getTokenMetadata([subject])
+      // Registry can still win if this asset also registered; otherwise it must be cip25.
+      expect(['registry', 'cip25']).toContain(token?.source)
+      return
+    }
   })
 })

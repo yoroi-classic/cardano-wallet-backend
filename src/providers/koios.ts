@@ -177,8 +177,9 @@ const txInfoRow = z.object({
 function mapCertificate(c: z.infer<typeof certRow>): TxCertificate {
   const kind = CERT_KIND[c.type] ?? 'other'
   const info = c.info ?? undefined
-  // For an unrecognized kind, keep the provider's raw type so nothing is lost.
-  const details = kind === 'other' ? { providerType: c.type, ...(info ?? {}) } : info
+  // For an unrecognized kind, keep the provider's raw type so nothing is lost. Spread
+  // info first so a stray `providerType` key in it can't shadow the real provider type.
+  const details = kind === 'other' ? { ...(info ?? {}), providerType: c.type } : info
   return {
     kind,
     index: c.index,

@@ -38,11 +38,13 @@ export function registerAccountRoutes(app: FastifyInstance, provider: ChainProvi
     const { after } = request.query as { after?: string }
     let afterBlock: number | undefined
     if (after !== undefined) {
-      // Digits only, so an empty or malformed cursor is a 400 rather than a silent page 0.
-      if (!/^\d+$/.test(after)) {
+      // Digits only and within safe-integer range, so an empty, malformed, or absurdly
+      // large cursor is a 400 rather than a silent page 0 or a rounded block height.
+      const n = Number(after)
+      if (!/^\d+$/.test(after) || !Number.isSafeInteger(n)) {
         throw new BadRequestError('after must be a non-negative block height')
       }
-      afterBlock = Number(after)
+      afterBlock = n
     }
     return provider.getTxHistory(assertStakeAddress(stake), afterBlock)
   })

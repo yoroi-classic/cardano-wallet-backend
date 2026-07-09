@@ -134,5 +134,11 @@ describe('account routes', () => {
 
     const empty = await app.inject({ method: 'GET', url: `/v1/account/${STAKE}/txs?after=` })
     expect(empty.statusCode).toBe(400)
+
+    const huge = await app.inject({
+      method: 'GET',
+      url: `/v1/account/${STAKE}/txs?after=999999999999999999999`,
+    })
+    expect(huge.statusCode).toBe(400)
   })
 })

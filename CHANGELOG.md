@@ -3,6 +3,14 @@
 All notable changes to this project are recorded here. The format follows
 Keep a Changelog, and the project uses semantic versioning.
 
+## [0.5.0] - 2026-07-08
+
+### Added
+
+- `POST /v1/addresses/filter-used`: given a batch of addresses, returns those that have
+  appeared on chain (been used), for receive-address discovery. Built from Koios
+  `address_info`.
+
 ## [0.4.0] - 2026-07-08
 
 Toward parity with the data the existing wallet reads from the closed backend.

@@ -353,6 +353,16 @@ export function createKoiosProvider(config: KoiosConfig): ChainProvider {
       }
     },
 
+    async filterUsedAddresses(addresses: string[]): Promise<string[]> {
+      if (addresses.length === 0) return []
+      // Koios address_info returns a row only for addresses seen on chain, so the ones
+      // that come back are the used set. Preserve the caller's order.
+      const data = await postJson('/address_info', { _addresses: addresses })
+      const rows = parseWith(z.array(z.object({ address: z.string() })), data, '/address_info')
+      const used = new Set(rows.map((r) => r.address))
+      return addresses.filter((a) => used.has(a))
+    },
+
     async getAccountState(stakeAddress: string): Promise<AccountState> {
       const data = await postJson('/account_info', { _stake_addresses: [stakeAddress] })
       const rows = parseWith(z.array(accountInfoRow), data, '/account_info')

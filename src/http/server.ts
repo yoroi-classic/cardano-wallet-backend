@@ -2,6 +2,7 @@ import Fastify, { type FastifyInstance, type FastifyBaseLogger } from 'fastify'
 import { isAppError } from '../domain/errors.js'
 import type { ChainProvider } from '../providers/provider.js'
 import { registerAccountRoutes } from './routes/account.js'
+import { registerAddressRoutes } from './routes/addresses.js'
 import { registerChainRoutes } from './routes/chain.js'
 import { registerHealthRoutes } from './routes/health.js'
 import { registerTxRoutes } from './routes/tx.js'
@@ -38,6 +39,7 @@ export function buildServer(opts: BuildServerOptions): FastifyInstance {
   registerHealthRoutes(app)
   registerChainRoutes(app, opts.provider)
   registerAccountRoutes(app, opts.provider)
+  registerAddressRoutes(app, opts.provider)
   registerTxRoutes(app, opts.provider)
 
   return app

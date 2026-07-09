@@ -24,6 +24,9 @@ export interface ChainProvider {
   /** Protocol parameters for the latest epoch. */
   getProtocolParams(): Promise<ProtocolParams>
 
+  /** Of the given addresses, which have appeared on chain (been used). */
+  filterUsedAddresses(addresses: string[]): Promise<string[]>
+
   /** Stake-account state: balance, rewards, and current delegations. */
   getAccountState(stakeAddress: string): Promise<AccountState>
 

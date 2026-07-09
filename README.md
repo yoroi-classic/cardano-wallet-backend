@@ -39,6 +39,7 @@ curl localhost:3010/v1/chain/protocol-params
 | GET    | `/v1/account/{stake}/state` | `{ registered, balance, rewardsAvailable, ... }`     |
 | GET    | `/v1/account/{stake}/utxos` | array of UTxOs incl. assets and inline datums        |
 | GET    | `/v1/account/{stake}/txs`   | transaction history (oldest first, `?after={block}`) |
+| POST   | `/v1/addresses/filter-used` | of `{ addresses: [...] }`, the ones seen on chain    |
 | POST   | `/v1/tx/submit`             | `{ txHash }` from `{ "cbor": "<hex tx>" }`           |
 | GET    | `/v1/tx/{hash}/status`      | `{ seen, confirmations }`                            |
 

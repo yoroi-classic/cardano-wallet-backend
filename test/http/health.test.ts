@@ -11,6 +11,7 @@ const stubProvider: ChainProvider = {
   name: 'stub',
   getTip: async () => ({ block: 1, slot: 1, epoch: 1, hash: 'x' }),
   getProtocolParams: unused,
+  filterUsedAddresses: unused,
   getAccountState: unused,
   getAccountUtxos: unused,
   getTxHistory: unused,

@@ -14,6 +14,7 @@ function providerWith(overrides: Partial<ChainProvider>): ChainProvider {
     name: 'fake',
     getTip: unused,
     getProtocolParams: unused,
+    filterUsedAddresses: unused,
     getAccountState: unused,
     getAccountUtxos: unused,
     getTxHistory: unused,

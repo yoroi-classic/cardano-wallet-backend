@@ -86,13 +86,38 @@ async function main(): Promise<void> {
     const status = await client.getTxStatus(tx.txHash)
     console.log(`  seen=${status.seen} confirmations=${status.confirmations}`)
     if (status.confirmations >= cfg.confirmations) {
-      // The tx is in a block, so it should now show up in history via /v1.
-      const history = await client.getTxHistory(wallet.stakeAddress)
+      // The tx is in a block, so it should now show up in history via /v1. History is
+      // capped and returned oldest-first, so page from the tip we saw before submitting:
+      // our tx landed in a later block, so it is guaranteed to fall inside this window.
+      const history = await client.getTxHistory(wallet.stakeAddress, tip.block)
       const present = history.some((t) => t.txHash === tx.txHash)
-      console.log(`history:      ${history.length} tx(s), this one present: ${present}`)
+      console.log(
+        `history:      ${history.length} tx(s) after block ${tip.block}, this one present: ${present}`,
+      )
       if (!present) {
         throw new Error('submitted transaction did not appear in /v1 history')
       }
+
+      // filter-used: the payment address just transacted, so it must come back as used;
+      // a fresh derived address on the same account must be accepted as well-formed yet
+      // reported as unused.
+      const filtered = await client.filterUsedAddresses([
+        wallet.paymentAddress,
+        wallet.unusedAddress,
+      ])
+      const paymentUsed = filtered.includes(wallet.paymentAddress)
+      const freshExcluded = !filtered.includes(wallet.unusedAddress)
+      console.log('filter-used:')
+      console.log(`  payment addr (expect used):     ${wallet.paymentAddress}`)
+      console.log(`  fresh addr   (expect unused):   ${wallet.unusedAddress}`)
+      console.log(
+        `  returned used set:              ${filtered.length ? filtered.join(', ') : '(none)'}`,
+      )
+      console.log(`  payment used=${paymentUsed}, fresh addr excluded=${freshExcluded}`)
+      if (!paymentUsed || !freshExcluded) {
+        throw new Error('filter-used did not classify the payment and fresh addresses correctly')
+      }
+
       console.log('confirmed and in history. vertical slice complete.')
       return
     }

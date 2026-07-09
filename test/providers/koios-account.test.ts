@@ -342,7 +342,7 @@ describe('koios getTxHistory', () => {
         },
       ],
       withdrawals: [{ stakeAddress: 'stake_w', amount: '250000' }],
-      certificates: [{ kind: 'stake_delegation', index: 0, details: { pool: 'p' } }],
+      certificates: [{ kind: 'stake_delegation', index: 0 }],
       metadata: undefined,
     })
     expect(history[1]?.metadata).toEqual({ '674': { msg: ['hi'] } })
@@ -381,8 +381,8 @@ describe('koios getTxHistory', () => {
     const [tx] = await provider.getTxHistory(STAKE)
 
     expect(tx?.certificates).toEqual([
-      { kind: 'stake_registration', index: 0, details: { stake_address: 's' } },
-      { kind: 'other', index: 1, details: { providerType: 'some_future_cert', foo: 'bar' } },
+      { kind: 'stake_registration', index: 0 },
+      { kind: 'other', index: 1 },
     ])
   })
 
@@ -412,5 +412,35 @@ describe('koios getTxHistory', () => {
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
     await expect(provider.getTxHistory(STAKE)).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+})
+
+describe('koios filterUsedAddresses', () => {
+  it('returns only the addresses Koios reports as seen, in input order', async () => {
+    const { fetchImpl, calls } = fakeFetch({
+      json: async () => [{ address: 'addrA' }, { address: 'addrC' }],
+    })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const used = await provider.filterUsedAddresses(['addrA', 'addrB', 'addrC'])
+
+    expect(used).toEqual(['addrA', 'addrC'])
+    expect(calls[0]?.url).toBe(`${BASE}/address_info`)
+    expect(JSON.parse(String(calls[0]?.body))).toEqual({ _addresses: ['addrA', 'addrB', 'addrC'] })
+  })
+
+  it('returns empty without calling upstream for an empty list', async () => {
+    const { fetchImpl, calls } = fakeFetch({ json: async () => [] })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.filterUsedAddresses([])).resolves.toEqual([])
+    expect(calls).toHaveLength(0)
+  })
+
+  it('surfaces an upstream error', async () => {
+    const { fetchImpl } = fakeFetch({ ok: false, status: 500, text: async () => 'x' })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.filterUsedAddresses(['a'])).rejects.toBeInstanceOf(ProviderError)
   })
 })

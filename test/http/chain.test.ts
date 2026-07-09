@@ -41,6 +41,7 @@ function providerWith(overrides: Partial<ChainProvider>): ChainProvider {
     name: 'fake',
     getTip: async () => structuredClone(TIP),
     getProtocolParams: async () => structuredClone(PARAMS),
+    filterUsedAddresses: unused,
     getAccountState: unused,
     getAccountUtxos: unused,
     getTxHistory: unused,

@@ -56,7 +56,9 @@ export interface V1Client {
   getProtocolParams(): Promise<V1ProtocolParams>
   getAccountState(stake: string): Promise<V1AccountState>
   getAccountUtxos(stake: string): Promise<V1Utxo[]>
-  getTxHistory(stake: string): Promise<V1Transaction[]>
+  /** History oldest-first; `afterBlock` pages forward past that block height. */
+  getTxHistory(stake: string, afterBlock?: number): Promise<V1Transaction[]>
+  filterUsedAddresses(addresses: string[]): Promise<string[]>
   submitTx(cborHex: string): Promise<{ txHash: string }>
   getTxStatus(hash: string): Promise<V1TxStatus>
 }
@@ -76,25 +78,31 @@ export function createV1Client(baseUrl: string): V1Client {
     return (await res.json()) as T
   }
 
+  async function post<T>(path: string, body: unknown): Promise<T> {
+    const res = await fetch(`${baseUrl}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    })
+    if (!res.ok) {
+      throw new Error(`POST ${path} -> ${res.status} ${await res.text().catch(() => '')}`)
+    }
+    return (await res.json()) as T
+  }
+
   return {
     getHealth: () => get<{ status?: string; service?: string }>('/health'),
     getTip: () => get<V1Tip>('/v1/chain/tip'),
     getProtocolParams: () => get<V1ProtocolParams>('/v1/chain/protocol-params'),
     getAccountState: (stake) => get<V1AccountState>(`/v1/account/${stake}/state`),
     getAccountUtxos: (stake) => get<V1Utxo[]>(`/v1/account/${stake}/utxos`),
-    getTxHistory: (stake) => get<V1Transaction[]>(`/v1/account/${stake}/txs`),
-    getTxStatus: (hash) => get<V1TxStatus>(`/v1/tx/${hash}/status`),
-    submitTx: async (cborHex) => {
-      const res = await fetch(`${baseUrl}/v1/tx/submit`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ cbor: cborHex }),
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      })
-      if (!res.ok) {
-        throw new Error(`POST /v1/tx/submit -> ${res.status} ${await res.text().catch(() => '')}`)
-      }
-      return (await res.json()) as { txHash: string }
+    getTxHistory: (stake, afterBlock) => {
+      const suffix = afterBlock === undefined ? '' : `?after=${afterBlock}`
+      return get<V1Transaction[]>(`/v1/account/${stake}/txs${suffix}`)
     },
+    getTxStatus: (hash) => get<V1TxStatus>(`/v1/tx/${hash}/status`),
+    filterUsedAddresses: (addresses) => post<string[]>('/v1/addresses/filter-used', { addresses }),
+    submitTx: (cborHex) => post<{ txHash: string }>('/v1/tx/submit', { cbor: cborHex }),
   }
 }

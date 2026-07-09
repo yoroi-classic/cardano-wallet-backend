@@ -257,9 +257,9 @@ export interface TokenMetadata {
 export type DrepStatus = 'registered' | 'deregistered' | 'not_registered'
 
 /**
- * Normalized info for a delegate representative (DRep). Off-chain metadata (the DRep's
- * name/bio, CIP-119) is not resolved here; `metadataUrl`/`metadataHash` point at it so a
- * client or a later hydration step can fetch it. Lovelace values are strings.
+ * Normalized info for a delegate representative (DRep). Off-chain metadata (CIP-119) is
+ * resolved best-effort into `name`/`image`; `metadataUrl`/`metadataHash` still point at the
+ * raw source. Lovelace values are strings.
  */
 export interface DrepInfo {
   /**
@@ -286,6 +286,10 @@ export interface DrepInfo {
   metadataUrl?: string
   /** Hash of the DRep's off-chain metadata, if any. */
   metadataHash?: string
+  /** Display name from off-chain metadata (CIP-119 givenName), resolved best-effort. */
+  name?: string
+  /** Image pointer (URL/URI) from off-chain metadata. Not image bytes. */
+  image?: string
 }
 
 /** Query for a page of the DRep list. */

@@ -3,6 +3,26 @@
 All notable changes to this project are recorded here. The format follows
 Keep a Changelog, and the project uses semantic versioning.
 
+## [0.13.0] - 2026-07-08
+
+Resolves DRep display names from off-chain metadata.
+
+### Added
+
+- DRep info (`POST /v1/governance/dreps/info` and `GET /v1/governance/dreps`) now resolves
+  the DRep's off-chain (CIP-119) `name` and `image` pointer best-effort, via Koios
+  `drep_metadata`. Both the CIP-119 `body.givenName` shape and a flatter top-level `name`
+  are handled, and the metadata is walked defensively. `image` is a pointer, not image bytes.
+
+### Note
+
+- Name resolution is best-effort in every direction, not just when the call outright fails.
+  A `drep_metadata` response that comes back 200 with an unexpected shape is treated the same
+  as no metadata at all, because the likeliest version of this is Koios changing a field we do
+  not even read, and a DRep's on-chain standing should not disappear over a missing name.
+- The metadata request is chunked and matched by credential hex, the same as `drep_info`, so
+  a DRep asked for by its deprecated CIP-105 id still gets its name.
+
 ## [0.12.0] - 2026-07-08
 
 Adds governance DRep data for the delegate-your-vote flow.

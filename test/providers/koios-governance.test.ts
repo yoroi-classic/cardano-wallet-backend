@@ -156,6 +156,38 @@ describe('koios getDrepInfo', () => {
     }
   })
 
+  // Name resolution is best-effort, and that has to hold for every way drep_metadata can go
+  // wrong, not just an outright failure. A 200 carrying an unexpected shape is the likeliest
+  // case (Koios changing a field we do not even need), and it must not take the DRep with it.
+  it.each([
+    ['a schema mismatch on a 200', { ok: true, body: [{ unexpected: 'shape' }] }],
+    ['a hard failure', { ok: false, body: [] }],
+    ['a non-array body', { ok: true, body: { not: 'an array' } }],
+  ])('still returns drep info when drep_metadata answers with %s', async (_case, meta) => {
+    const calls: Call[] = []
+    const fetchImpl: FetchLike = async (url, init) => {
+      calls.push({ url, method: init?.method, body: init?.body })
+      if (url.endsWith('/drep_metadata')) {
+        return {
+          ok: meta.ok,
+          status: meta.ok ? 200 : 500,
+          json: async () => meta.body,
+          text: async () => '',
+        }
+      }
+      return { ok: true, status: 200, json: async () => [drepRow(DREP_A)], text: async () => '' }
+    }
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [drep] = await provider.getDrepInfo([DREP_A])
+
+    // The on-chain info survives; only the name is missing.
+    expect(drep?.drepId).toBe(DREP_A)
+    expect(drep?.status).toBe('registered')
+    expect(drep?.votingPower).toBe('820331766436')
+    expect(drep?.name).toBeUndefined()
+  })
+
   it('rejects an unexpected drep_status as malformed upstream', async () => {
     const { fetchImpl } = fakeFetch(async () => [{ ...drepRow(DREP_A), drep_status: 'sleeping' }])
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
@@ -172,11 +204,85 @@ describe('koios getDrepInfo', () => {
 
     await provider.getDrepInfo(ids)
 
-    expect(calls).toHaveLength(3)
-    for (const call of calls) {
-      const sent = (JSON.parse(String(call.body)) as { _drep_ids: string[] })._drep_ids
-      expect(sent.length).toBeLessThanOrEqual(50)
+    // Both drep_info and its best-effort drep_metadata companion have to respect the cap.
+    for (const path of ['/drep_info', '/drep_metadata']) {
+      const sent = calls.filter((c) => c.url.endsWith(path))
+      expect(sent, path).toHaveLength(3)
+      for (const call of sent) {
+        const body = (JSON.parse(String(call.body)) as { _drep_ids: string[] })._drep_ids
+        expect(body.length).toBeLessThanOrEqual(50)
+      }
     }
+  })
+})
+
+// Routes /drep_info and /drep_metadata to separate responses; /drep_metadata may throw.
+function infoAndMetaFetch(
+  infoRows: unknown,
+  metaRows: unknown | (() => never),
+): { fetchImpl: FetchLike; calls: Call[] } {
+  const calls: Call[] = []
+  const fetchImpl: FetchLike = async (url, init) => {
+    calls.push({ url, method: init?.method, body: init?.body })
+    if (url.includes('/drep_metadata')) {
+      if (typeof metaRows === 'function') return metaRows()
+      return { ok: true, status: 200, json: async () => metaRows, text: async () => '' }
+    }
+    return { ok: true, status: 200, json: async () => infoRows, text: async () => '' }
+  }
+  return { fetchImpl, calls }
+}
+
+describe('koios getDrepInfo off-chain metadata resolution', () => {
+  it('resolves a CIP-119 givenName and image', async () => {
+    const { fetchImpl } = infoAndMetaFetch(
+      [drepRow(DREP_A)],
+      [
+        {
+          drep_id: DREP_A,
+          meta_json: { body: { givenName: 'Eternal_MK', image: { contentUrl: 'ipfs://Qm' } } },
+        },
+      ],
+    )
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [drep] = await provider.getDrepInfo([DREP_A])
+    expect(drep?.name).toBe('Eternal_MK')
+    expect(drep?.image).toBe('ipfs://Qm')
+  })
+
+  it('falls back to a flat top-level name', async () => {
+    const { fetchImpl } = infoAndMetaFetch(
+      [drepRow(DREP_A)],
+      [{ drep_id: DREP_A, meta_json: { name: 'Flat Name', ticker: 'FN' } }],
+    )
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [drep] = await provider.getDrepInfo([DREP_A])
+    expect(drep?.name).toBe('Flat Name')
+    expect(drep?.image).toBeUndefined()
+  })
+
+  it('leaves the name unset when metadata is null or unfetched', async () => {
+    const { fetchImpl } = infoAndMetaFetch(
+      [drepRow(DREP_A)],
+      [{ drep_id: DREP_A, meta_json: null }],
+    )
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [drep] = await provider.getDrepInfo([DREP_A])
+    expect(drep?.name).toBeUndefined()
+  })
+
+  it('still returns drep info when the metadata call fails', async () => {
+    const { fetchImpl } = infoAndMetaFetch([drepRow(DREP_A)], () => {
+      throw new Error('drep_metadata upstream error')
+    })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [drep] = await provider.getDrepInfo([DREP_A])
+    expect(drep?.drepId).toBe(DREP_A)
+    expect(drep?.name).toBeUndefined()
   })
 })
 

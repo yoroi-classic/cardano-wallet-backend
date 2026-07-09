@@ -594,6 +594,26 @@ function mapDrepInfo(row: z.infer<typeof drepInfoRow>): DrepInfo {
     metadataHash: row.meta_hash ?? undefined,
   }
 }
+
+const drepMetadataRow = z.object({
+  drep_id: z.string(),
+  // Off-chain (CIP-119) JSON, resolved by Koios. Attacker-influenced, so walked defensively;
+  // null when Koios hasn't fetched it or it failed to parse.
+  meta_json: z.unknown().nullish(),
+})
+
+// CIP-119 puts the display name at body.givenName; some DReps use a flatter top-level
+// { name, ... }. Try both. The image, when present, is a URL under body.image.contentUrl.
+function drepMetaFields(metaJson: unknown): { name?: string; image?: string } {
+  if (!isRecord(metaJson)) return {}
+  const str = (v: unknown): string | undefined =>
+    typeof v === 'string' && v.length > 0 ? v : undefined
+  const body = isRecord(metaJson.body) ? metaJson.body : undefined
+  const name = str(body?.givenName) ?? str(metaJson.name)
+  const image = body && isRecord(body.image) ? str(body.image.contentUrl) : undefined
+  return { ...(name ? { name } : {}), ...(image ? { image } : {}) }
+}
+
 // Koios caps the asset_info request body at ~5 KB, so send subjects in bounded chunks.
 const ASSET_INFO_CHUNK = 20
 
@@ -793,28 +813,67 @@ export function createKoiosProvider(config: KoiosConfig): ChainProvider {
     return ids
   }
 
-  // Hydrate a set of drep ids with full drep_info, preserving the input order. Unknown ids
-  // are simply absent from Koios, so the result is never longer than the input.
+  // Off-chain DRep names and images, best-effort.
+  //
+  // Best-effort means exactly that: a DRep's name is a nicety, its on-chain standing is not.
+  // Every failure mode here returns an empty map rather than throwing, so a bad
+  // /drep_metadata response can never take down a DRep lookup that otherwise succeeded.
+  //
+  // That includes a 200 whose body does not match the schema, which is why the parse is
+  // guarded too. An unguarded parse would make the "best effort" claim false for the one
+  // case most likely to happen: Koios changing the shape of a field we do not even need.
+  async function drepMetadataByHex(
+    drepIds: string[],
+  ): Promise<Map<string, { name?: string; image?: string }>> {
+    const byHex = new Map<string, { name?: string; image?: string }>()
+    for (const chunk of chunked(drepIds, DREP_INFO_CHUNK)) {
+      try {
+        const data = await postJson('/drep_metadata', { _drep_ids: chunk })
+        const rows = parseWith(z.array(drepMetadataRow), data, '/drep_metadata')
+        for (const row of rows) {
+          const hex = drepCredentialHex(row.drep_id)
+          if (hex !== undefined) byHex.set(hex, drepMetaFields(row.meta_json))
+        }
+      } catch {
+        // Names for this chunk are simply unavailable. The DReps still resolve.
+        continue
+      }
+    }
+    return byHex
+  }
+
+  // Hydrate a set of drep ids with full drep_info, plus best-effort off-chain name/image.
+  // Preserves the input order; unknown ids are absent, so the result is never longer than
+  // the input.
   //
   // Chunked for the same reason as pool_info: Koios rejects an oversized body with a 413.
   //
-  // The response is indexed by hex, not by the bech32 id, because the two are not
+  // Responses are indexed by credential hex, not by the bech32 id, because the two are not
   // necessarily the same string the caller sent. A DRep has both a CIP-129 id and a
   // deprecated CIP-105 one, Koios accepts either on the way in but always answers with the
   // CIP-129 form, so a caller asking by CIP-105 would never match its own row and the DRep
   // would silently vanish from the result. The hex credential is the same either way.
   async function drepInfoByIds(drepIds: string[]): Promise<DrepInfo[]> {
     if (drepIds.length === 0) return []
-    const byHex = new Map<string, z.infer<typeof drepInfoRow>>()
-    for (const chunk of chunked(drepIds, DREP_INFO_CHUNK)) {
-      const data = await postJson('/drep_info', { _drep_ids: chunk })
-      const rows = parseWith(z.array(drepInfoRow), data, '/drep_info')
-      for (const row of rows) byHex.set(row.hex.toLowerCase(), row)
-    }
+
+    const [infoByHex, metaByHex] = await Promise.all([
+      (async () => {
+        const byHex = new Map<string, z.infer<typeof drepInfoRow>>()
+        for (const chunk of chunked(drepIds, DREP_INFO_CHUNK)) {
+          const data = await postJson('/drep_info', { _drep_ids: chunk })
+          const rows = parseWith(z.array(drepInfoRow), data, '/drep_info')
+          for (const row of rows) byHex.set(row.hex.toLowerCase(), row)
+        }
+        return byHex
+      })(),
+      drepMetadataByHex(drepIds),
+    ])
+
     return drepIds.flatMap((id) => {
       const hex = drepCredentialHex(id)
-      const row = hex === undefined ? undefined : byHex.get(hex)
-      return row ? [mapDrepInfo(row)] : []
+      if (hex === undefined) return []
+      const row = infoByHex.get(hex)
+      return row ? [{ ...mapDrepInfo(row), ...metaByHex.get(hex) }] : []
     })
   }
 

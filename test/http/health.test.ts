@@ -18,6 +18,7 @@ const stubProvider: ChainProvider = {
   submitTx: unused,
   getTxStatus: unused,
   getPoolInfo: unused,
+  getPoolList: unused,
 }
 
 let app: FastifyInstance

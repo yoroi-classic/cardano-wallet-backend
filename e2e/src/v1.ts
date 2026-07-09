@@ -69,6 +69,7 @@ export interface V1Client {
   /** History oldest-first; `afterBlock` pages forward past that block height. */
   getTxHistory(stake: string, afterBlock?: number): Promise<V1Transaction[]>
   filterUsedAddresses(addresses: string[]): Promise<string[]>
+  getPoolList(params: { limit?: number; offset?: number; ticker?: string }): Promise<V1PoolInfo[]>
   getPoolInfo(poolIds: string[]): Promise<V1PoolInfo[]>
   submitTx(cborHex: string): Promise<{ txHash: string }>
   getTxStatus(hash: string): Promise<V1TxStatus>
@@ -114,6 +115,14 @@ export function createV1Client(baseUrl: string): V1Client {
     },
     getTxStatus: (hash) => get<V1TxStatus>(`/v1/tx/${hash}/status`),
     filterUsedAddresses: (addresses) => post<string[]>('/v1/addresses/filter-used', { addresses }),
+    getPoolList: ({ limit, offset, ticker }) => {
+      const q = new URLSearchParams()
+      if (limit !== undefined) q.set('limit', String(limit))
+      if (offset !== undefined) q.set('offset', String(offset))
+      if (ticker !== undefined) q.set('ticker', ticker)
+      const suffix = q.toString() ? `?${q.toString()}` : ''
+      return get<V1PoolInfo[]>(`/v1/pools${suffix}`)
+    },
     getPoolInfo: (poolIds) => post<V1PoolInfo[]>('/v1/pools/info', { poolIds }),
     submitTx: (cborHex) => post<{ txHash: string }>('/v1/tx/submit', { cbor: cborHex }),
   }

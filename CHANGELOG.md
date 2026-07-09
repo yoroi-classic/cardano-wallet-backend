@@ -3,6 +3,34 @@
 All notable changes to this project are recorded here. The format follows
 Keep a Changelog, and the project uses semantic versioning.
 
+## [0.8.0] - 2026-07-08
+
+Adds the stake-pool list for the delegation browse screen.
+
+### Added
+
+- `GET /v1/pools?limit=&offset=&ticker=`: a neutrally-ordered page of registered pools,
+  largest active stake first (no promotional ranking), each hydrated with full pool info.
+  `ticker` filters by a case-insensitive substring (validated to alphanumeric so it can't
+  smuggle PostgREST filter syntax upstream). Built from Koios `pool_list` + `pool_info`.
+- Live preprod integration coverage: a neutral page ordered by active stake, plus a ticker
+  filter.
+- The e2e slice now drives both pool endpoints entirely through `/v1`: it lists the top
+  pool and reads it back by id, confirming the two agree (no direct upstream calls).
+
+### Note
+
+- Free-text search is by ticker only. Koios `pool_list` can filter on ticker but not on
+  the off-chain pool name, so name search would need a metadata index and is deferred.
+- The stake ordering is computed here rather than upstream. Koios stores `active_stake` as
+  a text column, so ordering on it in the query sorts lexicographically and ranks a pool
+  holding 9,998,813,687 lovelace above one holding 7,682,048,683,977. The registered set is
+  read in full (id and stake only, which is cheap), sorted numerically, and only the
+  requested page is hydrated with full pool info. Ties break on pool id so that paging is
+  stable and a pool cannot appear on two pages, or on neither.
+- Pool hydration is chunked. Koios answers a `/pool_info` body carrying 100 ids with a 413,
+  which both the 100-id `/v1/pools/info` batch and a full list page would have hit.
+
 ## [0.7.1] - 2026-07-09
 
 Modernizes the backend build and CI toolchain checks.

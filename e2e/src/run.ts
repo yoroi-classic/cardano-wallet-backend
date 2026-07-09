@@ -10,14 +10,6 @@ const sleep = (seconds: number): Promise<void> =>
 const FEE_BUFFER_LOVELACE = 300_000n
 const MAX_POLLS = 60
 
-// Only used to discover a currently-registered pool id to read back through our /v1
-// surface (a testnet convenience, not part of what we're validating). KOIOS_URL overrides.
-const KOIOS_BASE: Record<string, string> = {
-  mainnet: 'https://api.koios.rest/api/v1',
-  preprod: 'https://preprod.koios.rest/api/v1',
-  preview: 'https://preview.koios.rest/api/v1',
-}
-
 async function main(): Promise<void> {
   const cfg = loadConfig()
   const wallet = deriveWallet(cfg.mnemonic, cfg.networkId)
@@ -54,26 +46,22 @@ async function main(): Promise<void> {
     `utxos:        ${utxos.length} total, ${adaOnly.length} ADA-only (${ada(spendable.toString())} ADA spendable)`,
   )
 
-  // Pool info: pick a currently-registered pool from the chain, then confirm our /v1
-  // surface returns its normalized info correctly. Runs on the read path so it is
-  // exercised even when the wallet is unfunded.
-  const koiosBase = (process.env.KOIOS_URL ?? KOIOS_BASE[cfg.network] ?? '').replace(/\/+$/, '')
-  const listRes = await fetch(`${koiosBase}/pool_list?pool_status=eq.registered&limit=1`, {
-    signal: AbortSignal.timeout(20_000),
-  })
-  const poolList = (await listRes.json()) as Array<{ pool_id_bech32?: string }>
-  const samplePoolId = poolList[0]?.pool_id_bech32
-  if (!samplePoolId) {
-    throw new Error('could not find a registered pool on-chain to exercise pool info')
+  // Pools: exercise both /v1 pool endpoints entirely through the backend. List the top
+  // pool, then read it back by id and confirm the two agree. Runs on the read path so it
+  // is exercised even when the wallet is unfunded.
+  const listed = await client.getPoolList({ limit: 1 })
+  const top = listed[0]
+  if (!top || !/^pool1[0-9a-z]+$/.test(top.poolId) || !/^[0-9a-f]{56}$/.test(top.poolIdHex)) {
+    throw new Error('pool list did not return a well-formed pool')
   }
-  const [pool] = await client.getPoolInfo([samplePoolId])
-  if (!pool || pool.poolId !== samplePoolId || !/^[0-9a-f]{56}$/.test(pool.poolIdHex)) {
-    throw new Error(`pool info did not come back correctly for ${samplePoolId}`)
+  const [byId] = await client.getPoolInfo([top.poolId])
+  if (!byId || byId.poolId !== top.poolId) {
+    throw new Error(`pool info by id did not match the listed pool ${top.poolId}`)
   }
-  const poolLabel = pool.metadata?.ticker ?? pool.metadata?.name ?? '(no metadata)'
-  console.log(`pool info:    ${pool.poolId}`)
+  const poolLabel = top.metadata?.ticker ?? top.metadata?.name ?? '(no metadata)'
+  console.log(`pools:        list[0] and info agree for ${top.poolId}`)
   console.log(
-    `  ${poolLabel}  status=${pool.status}  margin=${pool.margin}  saturation=${pool.saturation}  liveStake=${ada(pool.liveStake)} ADA`,
+    `  ${poolLabel}  status=${top.status}  margin=${top.margin}  saturation=${top.saturation}  liveStake=${ada(top.liveStake)} ADA`,
   )
 
   const needed = BigInt(cfg.amountLovelace) + FEE_BUFFER_LOVELACE

@@ -64,6 +64,7 @@ function providerWith(
     getAccountUtxos: unused,
     getTxHistory: unused,
     getPoolInfo: unused,
+    getPoolList: unused,
     submitTx: unused,
     getTxStatus: unused,
     ...overrides,

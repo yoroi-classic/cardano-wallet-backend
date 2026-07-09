@@ -1,6 +1,7 @@
 import type {
   AccountState,
   PoolInfo,
+  PoolListParams,
   ProtocolParams,
   Tip,
   TxStatus,
@@ -51,6 +52,13 @@ export interface ChainProvider {
    * result is never longer than `poolIds`.
    */
   getPoolInfo(poolIds: string[]): Promise<PoolInfo[]>
+
+  /**
+   * A neutrally-ordered page of registered stake pools (largest active stake first, no
+   * promotional ranking), each with full pool info. `ticker` optionally filters by ticker
+   * (case-insensitive substring).
+   */
+  getPoolList(params: PoolListParams): Promise<PoolInfo[]>
 
   /** Submit a serialized (CBOR hex) signed transaction. Returns the transaction hash. */
   submitTx(cborHex: string): Promise<{ txHash: string }>

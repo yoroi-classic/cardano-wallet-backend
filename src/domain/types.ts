@@ -197,6 +197,16 @@ export interface PoolInfo {
   metadata?: PoolMetadata
 }
 
+/** Query for a page of the stake-pool list. */
+export interface PoolListParams {
+  /** Maximum pools to return. */
+  limit: number
+  /** How many pools to skip, for paging. */
+  offset: number
+  /** Case-insensitive ticker substring filter, when present. */
+  ticker?: string
+}
+
 /** Confirmation status for a submitted transaction. */
 export interface TxStatus {
   /** Whether the transaction has been seen on chain. */

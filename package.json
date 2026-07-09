@@ -1,6 +1,6 @@
 {
   "name": "cardano-wallet-backend",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Provider-agnostic Cardano wallet data backend for Yoroi Classic (Koios, Blockfrost, bring-your-own Dingo node)",
   "type": "module",
   "engines": {

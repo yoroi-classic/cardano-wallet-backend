@@ -3,6 +3,26 @@
 All notable changes to this project are recorded here. The format follows
 Keep a Changelog, and the project uses semantic versioning.
 
+## [0.7.0] - 2026-07-08
+
+Closes the account-rewards parity gap with the closed backend.
+
+### Added
+
+- `GET /v1/account/{stake}/state` now also returns `rewardsSum` (lifetime rewards ever
+  earned) and `withdrawalsSum` (lifetime rewards ever withdrawn), alongside the existing
+  `rewardsAvailable` (withdrawable now). Together these cover what the wallet's account
+  state needs from the closed backend's per-reward-address totals
+  (`spendable`/`nonSpendable`/`withdrawals`): the identity
+  `rewardsSum - withdrawalsSum == rewardsAvailable` holds, and is checked live on preprod.
+  Sourced from Koios `account_info`.
+
+### Note
+
+- A per-epoch reward history endpoint was considered and deliberately not built: the
+  wallet consumes only aggregate reward totals (one figure per reward address), so a
+  per-epoch list would be new surface beyond parity rather than parity.
+
 ## [0.6.0] - 2026-07-08
 
 Toward parity with the pool data the existing wallet reads from the closed backend.

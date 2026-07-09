@@ -21,6 +21,8 @@ function providerWith(overrides: Partial<ChainProvider>): ChainProvider {
     getPoolInfo: unused,
     getPoolList: unused,
     getTokenMetadata: unused,
+    getDrepInfo: unused,
+    getDrepList: unused,
     submitTx: async () => ({ txHash: TX_HASH }),
     getTxStatus: async () => ({ seen: true, confirmations: 3 }),
     ...overrides,

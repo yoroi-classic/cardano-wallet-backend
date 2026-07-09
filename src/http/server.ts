@@ -5,6 +5,7 @@ import { registerAccountRoutes } from './routes/account.js'
 import { registerAddressRoutes } from './routes/addresses.js'
 import { registerAssetRoutes } from './routes/assets.js'
 import { registerChainRoutes } from './routes/chain.js'
+import { registerGovernanceRoutes } from './routes/governance.js'
 import { registerHealthRoutes } from './routes/health.js'
 import { registerPoolRoutes } from './routes/pools.js'
 import { registerTxRoutes } from './routes/tx.js'
@@ -44,6 +45,7 @@ export function buildServer(opts: BuildServerOptions): FastifyInstance {
   registerAddressRoutes(app, opts.provider)
   registerAssetRoutes(app, opts.provider)
   registerPoolRoutes(app, opts.provider)
+  registerGovernanceRoutes(app, opts.provider)
   registerTxRoutes(app, opts.provider)
 
   return app

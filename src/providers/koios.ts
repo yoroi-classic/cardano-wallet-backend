@@ -2,6 +2,8 @@ import { z } from 'zod'
 import type {
   AccountState,
   CertificateKind,
+  DrepInfo,
+  DrepListParams,
   PoolInfo,
   PoolListParams,
   PoolMetadata,
@@ -22,6 +24,7 @@ import {
   ProviderTimeoutError,
 } from '../domain/errors.js'
 import { POLICY_ID_HEX_LEN } from '../domain/constants.js'
+import { drepCredentialHex } from '../domain/drep.js'
 import type { ChainProvider } from './provider.js'
 
 /** A minimal fetch signature so tests can inject a fake without pulling in DOM types. */
@@ -229,6 +232,16 @@ type PoolStakeRow = z.infer<typeof poolStakeRow>
 // Koios rejects a /pool_info body carrying 100 ids with a 413, so hydrate in smaller
 // batches. 50 leaves room for the id set to grow without brushing the limit again.
 const POOL_INFO_CHUNK = 50
+// A DRep id is about the same size as a pool id, and /drep_info has the same body cap.
+const DREP_INFO_CHUNK = 50
+// Koios caps a response at 1000 rows; ~1.7k DReps on mainnet today.
+const DREP_LIST_PAGE_SIZE = 1000
+const DREP_LIST_MAX_PAGES = 20
+
+const drepListRow = z.object({
+  drep_id: z.string(),
+  registered: z.boolean(),
+})
 // Koios caps a single response at 1000 rows.
 const POOL_LIST_PAGE_SIZE = 1000
 // ~3k registered pools on mainnet today. 20 pages is far above that and keeps the walk
@@ -539,6 +552,48 @@ function emptyToUndefined(value: string | null | undefined): string | undefined 
   return value == null || value === '' ? undefined : value
 }
 
+const drepInfoRow = z.object({
+  drep_id: z.string(),
+  hex: z.string(),
+  has_script: z.boolean(),
+  // Koios emits exactly these two (confirmed against live mainnet /drep_info); anything
+  // else is unexpected upstream data and follows the malformed path, the same way
+  // pool_status does. Constraining it here is also what keeps the public `status` field a
+  // normalized DrepStatus rather than a pass-through of whatever Koios calls it, so a
+  // different provider can satisfy the same contract.
+  // The three values Koios's own API spec declares for this field. `not_registered` does not
+  // appear in any drep_list row (every DRep listed there is registered or deregistered), but
+  // it is what a query for a DRep id that never registered comes back with, so it belongs
+  // here. Anything outside the spec is unexpected upstream data and takes the malformed
+  // path, the same as pool_status.
+  drep_status: z.enum(['registered', 'deregistered', 'not_registered']),
+  // Strict, per the spec, which declares this a plain boolean. Mainnet has been seen
+  // answering with it null from the same instances that intermittently fail a filtered
+  // drep_list (reported as koios-artifacts#411). That is an upstream defect, and it fails
+  // loudly here rather than being defaulted: a DRep's standing is not something to guess at,
+  // and quietly reading a broken response as "not active" would hide the problem.
+  active: z.boolean(),
+  deposit: numeric.nullish(),
+  amount: numeric.nullish(),
+  expires_epoch_no: z.number().nullish(),
+  meta_url: z.string().nullish(),
+  meta_hash: z.string().nullish(),
+})
+
+function mapDrepInfo(row: z.infer<typeof drepInfoRow>): DrepInfo {
+  return {
+    drepId: row.drep_id,
+    hex: row.hex,
+    hasScript: row.has_script,
+    status: row.drep_status,
+    active: row.active,
+    deposit: String(row.deposit ?? 0),
+    votingPower: String(row.amount ?? 0),
+    expiresEpoch: row.expires_epoch_no ?? undefined,
+    metadataUrl: row.meta_url ?? undefined,
+    metadataHash: row.meta_hash ?? undefined,
+  }
+}
 // Koios caps the asset_info request body at ~5 KB, so send subjects in bounded chunks.
 const ASSET_INFO_CHUNK = 20
 
@@ -715,6 +770,54 @@ export function createKoiosProvider(config: KoiosConfig): ChainProvider {
     return rows
   }
 
+  // Read every DRep id Koios knows, keep the registered ones, and order them by id.
+  //
+  // The `registered` filter is not pushed upstream on purpose: see getDrepList. The walk is
+  // bounded by the page cap, the same as the pool list.
+  async function registeredDreps(): Promise<string[]> {
+    const ids: string[] = []
+    for (let page = 0; page < DREP_LIST_MAX_PAGES; page += 1) {
+      const query = new URLSearchParams({
+        order: 'drep_id.asc',
+        select: 'drep_id,registered',
+        limit: String(DREP_LIST_PAGE_SIZE),
+        offset: String(page * DREP_LIST_PAGE_SIZE),
+      })
+      const data = await request(`/drep_list?${query.toString()}`)
+      const rows = parseWith(z.array(drepListRow), data, '/drep_list')
+      for (const row of rows) {
+        if (row.registered) ids.push(row.drep_id)
+      }
+      if (rows.length < DREP_LIST_PAGE_SIZE) break
+    }
+    return ids
+  }
+
+  // Hydrate a set of drep ids with full drep_info, preserving the input order. Unknown ids
+  // are simply absent from Koios, so the result is never longer than the input.
+  //
+  // Chunked for the same reason as pool_info: Koios rejects an oversized body with a 413.
+  //
+  // The response is indexed by hex, not by the bech32 id, because the two are not
+  // necessarily the same string the caller sent. A DRep has both a CIP-129 id and a
+  // deprecated CIP-105 one, Koios accepts either on the way in but always answers with the
+  // CIP-129 form, so a caller asking by CIP-105 would never match its own row and the DRep
+  // would silently vanish from the result. The hex credential is the same either way.
+  async function drepInfoByIds(drepIds: string[]): Promise<DrepInfo[]> {
+    if (drepIds.length === 0) return []
+    const byHex = new Map<string, z.infer<typeof drepInfoRow>>()
+    for (const chunk of chunked(drepIds, DREP_INFO_CHUNK)) {
+      const data = await postJson('/drep_info', { _drep_ids: chunk })
+      const rows = parseWith(z.array(drepInfoRow), data, '/drep_info')
+      for (const row of rows) byHex.set(row.hex.toLowerCase(), row)
+    }
+    return drepIds.flatMap((id) => {
+      const hex = drepCredentialHex(id)
+      const row = hex === undefined ? undefined : byHex.get(hex)
+      return row ? [mapDrepInfo(row)] : []
+    })
+  }
+
   return {
     name: 'koios',
 
@@ -873,6 +976,25 @@ export function createKoiosProvider(config: KoiosConfig): ChainProvider {
         const row = bySubject.get(subject)
         return row ? [mapTokenMetadata(row)] : []
       })
+    },
+
+    async getDrepInfo(drepIds: string[]): Promise<DrepInfo[]> {
+      return drepInfoByIds(drepIds)
+    },
+
+    async getDrepList({ limit, offset }: DrepListParams): Promise<DrepInfo[]> {
+      // Neutral, unranked page of registered DReps, ordered by id so paging is stable. No
+      // ranking, promotional or otherwise: the order is the id, and nothing else.
+      //
+      // The registered-only filter is applied here rather than upstream. Asking Koios for
+      // `registered=eq.true` fails intermittently on mainnet with "column record.registered
+      // does not exist" (about half of all requests, so it looks like the query only lands
+      // on some of the instances behind the endpoint). The field itself is reliably present
+      // in the rows, so the whole list is read and filtered here. That is also what makes
+      // paging honest: filtering after an upstream limit/offset would hand back short pages.
+      const registered = await registeredDreps()
+      const page = registered.slice(offset, offset + limit)
+      return drepInfoByIds(page)
     },
 
     async submitTx(cborHex: string): Promise<{ txHash: string }> {

@@ -34,6 +34,8 @@ function providerWith(overrides: Partial<ChainProvider>): ChainProvider {
     getPoolInfo: unused,
     getPoolList: unused,
     getTokenMetadata: async (subjects) => subjects.map(token),
+    getDrepInfo: unused,
+    getDrepList: unused,
     submitTx: unused,
     getTxStatus: unused,
     ...overrides,

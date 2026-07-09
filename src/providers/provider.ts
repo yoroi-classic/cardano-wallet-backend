@@ -1,5 +1,7 @@
 import type {
   AccountState,
+  DrepInfo,
+  DrepListParams,
   PoolInfo,
   PoolListParams,
   ProtocolParams,
@@ -67,6 +69,17 @@ export interface ChainProvider {
    * subjects are omitted, so the result is never longer than `subjects`.
    */
   getTokenMetadata(subjects: string[]): Promise<TokenMetadata[]>
+
+  /**
+   * Info for a batch of DReps, by bech32 drep id. Returns one entry per DRep the source
+   * knows about, in the input order; unknown ids are omitted.
+   */
+  getDrepInfo(drepIds: string[]): Promise<DrepInfo[]>
+
+  /**
+   * A page of registered DReps, in a neutral (unranked) order, each with full DRep info.
+   */
+  getDrepList(params: DrepListParams): Promise<DrepInfo[]>
 
   /** Submit a serialized (CBOR hex) signed transaction. Returns the transaction hash. */
   submitTx(cborHex: string): Promise<{ txHash: string }>

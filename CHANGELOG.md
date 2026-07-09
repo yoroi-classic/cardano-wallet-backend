@@ -3,6 +3,45 @@
 All notable changes to this project are recorded here. The format follows
 Keep a Changelog, and the project uses semantic versioning.
 
+## [0.12.0] - 2026-07-08
+
+Adds governance DRep data for the delegate-your-vote flow.
+
+### Added
+
+- `POST /v1/governance/dreps/info`: DRep info for a batch of bech32 drep ids, in input
+  order (status, active flag, deposit, voting power, expiry epoch, and off-chain metadata
+  url/hash). Built from Koios `drep_info`.
+- `GET /v1/governance/dreps?limit=&offset=`: a neutral, unranked page of registered DReps,
+  each hydrated with full info (Koios `drep_list` + `drep_info`).
+- Live preprod integration coverage for the DRep list and a by-id lookup.
+
+### Note
+
+- The DRep's off-chain name/bio (CIP-119, via Koios `drep_metadata`) is not resolved here
+  yet; `metadataUrl`/`metadataHash` point at it. Account voting state (the DRep an account
+  delegates to) is already on `/v1/account/{stake}/state` as `delegatedDrep`. Governance
+  proposals are a later addition.
+- Both DRep id encodings are accepted: CIP-129 (a 1-byte credential-type header followed by
+  the 28-byte credential) and the deprecated CIP-105 (the bare credential). CIP-129 is the
+  current standard and is always what gets emitted, but CIP-105 ids are still in circulation
+  and still resolve upstream, so rejecting them would break callers for no good reason.
+  Validation checks the decoded byte length and, for CIP-129, the header, so a value that
+  merely carries a good checksum and the right prefix no longer reaches the provider.
+- Upstream rows are matched back to the caller's id by credential hex rather than by the id
+  string. Koios answers a CIP-105 query with the CIP-129 id, so matching on the string would
+  have quietly dropped the DRep from the response.
+- `status` is a normalized `DrepStatus`, not a pass-through of Koios's own wording, so
+  another provider can satisfy the same contract. It carries all three values Koios's spec
+  declares, including `not_registered`, which never appears in a list row but is what a query
+  for a never-registered id returns.
+- The registered-only filter is applied here rather than in the upstream query. Asking Koios
+  to filter `drep_list` fails intermittently on mainnet (about a third of requests, with
+  `column record.registered does not exist`, and the same for `has_script`), which would have
+  made the endpoint fail at random. Reported upstream as cardano-community/koios-artifacts#411.
+  The field is reliably present in the rows, so the list is read in full and filtered and
+  paged here, which also stops a page coming back short.
+
 ## [0.11.0] - 2026-07-08
 
 Completes on-chain asset metadata with CIP-68.

@@ -45,6 +45,8 @@ curl localhost:3010/v1/chain/protocol-params
 | GET    | `/v1/pools`                 | neutral page of pools (`?limit=&offset=&ticker=`), stake-desc                |
 | POST   | `/v1/pools/info`            | stake-pool info for `{ poolIds: [...] }`, in input order                     |
 | POST   | `/v1/assets/info`           | token metadata for `{ subjects: [...] }` (registry + on-chain), input order  |
+| GET    | `/v1/governance/dreps`      | neutral page of registered DReps (`?limit=&offset=`)                         |
+| POST   | `/v1/governance/dreps/info` | DRep info for `{ drepIds: [...] }`, in input order                           |
 | POST   | `/v1/tx/submit`             | `{ txHash }` from `{ "cbor": "<hex tx>" }`                                   |
 | GET    | `/v1/tx/{hash}/status`      | `{ seen, confirmations }`                                                    |
 

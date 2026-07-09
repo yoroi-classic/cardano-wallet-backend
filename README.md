@@ -11,12 +11,14 @@ behind the same contract, and selecting them today fails fast until their driver
 
 ## Requirements
 
-- Node 22+
+- Node 22.x (see `.nvmrc` and `package.json` `engines`)
+- npm 10.9.7 (see `package.json` `packageManager`)
+- Docker, when running the local Docker build check
 
 ## Quick start
 
 ```bash
-npm install
+npm ci
 cp .env.example .env      # defaults to preprod via public Koios
 npm run dev               # starts the server with reload
 ```
@@ -63,11 +65,16 @@ See `.env.example`. Key values:
 npm run dev            # dev server with reload
 npm run build          # compile to dist/
 npm start              # run the compiled server
+npm run format:check   # verify Prettier formatting
 npm run typecheck      # tsc --noEmit
 npm run lint           # eslint
-npm run test           # unit tests
-npm run test:coverage  # unit tests with coverage thresholds
+npm run test           # unit and API contract tests
+npm run test:contract  # API contract tests only
+npm run test:coverage  # unit and API contract tests with coverage thresholds
 npm run test:integration  # live preprod integration smoke test
+npm run audit:prod     # production dependency audit
+npm run docker:build   # Docker image build check
+npm run check:ci       # local mirror of the baseline CI gate
 ```
 
 ## Contributing

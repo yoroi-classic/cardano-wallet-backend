@@ -107,7 +107,13 @@ async function main(): Promise<void> {
       ])
       const paymentUsed = filtered.includes(wallet.paymentAddress)
       const freshExcluded = !filtered.includes(wallet.unusedAddress)
-      console.log(`filter-used:  payment used=${paymentUsed}, fresh addr excluded=${freshExcluded}`)
+      console.log('filter-used:')
+      console.log(`  payment addr (expect used):     ${wallet.paymentAddress}`)
+      console.log(`  fresh addr   (expect unused):   ${wallet.unusedAddress}`)
+      console.log(
+        `  returned used set:              ${filtered.length ? filtered.join(', ') : '(none)'}`,
+      )
+      console.log(`  payment used=${paymentUsed}, fresh addr excluded=${freshExcluded}`)
       if (!paymentUsed || !freshExcluded) {
         throw new Error('filter-used did not classify the payment and fresh addresses correctly')
       }

@@ -24,7 +24,11 @@ export interface ChainProvider {
   /** Protocol parameters for the latest epoch. */
   getProtocolParams(): Promise<ProtocolParams>
 
-  /** Of the given addresses, which have appeared on chain (been used). */
+  /**
+   * Of the given addresses, which have appeared on chain (been used). Returns the used
+   * subset preserving the input order; addresses never seen on chain are omitted. The
+   * result is a filter of the input, so it is never longer than `addresses`.
+   */
   filterUsedAddresses(addresses: string[]): Promise<string[]>
 
   /** Stake-account state: balance, rewards, and current delegations. */

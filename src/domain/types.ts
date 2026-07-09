@@ -119,17 +119,16 @@ export type CertificateKind =
   | 'genesis_key_delegation'
   | 'other'
 
-/** A certificate within a transaction. */
+/**
+ * A certificate within a transaction. Only the normalized kind and position are exposed
+ * for now, so the contract stays provider-agnostic. Per-kind normalized detail (pool id,
+ * stake address, etc.) is a planned addition once we normalize it across providers.
+ */
 export interface TxCertificate {
   /** Normalized certificate kind. */
   kind: CertificateKind
   /** Position of the certificate within the transaction. */
   index: number
-  /**
-   * Kind-specific detail as the provider reports it (e.g. pool id, stake address). For an
-   * unrecognized kind (`other`), this includes the provider's raw type so nothing is lost.
-   */
-  details?: Record<string, unknown>
 }
 
 /** A historical transaction that touched the account, normalized for display. */

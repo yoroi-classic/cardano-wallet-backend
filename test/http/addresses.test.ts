@@ -1,7 +1,16 @@
 import { afterEach, describe, expect, it } from 'vitest'
+import { bech32 } from '@scure/base'
 import type { FastifyInstance } from 'fastify'
 import { buildServer } from '../../src/http/server.js'
 import type { ChainProvider } from '../../src/providers/provider.js'
+
+// Two well-formed addr_test payment addresses so the route's bech32 validation passes;
+// the bytes are arbitrary but produce a valid HRP + checksum.
+function addrTest(fill: number): string {
+  return bech32.encode('addr_test', bech32.toWords(new Uint8Array(57).fill(fill)), 1023)
+}
+const USED = addrTest(1)
+const UNUSED = addrTest(2)
 
 function providerWith(overrides: Partial<ChainProvider>): ChainProvider {
   const unused = async () => {
@@ -11,7 +20,7 @@ function providerWith(overrides: Partial<ChainProvider>): ChainProvider {
     name: 'fake',
     getTip: unused,
     getProtocolParams: unused,
-    filterUsedAddresses: async (addresses) => addresses.filter((a) => a.startsWith('used')),
+    filterUsedAddresses: async (addresses) => addresses.filter((a) => a === USED),
     getAccountState: unused,
     getAccountUtxos: unused,
     getTxHistory: unused,
@@ -32,14 +41,14 @@ describe('filter-used route', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/v1/addresses/filter-used',
-      payload: { addresses: ['used1', 'unused2', 'used3'] },
+      payload: { addresses: [USED, UNUSED] },
     })
 
     expect(res.statusCode).toBe(200)
-    expect(res.json()).toEqual(['used1', 'used3'])
+    expect(res.json()).toEqual([USED])
   })
 
-  it('rejects a missing or empty addresses list with 400', async () => {
+  it('rejects a missing addresses list with 400', async () => {
     app = buildServer({ provider: providerWith({}) })
 
     const missing = await app.inject({
@@ -49,6 +58,10 @@ describe('filter-used route', () => {
     })
     expect(missing.statusCode).toBe(400)
     expect(missing.json()).toMatchObject({ error: { code: 'BAD_REQUEST' } })
+  })
+
+  it('rejects an empty addresses list with 400', async () => {
+    app = buildServer({ provider: providerWith({}) })
 
     const empty = await app.inject({
       method: 'POST',
@@ -56,5 +69,24 @@ describe('filter-used route', () => {
       payload: { addresses: [] },
     })
     expect(empty.statusCode).toBe(400)
+    expect(empty.json()).toMatchObject({ error: { code: 'BAD_REQUEST' } })
+  })
+
+  it('rejects a malformed address with 400 before hitting the provider', async () => {
+    app = buildServer({
+      provider: providerWith({
+        filterUsedAddresses: async () => {
+          throw new Error('provider should not be called for a malformed address')
+        },
+      }),
+    })
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/addresses/filter-used',
+      payload: { addresses: [USED, 'not-a-bech32-address'] },
+    })
+    expect(res.statusCode).toBe(400)
+    expect(res.json()).toMatchObject({ error: { code: 'BAD_REQUEST' } })
   })
 })

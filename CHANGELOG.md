@@ -7,9 +7,13 @@ Keep a Changelog, and the project uses semantic versioning.
 
 ### Added
 
-- `POST /v1/addresses/filter-used`: given a batch of addresses, returns those that have
-  appeared on chain (been used), for receive-address discovery. Built from Koios
-  `address_info`.
+- `POST /v1/addresses/filter-used`: given a batch of addresses, returns the subset that
+  have appeared on chain (been used), in input order, for receive-address discovery.
+  Built from Koios `address_info`. Malformed input is rejected with `400` before any
+  upstream call: each address must be a bech32 payment address (`addr` / `addr_test`).
+- The e2e slice now checks filter-used after its self-payment confirms, asserting the
+  payment address reads back as used and a fresh derived address as unused, and pages
+  history from the pre-submit tip so the assertion holds regardless of account age.
 
 ## [0.4.0] - 2026-07-08
 

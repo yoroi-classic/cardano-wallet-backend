@@ -342,7 +342,7 @@ describe('koios getTxHistory', () => {
         },
       ],
       withdrawals: [{ stakeAddress: 'stake_w', amount: '250000' }],
-      certificates: [{ kind: 'stake_delegation', index: 0, details: { pool: 'p' } }],
+      certificates: [{ kind: 'stake_delegation', index: 0 }],
       metadata: undefined,
     })
     expect(history[1]?.metadata).toEqual({ '674': { msg: ['hi'] } })
@@ -381,8 +381,8 @@ describe('koios getTxHistory', () => {
     const [tx] = await provider.getTxHistory(STAKE)
 
     expect(tx?.certificates).toEqual([
-      { kind: 'stake_registration', index: 0, details: { stake_address: 's' } },
-      { kind: 'other', index: 1, details: { providerType: 'some_future_cert', foo: 'bar' } },
+      { kind: 'stake_registration', index: 0 },
+      { kind: 'other', index: 1 },
     ])
   })
 

@@ -133,11 +133,7 @@ const txIoRow = z.object({
 })
 
 const withdrawalRow = z.object({ stake_addr: z.string(), amount: numeric })
-const certRow = z.object({
-  index: z.number(),
-  type: z.string(),
-  info: z.record(z.string(), z.unknown()).nullish(),
-})
+const certRow = z.object({ index: z.number(), type: z.string() })
 
 // Koios certificate type -> our normalized kind. Unrecognized types fall to 'other'.
 const CERT_KIND: Record<string, CertificateKind> = {
@@ -175,16 +171,7 @@ const txInfoRow = z.object({
 })
 
 function mapCertificate(c: z.infer<typeof certRow>): TxCertificate {
-  const kind = CERT_KIND[c.type] ?? 'other'
-  const info = c.info ?? undefined
-  // For an unrecognized kind, keep the provider's raw type so nothing is lost. Spread
-  // info first so a stray `providerType` key in it can't shadow the real provider type.
-  const details = kind === 'other' ? { ...(info ?? {}), providerType: c.type } : info
-  return {
-    kind,
-    index: c.index,
-    details: details && Object.keys(details).length > 0 ? details : undefined,
-  }
+  return { kind: CERT_KIND[c.type] ?? 'other', index: c.index }
 }
 
 // How many transactions we detail per page. Matches the extension's request size.
@@ -399,10 +386,14 @@ export function createKoiosProvider(config: KoiosConfig): ChainProvider {
       const list = parseWith(z.array(accountTxRow), listData, '/account_txs')
       if (list.length === 0) return []
 
-      // One page, oldest first. The caller pages forward with the last block it saw.
-      const page = [...list]
-        .sort((a, b) => a.block_height - b.block_height)
-        .slice(0, HISTORY_PAGE_SIZE)
+      // One page, oldest first. Don't cut through a block: include any trailing txs that
+      // share the boundary block, so the next `after={block}` cursor can't skip the rest
+      // of that block. The caller pages forward with the last block it saw.
+      const sorted = [...list].sort((a, b) => a.block_height - b.block_height)
+      let end = Math.min(HISTORY_PAGE_SIZE, sorted.length)
+      const boundaryBlock = sorted[end - 1]?.block_height
+      while (end < sorted.length && sorted[end]?.block_height === boundaryBlock) end += 1
+      const page = sorted.slice(0, end)
       const data = await postJson('/tx_info', {
         _tx_hashes: page.map((r) => r.tx_hash),
         _inputs: true,

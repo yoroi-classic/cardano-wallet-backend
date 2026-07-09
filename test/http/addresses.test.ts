@@ -12,6 +12,15 @@ function addrTest(fill: number): string {
 const USED = addrTest(1)
 const UNUSED = addrTest(2)
 
+// Valid bech32 under the addr_test HRP, but the Shelley header names type 15 (a
+// stake/reward address kind), not a payment address.
+function nonPaymentTypeAddress(): string {
+  const bytes = new Uint8Array(29)
+  bytes[0] = 0xf0
+  return bech32.encode('addr_test', bech32.toWords(bytes), 1023)
+}
+const NON_PAYMENT_TYPE = nonPaymentTypeAddress()
+
 function providerWith(overrides: Partial<ChainProvider>): ChainProvider {
   const unused = async () => {
     throw new Error('unused')
@@ -85,6 +94,24 @@ describe('filter-used route', () => {
       method: 'POST',
       url: '/v1/addresses/filter-used',
       payload: { addresses: [USED, 'not-a-bech32-address'] },
+    })
+    expect(res.statusCode).toBe(400)
+    expect(res.json()).toMatchObject({ error: { code: 'BAD_REQUEST' } })
+  })
+
+  it('rejects a well-formed non-payment (stake-type) address with 400', async () => {
+    app = buildServer({
+      provider: providerWith({
+        filterUsedAddresses: async () => {
+          throw new Error('provider should not be called for a non-payment address')
+        },
+      }),
+    })
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/addresses/filter-used',
+      payload: { addresses: [NON_PAYMENT_TYPE] },
     })
     expect(res.statusCode).toBe(400)
     expect(res.json()).toMatchObject({ error: { code: 'BAD_REQUEST' } })

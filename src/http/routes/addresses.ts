@@ -10,12 +10,19 @@ const body = z.object({ addresses: z.array(z.string().min(1)).min(1).max(1000) }
 
 const BECH32_LIMIT = 1023
 const PAYMENT_PREFIXES = new Set(['addr', 'addr_test'])
+// The top nibble of a Shelley address header is its type. Types 0-7 (base, pointer,
+// enterprise) carry a spendable payment credential; 14/15 are stake/reward addresses and
+// 8-13 are unused or Byron, none of which belong on this endpoint.
+const PAYMENT_ADDRESS_MAX_TYPE = 7
 
-// Validate a bech32 payment address (charset, checksum, addr/addr_test HRP) so a
-// malformed value is rejected here rather than passed on to the provider.
+// Validate a bech32 payment address (charset, checksum, addr/addr_test HRP, and a Shelley
+// header that names a payment address) so a malformed or wrong-kind value is rejected here
+// rather than passed on to the provider.
 function isPaymentAddress(value: string): boolean {
   const decoded = bech32.decodeUnsafe(value, BECH32_LIMIT)
-  return decoded !== undefined && PAYMENT_PREFIXES.has(decoded.prefix)
+  if (decoded === undefined || !PAYMENT_PREFIXES.has(decoded.prefix)) return false
+  const header = bech32.fromWords(decoded.words)[0]
+  return header !== undefined && header >> 4 <= PAYMENT_ADDRESS_MAX_TYPE
 }
 
 /** Address-level reads. */

@@ -302,6 +302,193 @@ describe('koios getTokenMetadata', () => {
     expect({ decimals: token?.decimals, url: token?.url }).toMatchObject(registry)
   })
 
+  it('falls back to a CIP-68 datum, decoding hex-keyed name/ticker/decimals/url/image', async () => {
+    const POLICY = 'f'.repeat(56)
+    const NAME_HEX = '000de14054455354'
+    const subject = POLICY + NAME_HEX
+    const known = {
+      [subject]: {
+        policy_id: POLICY,
+        asset_name: NAME_HEX,
+        fingerprint: 'asset1cip68',
+        total_supply: '1000',
+        name: null,
+        ticker: null,
+        description: null,
+        url: null,
+        decimals: null,
+        minting_tx_metadata: null,
+        // Shaped after a live Koios cip68_metadata (label 100) PlutusData datum.
+        cip68_metadata: {
+          '100': {
+            constructor: 0,
+            fields: [
+              {
+                map: [
+                  { k: { bytes: '646563696d616c73' }, v: { int: 6 } },
+                  {
+                    k: { bytes: '6465736372697074696f6e' },
+                    v: { bytes: '54455354' },
+                  },
+                  { k: { bytes: '6c6f676f' }, v: { bytes: '697066733a2f2f516d61' } },
+                  { k: { bytes: '6e616d65' }, v: { bytes: '54455354' } },
+                  { k: { bytes: '7469636b6572' }, v: { bytes: '5445535454455354' } },
+                  {
+                    k: { bytes: '75726c' },
+                    v: { bytes: '68747470733a2f2f746573742e696f' },
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      },
+    }
+    const { fetchImpl } = assetFetch(known)
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [token] = await provider.getTokenMetadata([subject])
+
+    expect(token?.source).toBe('cip68')
+    expect(token?.name).toBe('TEST')
+    expect(token?.ticker).toBe('TESTTEST')
+    expect(token?.description).toBe('TEST')
+    expect(token?.decimals).toBe(6)
+    expect(token?.url).toBe('https://test.io')
+    expect(token?.image).toBe('ipfs://Qma')
+  })
+
+  // A CIP-68 datum is written by the minter, so its bytes are attacker controlled. A lenient
+  // UTF-8 decode turns arbitrary bytes into U+FFFD replacement characters and would hand the
+  // wallet a "name" of garbage to render. The field has to be dropped instead.
+  it('drops a CIP-68 string whose bytes are not valid utf-8', async () => {
+    const POLICY = '2'.repeat(56)
+    const NAME_HEX = '63'
+    const subject = POLICY + NAME_HEX
+    const known = {
+      [subject]: {
+        policy_id: POLICY,
+        asset_name: NAME_HEX,
+        fingerprint: 'asset1bad',
+        total_supply: '1',
+        name: null,
+        ticker: null,
+        description: null,
+        url: null,
+        decimals: null,
+        minting_tx_metadata: null,
+        cip68_metadata: {
+          '100': {
+            constructor: 0,
+            fields: [
+              {
+                map: [
+                  // 'name' -> 0xff 0xfe, which is not a valid UTF-8 sequence.
+                  { k: { bytes: '6e616d65' }, v: { bytes: 'fffe' } },
+                  // 'ticker' -> valid, so the datum is still recognized as CIP-68.
+                  { k: { bytes: '7469636b6572' }, v: { bytes: '4f4b' } },
+                ],
+              },
+            ],
+          },
+        },
+      },
+    }
+    const { fetchImpl } = assetFetch(known)
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [token] = await provider.getTokenMetadata([subject])
+
+    expect(token?.source).toBe('cip68')
+    expect(token?.ticker).toBe('OK')
+    expect(token?.name).toBeUndefined()
+    expect(token?.name ?? '').not.toContain('�')
+  })
+
+  // A bad precision misrenders every balance for the token, so a datum decimals that is
+  // negative, fractional, or past the safe integer range is dropped rather than trusted.
+  it.each([
+    ['negative', { int: -1 }],
+    ['fractional', { int: 2.5 }],
+    ['past the safe range', { int: '9007199254740993' }],
+  ])('drops a CIP-68 decimals that is %s', async (_case, value) => {
+    const POLICY = '3'.repeat(56)
+    const NAME_HEX = '64'
+    const subject = POLICY + NAME_HEX
+    const known = {
+      [subject]: {
+        policy_id: POLICY,
+        asset_name: NAME_HEX,
+        fingerprint: 'asset1dec',
+        total_supply: '1',
+        name: null,
+        ticker: null,
+        description: null,
+        url: null,
+        decimals: null,
+        minting_tx_metadata: null,
+        cip68_metadata: {
+          '100': {
+            constructor: 0,
+            fields: [
+              {
+                map: [
+                  { k: { bytes: '6e616d65' }, v: { bytes: '4f4b' } },
+                  { k: { bytes: '646563696d616c73' }, v: value },
+                ],
+              },
+            ],
+          },
+        },
+      },
+    }
+    const { fetchImpl } = assetFetch(known)
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [token] = await provider.getTokenMetadata([subject])
+
+    expect(token?.source).toBe('cip68')
+    expect(token?.name).toBe('OK')
+    expect(token?.decimals).toBeUndefined()
+  })
+
+  it('prefers the registry and CIP-25 over a CIP-68 datum', async () => {
+    const POLICY = '1'.repeat(56)
+    const NAME_HEX = '61'
+    const subject = POLICY + NAME_HEX
+    const cip68 = {
+      '100': {
+        constructor: 0,
+        fields: [{ map: [{ k: { bytes: '6e616d65' }, v: { bytes: '3638' } }] }],
+      },
+    }
+    const known = {
+      [subject]: {
+        policy_id: POLICY,
+        asset_name: NAME_HEX,
+        fingerprint: 'asset1pref',
+        total_supply: '1',
+        name: null,
+        ticker: null,
+        description: null,
+        url: null,
+        decimals: null,
+        minting_tx_metadata: {
+          '721': { [POLICY]: { [NAME_HEX]: { name: 'CIP25 Name' } } },
+        },
+        cip68_metadata: cip68,
+      },
+    }
+    const { fetchImpl } = assetFetch(known)
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [token] = await provider.getTokenMetadata([subject])
+
+    // CIP-25 is present, so it wins over the CIP-68 datum.
+    expect(token?.source).toBe('cip25')
+    expect(token?.name).toBe('CIP25 Name')
+  })
+
   it('splits a large batch into multiple bounded upstream requests', async () => {
     // 45 distinct subjects should span three chunks of 20.
     const known: Record<string, unknown> = {}

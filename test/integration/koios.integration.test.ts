@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createKoiosProvider } from '../../src/providers/koios.js'
+import { TOKEN_SOURCES } from '../../src/domain/types.js'
 
 // Hits real preprod Koios. Runs only in the integration suite (preprod/main gates),
 // not in the default unit run. Uses the public free tier, no token required.
@@ -117,7 +118,10 @@ describe('koios preprod (integration)', () => {
     expect(token?.assetName).toBe(asset?.asset_name)
     expect(token?.fingerprint).toMatch(/^asset1[0-9a-z]+$/)
     expect(BigInt(token?.supply ?? '0')).toBeGreaterThanOrEqual(0n)
-    expect(['registry', 'cip25', 'none']).toContain(token?.source)
+    // This asset is whichever one Koios happened to list first, so it can legitimately
+    // resolve from any of the sources. The list has to name all of them, including cip68,
+    // or the run fails whenever the picked asset happens to carry only a CIP-68 datum.
+    expect(TOKEN_SOURCES).toContain(token?.source)
   })
 
   it('resolves CIP-25 mint metadata for a live NFT when one can be found', async () => {
@@ -146,6 +150,39 @@ describe('koios preprod (integration)', () => {
       const [token] = await provider.getTokenMetadata([subject])
       // Registry can still win if this asset also registered; otherwise it must be cip25.
       expect(['registry', 'cip25']).toContain(token?.source)
+      return
+    }
+  })
+
+  it('resolves CIP-68 datum metadata for a live asset when one can be found', async () => {
+    const base = process.env.KOIOS_URL ?? 'https://preprod.koios.rest/api/v1'
+    for (let offset = 0; offset < 400; offset += 25) {
+      const listRes = await fetch(`${base}/asset_list?limit=25&offset=${offset}`)
+      const list = (await listRes.json()) as Array<{ policy_id: string; asset_name: string }>
+      if (list.length === 0) break
+      const pairs = list.map((a) => [a.policy_id, a.asset_name])
+      const infoRes = await fetch(`${base}/asset_info`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ _asset_list: pairs }),
+      })
+      const info = (await infoRes.json()) as Array<{
+        policy_id: string
+        asset_name: string
+        cip68_metadata?: unknown
+        token_registry_metadata?: unknown
+        minting_tx_metadata?: unknown
+      }>
+      // Only assert on a "clean" CIP-68 asset (no registry/CIP-25 that would take priority).
+      const cip68 = info.find(
+        (a) => a.cip68_metadata && !a.token_registry_metadata && !a.minting_tx_metadata,
+      )
+      if (!cip68) continue
+
+      const subject = `${cip68.policy_id}${cip68.asset_name}`
+      const [token] = await provider.getTokenMetadata([subject])
+      // A datum may carry no recognizable fields, in which case we fall through to 'none'.
+      expect(['cip68', 'none']).toContain(token?.source)
       return
     }
   })

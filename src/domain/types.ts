@@ -197,14 +197,23 @@ export interface PoolInfo {
   metadata?: PoolMetadata
 }
 
-/** Where a token's display metadata was resolved from. */
-export type TokenMetadataSource = 'registry' | 'cip25' | 'none'
+/**
+ * Where a token's display metadata was resolved from, in preference order.
+ *
+ * The type is derived from the array so the two cannot drift: anything that needs the set
+ * at runtime (a test asserting a live asset resolved from a known source, for instance)
+ * reads this rather than restating the members.
+ */
+export const TOKEN_SOURCES = ['registry', 'cip25', 'cip68', 'none'] as const
+
+export type TokenMetadataSource = (typeof TOKEN_SOURCES)[number]
 
 /**
  * Normalized metadata for a native token. On-chain basics (fingerprint, supply, names)
  * always apply. Display fields (name, ticker, description, decimals, url, image) are
- * resolved with the CIP-26 off-chain token registry preferred, then the CIP-25 on-chain
- * mint metadata (the usual NFT case); `source` says which supplied them.
+ * resolved with the CIP-26 off-chain token registry preferred, then CIP-25 on-chain mint
+ * metadata (the usual NFT case), then a CIP-68 reference-token datum; `source` says which
+ * supplied them.
  *
  * Editorial curation the closed backend layered on top (scam/verified status, an
  * "application" category, a display symbol) is not chain data and is intentionally not
@@ -229,15 +238,15 @@ export interface TokenMetadata {
   source: TokenMetadataSource
   /** Human-readable name. */
   name?: string
-  /** Ticker (registry only). */
+  /** Ticker (registry or CIP-68). */
   ticker?: string
   /** Description. */
   description?: string
-  /** Decimal places (registry only). */
+  /** Decimal places (registry or CIP-68). */
   decimals?: number
-  /** Project URL (registry only). */
+  /** Project URL (registry or CIP-68). */
   url?: string
-  /** Image pointer (URL/URI), from CIP-25 mint metadata. Not image bytes. */
+  /** Image pointer (URL/URI), from CIP-25 or CIP-68 metadata. Not image bytes. */
   image?: string
 }
 

@@ -3,6 +3,20 @@
 All notable changes to this project are recorded here. The format follows
 Keep a Changelog, and the project uses semantic versioning.
 
+## [0.11.0] - 2026-07-08
+
+Completes on-chain asset metadata with CIP-68.
+
+### Added
+
+- `POST /v1/assets/info` now adds a third metadata fallback: a CIP-68 reference-token datum
+  supplies `name`, `ticker`, `description`, `decimals`, `url`, and an `image` pointer when
+  neither the CIP-26 registry nor CIP-25 mint metadata is present. The PlutusData datum is
+  decoded defensively (hex-keyed map, hex byte-string values, integer decimals), and
+  `source` reports `cip68`. Resolution order is registry, then CIP-25, then CIP-68. Comes
+  from the `asset_info` response already fetched, so no extra upstream calls.
+- Live preprod integration coverage that resolves a CIP-68 datum for a real asset.
+
 ## [0.10.0] - 2026-07-08
 
 Resolves NFT and non-registry token metadata from on-chain CIP-25.

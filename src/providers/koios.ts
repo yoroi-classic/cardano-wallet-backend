@@ -299,6 +299,9 @@ const assetInfoRow = z.object({
   // Raw transaction metadata from the mint; CIP-25 (label "721") lives here. Kept opaque
   // and walked defensively because its shape is attacker-influenced on-chain data.
   minting_tx_metadata: z.unknown().nullish(),
+  // Decoded CIP-68 reference-token datum (PlutusData), when the asset uses CIP-68. Also
+  // opaque and walked defensively.
+  cip68_metadata: z.unknown().nullish(),
 })
 
 // Ask Koios for exactly the fields we map, pulling the registry values out of the
@@ -311,8 +314,9 @@ const assetInfoRow = z.object({
 // otherwise pull megabytes of images that we parse straight into the bin. Token and NFT
 // images are served from a separate media surface.
 //
-// `minting_tx_metadata` has to be named explicitly: with a projection in place, anything
-// not listed here does not come back, and the CIP-25 fallback below reads it.
+// `minting_tx_metadata` and `cip68_metadata` have to be named explicitly: with a projection
+// in place, anything not listed here does not come back, and the CIP-25 and CIP-68
+// fallbacks below read them.
 const ASSET_INFO_SELECT = [
   'policy_id',
   'asset_name',
@@ -320,12 +324,104 @@ const ASSET_INFO_SELECT = [
   'fingerprint',
   'total_supply',
   'minting_tx_metadata',
+  'cip68_metadata',
   'name:token_registry_metadata->>name',
   'ticker:token_registry_metadata->>ticker',
   'description:token_registry_metadata->>description',
   'url:token_registry_metadata->>url',
   'decimals:token_registry_metadata->decimals',
 ].join(',')
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+// A CIP-68 datum is on-chain data written by whoever minted the token, so it is attacker
+// controlled. It is decoded strictly rather than leniently.
+const utf8 = new TextDecoder('utf-8', { fatal: true })
+
+// Decode a hex byte-string to UTF-8, rejecting anything that isn't clean even-length hex.
+//
+// The decoder is `fatal`, which is the point: the default replaces invalid byte sequences
+// with U+FFFD, so a datum carrying arbitrary bytes would decode "successfully" into a
+// string of replacement characters and be shown to the user as a token name. Refusing to
+// decode it drops the field instead, and the asset falls through to the next source.
+function hexToUtf8(hex: unknown): string | undefined {
+  if (typeof hex !== 'string' || hex.length === 0 || hex.length % 2 !== 0) return undefined
+  if (!/^[0-9a-fA-F]+$/.test(hex)) return undefined
+  try {
+    const text = utf8.decode(Buffer.from(hex, 'hex'))
+    return text.length > 0 ? text : undefined
+  } catch {
+    // Not valid UTF-8. Treat the field as absent rather than surfacing mojibake.
+    return undefined
+  }
+}
+
+interface Cip68Fields {
+  name?: string
+  description?: string
+  image?: string
+  ticker?: string
+  url?: string
+  decimals?: number
+}
+
+// CIP-68 metadata is a PlutusData map: fields[0].map is a list of {k:{bytes},v:{bytes|int}}
+// entries keyed by the hex of the field name. Walk it defensively.
+function extractCip68(cip68: unknown): Cip68Fields | undefined {
+  if (!isRecord(cip68)) return undefined
+  const datum = Object.values(cip68)[0]
+  if (!isRecord(datum) || !Array.isArray(datum.fields)) return undefined
+  const first = datum.fields[0]
+  if (!isRecord(first) || !Array.isArray(first.map)) return undefined
+  const entries = first.map
+
+  const valueFor = (fieldName: string): unknown => {
+    const keyHex = Buffer.from(fieldName, 'utf8').toString('hex')
+    for (const entry of entries) {
+      if (isRecord(entry) && isRecord(entry.k) && entry.k.bytes === keyHex) return entry.v
+    }
+    return undefined
+  }
+  const asString = (v: unknown): string | undefined =>
+    isRecord(v) ? hexToUtf8(v.bytes) : undefined
+
+  // decimals is a count of places, and it comes from a datum the minter controls. It is
+  // held to the same bar as the registry's decimals: a non-negative integer inside the
+  // safe range. Anything else (negative, fractional, or so large that Number() would
+  // silently round it) is dropped rather than handed to the wallet as a token precision,
+  // because a wrong precision misrenders every balance and amount for that token.
+  const asDecimals = (v: unknown): number | undefined => {
+    if (!isRecord(v)) return undefined
+    const raw = v.int
+    if (typeof raw === 'number') {
+      return Number.isSafeInteger(raw) && raw >= 0 ? raw : undefined
+    }
+    if (typeof raw === 'string' && /^\d+$/.test(raw)) {
+      const parsed = Number(raw)
+      return Number.isSafeInteger(parsed) ? parsed : undefined
+    }
+    return undefined
+  }
+
+  const fields: Cip68Fields = {
+    name: asString(valueFor('name')),
+    description: asString(valueFor('description')),
+    image: asString(valueFor('logo')) ?? asString(valueFor('image')),
+    ticker: asString(valueFor('ticker')),
+    url: asString(valueFor('url')),
+    decimals: asDecimals(valueFor('decimals')),
+  }
+  const hasAny =
+    fields.name ||
+    fields.description ||
+    fields.image ||
+    fields.ticker ||
+    fields.url ||
+    fields.decimals != null
+  return hasAny ? fields : undefined
+}
 
 // CIP-25 allows a long string to be split across an array of chunks; join them. Anything
 // that is not a string or array of strings is ignored rather than trusted.
@@ -419,6 +515,20 @@ function mapTokenMetadata(row: z.infer<typeof assetInfoRow>): TokenMetadata {
       name: cip25.name,
       description: cip25.description,
       image: cip25.image,
+    }
+  }
+
+  const cip68 = extractCip68(row.cip68_metadata)
+  if (cip68) {
+    return {
+      ...base,
+      source: 'cip68',
+      name: cip68.name,
+      ticker: cip68.ticker,
+      description: cip68.description,
+      decimals: cip68.decimals,
+      url: cip68.url,
+      image: cip68.image,
     }
   }
 

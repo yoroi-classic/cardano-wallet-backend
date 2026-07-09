@@ -1,5 +1,6 @@
 import type {
   AccountState,
+  PoolInfo,
   ProtocolParams,
   Tip,
   TxStatus,
@@ -11,8 +12,9 @@ import type {
  * The provider contract. Every data source (Koios, Blockfrost, a bring-your-own
  * Dingo node) implements this so the HTTP layer never has to know which one is
  * serving a request. It covers the barebones surface a wallet needs: chain tip and
- * protocol parameters, account state, UTxOs, and transaction history, and transaction
- * submit and status. The interface grows one capability at a time as endpoints land.
+ * protocol parameters, account state, UTxOs, transaction history, stake-pool info, plus
+ * transaction submission and status. The interface grows one capability at a time as
+ * endpoints land.
  */
 export interface ChainProvider {
   /** A short name for logs and diagnostics, e.g. "koios". */
@@ -42,6 +44,13 @@ export interface ChainProvider {
    * pass the block height of the last transaction already seen to get the next page.
    */
   getTxHistory(stakeAddress: string, afterBlock?: number): Promise<WalletTransaction[]>
+
+  /**
+   * Information for a batch of stake pools, by bech32 pool id. Returns one entry per pool
+   * the source knows about, in the input order; unknown pool ids are omitted, so the
+   * result is never longer than `poolIds`.
+   */
+  getPoolInfo(poolIds: string[]): Promise<PoolInfo[]>
 
   /** Submit a serialized (CBOR hex) signed transaction. Returns the transaction hash. */
   submitTx(cborHex: string): Promise<{ txHash: string }>

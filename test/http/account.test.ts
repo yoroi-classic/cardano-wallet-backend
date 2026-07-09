@@ -34,6 +34,7 @@ function providerWith(overrides: Partial<ChainProvider>): ChainProvider {
     getTxHistory: async () => [],
     submitTx: unused,
     getTxStatus: unused,
+    getPoolInfo: unused,
     ...overrides,
   }
 }

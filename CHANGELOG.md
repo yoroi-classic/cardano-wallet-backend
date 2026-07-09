@@ -16,6 +16,8 @@ Toward parity with the pool data the existing wallet reads from the closed backe
   ticker, homepage, description). Built from Koios `pool_info`. Malformed input is
   rejected with `400` before any upstream call, and unknown pool ids are omitted.
 - Live preprod integration coverage for pool info against a currently-registered pool.
+- The e2e slice reads pool info back through `/v1/pools/info` for a live registered pool
+  and checks the normalized shape, exercising the endpoint on the read path.
 
 ### Note
 

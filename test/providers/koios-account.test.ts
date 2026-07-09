@@ -46,6 +46,8 @@ describe('koios getAccountState', () => {
     delegated_drep: 'drep1xyz',
     total_balance: '1000000',
     rewards_available: '250000',
+    rewards: '900000',
+    withdrawals: '650000',
   }
 
   it('maps a registered account (regression) and posts the stake address', async () => {
@@ -59,6 +61,8 @@ describe('koios getAccountState', () => {
       registered: true,
       balance: '1000000',
       rewardsAvailable: '250000',
+      rewardsSum: '900000',
+      withdrawalsSum: '650000',
       delegatedPool: 'pool1abc',
       delegatedDrep: 'drep1xyz',
     })
@@ -78,6 +82,8 @@ describe('koios getAccountState', () => {
       registered: false,
       balance: '0',
       rewardsAvailable: '0',
+      rewardsSum: '0',
+      withdrawalsSum: '0',
     })
   })
 

@@ -31,18 +31,18 @@ curl localhost:3010/v1/chain/protocol-params
 
 ## API
 
-| Method | Path                        | Returns                                                        |
-| ------ | --------------------------- | -------------------------------------------------------------- |
-| GET    | `/health`                   | liveness                                                       |
-| GET    | `/v1/chain/tip`             | `{ block, slot, epoch, hash }`                                 |
-| GET    | `/v1/chain/protocol-params` | normalized protocol parameters incl. cost models               |
-| GET    | `/v1/account/{stake}/state` | `{ registered, balance, rewardsAvailable, ... }`               |
-| GET    | `/v1/account/{stake}/utxos` | array of UTxOs incl. assets and inline datums                  |
-| GET    | `/v1/account/{stake}/txs`   | transaction history (oldest first, `?after={block}`)           |
-| POST   | `/v1/addresses/filter-used` | subset of `{ addresses: [...] }` seen on chain, in input order |
-| POST   | `/v1/pools/info`            | stake-pool info for `{ poolIds: [...] }`, in input order       |
-| POST   | `/v1/tx/submit`             | `{ txHash }` from `{ "cbor": "<hex tx>" }`                     |
-| GET    | `/v1/tx/{hash}/status`      | `{ seen, confirmations }`                                      |
+| Method | Path                        | Returns                                                                      |
+| ------ | --------------------------- | ---------------------------------------------------------------------------- |
+| GET    | `/health`                   | liveness                                                                     |
+| GET    | `/v1/chain/tip`             | `{ block, slot, epoch, hash }`                                               |
+| GET    | `/v1/chain/protocol-params` | normalized protocol parameters incl. cost models                             |
+| GET    | `/v1/account/{stake}/state` | `{ registered, balance, rewardsAvailable, rewardsSum, withdrawalsSum, ... }` |
+| GET    | `/v1/account/{stake}/utxos` | array of UTxOs incl. assets and inline datums                                |
+| GET    | `/v1/account/{stake}/txs`   | transaction history (oldest first, `?after={block}`)                         |
+| POST   | `/v1/addresses/filter-used` | subset of `{ addresses: [...] }` seen on chain, in input order               |
+| POST   | `/v1/pools/info`            | stake-pool info for `{ poolIds: [...] }`, in input order                     |
+| POST   | `/v1/tx/submit`             | `{ txHash }` from `{ "cbor": "<hex tx>" }`                                   |
+| GET    | `/v1/tx/{hash}/status`      | `{ seen, confirmations }`                                                    |
 
 Errors come back as `{ "error": { "code", "message" } }` with a stable status code
 (`502` upstream error, `504` upstream timeout, `400` bad request, `404` unknown route,

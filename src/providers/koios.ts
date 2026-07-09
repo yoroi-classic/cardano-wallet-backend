@@ -94,6 +94,8 @@ const accountInfoRow = z.object({
   delegated_drep: z.string().nullish(),
   total_balance: numeric,
   rewards_available: numeric,
+  rewards: numeric,
+  withdrawals: numeric,
 })
 
 const accountUtxoRow = z.object({
@@ -417,13 +419,22 @@ export function createKoiosProvider(config: KoiosConfig): ChainProvider {
       // An unknown or never-used stake key legitimately has no row. Report it as an
       // unregistered, zero-balance account rather than treating it as an error.
       if (!row) {
-        return { stakeAddress, registered: false, balance: '0', rewardsAvailable: '0' }
+        return {
+          stakeAddress,
+          registered: false,
+          balance: '0',
+          rewardsAvailable: '0',
+          rewardsSum: '0',
+          withdrawalsSum: '0',
+        }
       }
       return {
         stakeAddress: row.stake_address,
         registered: row.status === 'registered',
         balance: String(row.total_balance),
         rewardsAvailable: String(row.rewards_available),
+        rewardsSum: String(row.rewards),
+        withdrawalsSum: String(row.withdrawals),
         delegatedPool: row.delegated_pool ?? undefined,
         delegatedDrep: row.delegated_drep ?? undefined,
       }

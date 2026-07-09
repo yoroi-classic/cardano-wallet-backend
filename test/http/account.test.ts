@@ -14,6 +14,8 @@ const STATE: AccountState = {
   registered: true,
   balance: '1000000',
   rewardsAvailable: '0',
+  rewardsSum: '0',
+  withdrawalsSum: '0',
 }
 
 const UTXOS: Utxo[] = [

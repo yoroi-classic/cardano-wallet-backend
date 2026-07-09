@@ -49,6 +49,7 @@ function providerWith(overrides: Partial<ChainProvider>): ChainProvider {
       const ids = ticker ? [POOL_A] : [POOL_A, POOL_B]
       return ids.slice(0, limit).map(poolInfo)
     },
+    getTokenMetadata: unused,
     submitTx: unused,
     getTxStatus: unused,
     ...overrides,

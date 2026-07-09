@@ -3,6 +3,7 @@ import { isAppError } from '../domain/errors.js'
 import type { ChainProvider } from '../providers/provider.js'
 import { registerAccountRoutes } from './routes/account.js'
 import { registerAddressRoutes } from './routes/addresses.js'
+import { registerAssetRoutes } from './routes/assets.js'
 import { registerChainRoutes } from './routes/chain.js'
 import { registerHealthRoutes } from './routes/health.js'
 import { registerPoolRoutes } from './routes/pools.js'
@@ -41,6 +42,7 @@ export function buildServer(opts: BuildServerOptions): FastifyInstance {
   registerChainRoutes(app, opts.provider)
   registerAccountRoutes(app, opts.provider)
   registerAddressRoutes(app, opts.provider)
+  registerAssetRoutes(app, opts.provider)
   registerPoolRoutes(app, opts.provider)
   registerTxRoutes(app, opts.provider)
 

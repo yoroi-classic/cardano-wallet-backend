@@ -100,4 +100,22 @@ describe('koios preprod (integration)', () => {
       expect(pool.metadata?.ticker?.toLowerCase()).toContain(ticker.toLowerCase())
     }
   })
+
+  it('returns token metadata for a live on-chain asset', async () => {
+    // Pick a real asset at runtime so the test can't rot. Registry metadata is sparse on
+    // preprod, so assert the on-chain basics that every asset has.
+    const base = process.env.KOIOS_URL ?? 'https://preprod.koios.rest/api/v1'
+    const res = await fetch(`${base}/asset_list?limit=1&offset=5`)
+    const rows = (await res.json()) as Array<{ policy_id: string; asset_name: string }>
+    const asset = rows[0]
+    expect(asset?.policy_id).toMatch(/^[0-9a-f]{56}$/)
+    const subject = `${asset?.policy_id}${asset?.asset_name}`
+
+    const [token] = await provider.getTokenMetadata([subject])
+    expect(token?.subject).toBe(subject)
+    expect(token?.policyId).toBe(asset?.policy_id)
+    expect(token?.assetName).toBe(asset?.asset_name)
+    expect(token?.fingerprint).toMatch(/^asset1[0-9a-z]+$/)
+    expect(BigInt(token?.supply ?? '0')).toBeGreaterThanOrEqual(0n)
+  })
 })

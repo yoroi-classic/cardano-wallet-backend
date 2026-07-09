@@ -19,6 +19,7 @@ const stubProvider: ChainProvider = {
   getTxStatus: unused,
   getPoolInfo: unused,
   getPoolList: unused,
+  getTokenMetadata: unused,
 }
 
 let app: FastifyInstance

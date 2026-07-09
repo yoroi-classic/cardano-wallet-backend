@@ -44,6 +44,7 @@ curl localhost:3010/v1/chain/protocol-params
 | POST   | `/v1/addresses/filter-used` | subset of `{ addresses: [...] }` seen on chain, in input order               |
 | GET    | `/v1/pools`                 | neutral page of pools (`?limit=&offset=&ticker=`), stake-desc                |
 | POST   | `/v1/pools/info`            | stake-pool info for `{ poolIds: [...] }`, in input order                     |
+| POST   | `/v1/assets/info`           | token metadata for `{ subjects: [...] }` (registry + on-chain), input order  |
 | POST   | `/v1/tx/submit`             | `{ txHash }` from `{ "cbor": "<hex tx>" }`                                   |
 | GET    | `/v1/tx/{hash}/status`      | `{ seen, confirmations }`                                                    |
 

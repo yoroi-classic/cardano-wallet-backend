@@ -4,6 +4,7 @@ import type {
   PoolListParams,
   ProtocolParams,
   Tip,
+  TokenMetadata,
   TxStatus,
   Utxo,
   WalletTransaction,
@@ -59,6 +60,13 @@ export interface ChainProvider {
    * (case-insensitive substring).
    */
   getPoolList(params: PoolListParams): Promise<PoolInfo[]>
+
+  /**
+   * Metadata for a batch of native tokens, by CIP-26 subject (policy id + hex asset name).
+   * Returns one entry per token the source knows about, in the input order; unknown
+   * subjects are omitted, so the result is never longer than `subjects`.
+   */
+  getTokenMetadata(subjects: string[]): Promise<TokenMetadata[]>
 
   /** Submit a serialized (CBOR hex) signed transaction. Returns the transaction hash. */
   submitTx(cborHex: string): Promise<{ txHash: string }>

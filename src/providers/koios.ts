@@ -7,6 +7,7 @@ import type {
   PoolMetadata,
   ProtocolParams,
   Tip,
+  TokenMetadata,
   TxCertificate,
   TxIo,
   TxStatus,
@@ -20,6 +21,7 @@ import {
   ProviderError,
   ProviderTimeoutError,
 } from '../domain/errors.js'
+import { POLICY_ID_HEX_LEN } from '../domain/constants.js'
 import type { ChainProvider } from './provider.js'
 
 /** A minimal fetch signature so tests can inject a fake without pulling in DOM types. */
@@ -275,6 +277,74 @@ function mapPoolInfo(row: z.infer<typeof poolInfoRow>): PoolInfo {
     metadata: mapPoolMetadata(row.meta_json),
   }
 }
+
+// Registry `decimals` is a count of decimal places, so it can only be a non-negative
+// integer. Constraining it here keeps an impossible upstream value (negative, fractional)
+// on the malformed path instead of handing the wallet a token precision it cannot use.
+const registryDecimals = z.number().int().nonnegative().nullish()
+
+// The CIP-26 registry fields, projected out of Koios's `token_registry_metadata` JSON and
+// flattened onto the row (see ASSET_INFO_SELECT).
+const assetInfoRow = z.object({
+  policy_id: z.string(),
+  asset_name: z.string(),
+  asset_name_ascii: z.string().nullish(),
+  fingerprint: z.string(),
+  total_supply: numeric,
+  name: z.string().nullish(),
+  ticker: z.string().nullish(),
+  description: z.string().nullish(),
+  url: z.string().nullish(),
+  decimals: registryDecimals,
+})
+
+// Ask Koios for exactly the fields we map, pulling the registry values out of the
+// `token_registry_metadata` JSON column rather than taking the whole object.
+//
+// This is a bandwidth fix, not a cosmetic one. The registry object carries a base64 `logo`,
+// and dropping it in the schema does not stop Koios from sending it: one live mainnet asset
+// (SNEK) answers in 74,753 bytes, of which 73,664 is the logo. Projecting the logo away
+// brings that row to 326 bytes. A wallet asking about a full batch of held tokens would
+// otherwise pull megabytes of images that we parse straight into the bin. Token and NFT
+// images are served from a separate media surface.
+const ASSET_INFO_SELECT = [
+  'policy_id',
+  'asset_name',
+  'asset_name_ascii',
+  'fingerprint',
+  'total_supply',
+  'name:token_registry_metadata->>name',
+  'ticker:token_registry_metadata->>ticker',
+  'description:token_registry_metadata->>description',
+  'url:token_registry_metadata->>url',
+  'decimals:token_registry_metadata->decimals',
+].join(',')
+
+function mapTokenMetadata(row: z.infer<typeof assetInfoRow>): TokenMetadata {
+  return {
+    subject: row.policy_id + row.asset_name,
+    policyId: row.policy_id,
+    assetName: row.asset_name,
+    // Koios answers with '' for an asset whose name is empty, which is a real and common
+    // case. An empty string is not a name, so it is reported as absent rather than passed
+    // through as ''.
+    assetNameAscii: emptyToUndefined(row.asset_name_ascii),
+    fingerprint: row.fingerprint,
+    supply: String(row.total_supply),
+    name: row.name ?? undefined,
+    ticker: row.ticker ?? undefined,
+    description: row.description ?? undefined,
+    decimals: row.decimals ?? undefined,
+    url: row.url ?? undefined,
+  }
+}
+
+function emptyToUndefined(value: string | null | undefined): string | undefined {
+  return value == null || value === '' ? undefined : value
+}
+
+// Koios caps the asset_info request body at ~5 KB, so send subjects in bounded chunks.
+const ASSET_INFO_CHUNK = 20
 
 // How many transactions we detail per page. Matches the extension's request size.
 const HISTORY_PAGE_SIZE = 50
@@ -577,6 +647,36 @@ export function createKoiosProvider(config: KoiosConfig): ChainProvider {
       const stakes = await registeredPoolStakes(ticker)
       const page = stakes.sort(byActiveStakeDesc).slice(offset, offset + limit)
       return poolInfoByIds(page.map((r) => r.pool_id_bech32))
+    },
+
+    async getTokenMetadata(subjects: string[]): Promise<TokenMetadata[]> {
+      if (subjects.length === 0) return []
+      // Koios keys assets by lowercase hex; normalize so lookups match its response.
+      const normalized = subjects.map((s) => s.toLowerCase())
+      const pairs = normalized.map((s) => [
+        s.slice(0, POLICY_ID_HEX_LEN),
+        s.slice(POLICY_ID_HEX_LEN),
+      ])
+
+      // Send bounded chunks to stay under the upstream body cap, then merge the rows.
+      const chunks: string[][][] = []
+      for (let i = 0; i < pairs.length; i += ASSET_INFO_CHUNK) {
+        chunks.push(pairs.slice(i, i + ASSET_INFO_CHUNK))
+      }
+      const perChunk = await Promise.all(
+        chunks.map(async (chunk) => {
+          const path = `/asset_info?select=${encodeURIComponent(ASSET_INFO_SELECT)}`
+          const data = await postJson(path, { _asset_list: chunk })
+          return parseWith(z.array(assetInfoRow), data, '/asset_info')
+        }),
+      )
+      const rows = perChunk.flat()
+      const bySubject = new Map(rows.map((r) => [r.policy_id + r.asset_name, r]))
+      // Return in the caller's order; unknown subjects are simply absent from Koios.
+      return normalized.flatMap((subject) => {
+        const row = bySubject.get(subject)
+        return row ? [mapTokenMetadata(row)] : []
+      })
     },
 
     async submitTx(cborHex: string): Promise<{ txHash: string }> {

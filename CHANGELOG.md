@@ -3,6 +3,34 @@
 All notable changes to this project are recorded here. The format follows
 Keep a Changelog, and the project uses semantic versioning.
 
+## [0.9.0] - 2026-07-08
+
+Adds native-token metadata for the assets a wallet holds.
+
+### Added
+
+- `POST /v1/assets/info`: given `{ subjects: [...] }` (a subject is a policy id plus the
+  hex asset name), returns normalized token metadata in input order: on-chain basics
+  (fingerprint, total supply, decoded asset name) plus the CIP-26 off-chain token registry
+  fields (name, ticker, description, decimals, url). Built from Koios `asset_info`. Batches
+  are chunked to stay under the upstream request-body cap; malformed subjects are rejected
+  with `400` and unknown subjects are omitted.
+- Live preprod integration coverage for token metadata against a real on-chain asset.
+
+### Note
+
+- Two things the closed backend served are intentionally out of scope here because they
+  are not raw chain data: editorial curation (scam/verified status, an "application"
+  category, a display symbol), which needs a separate curated dataset; and token/NFT
+  images, which are served from a media surface rather than inlined as base64. CIP-25 and
+  CIP-68 on-chain metadata fallbacks are a later addition.
+- The registry fields are projected out of Koios's `token_registry_metadata` column one by
+  one rather than taken as a whole object, specifically to leave the base64 `logo` behind.
+  Declining to read the logo is not enough, because Koios sends it either way. One live
+  asset (SNEK) answers in 74,753 bytes, of which 73,664 is the logo; with the projection
+  the same row is 326 bytes. A wallet asking about a full batch of its tokens would
+  otherwise pull megabytes of images only to throw them away.
+
 ## [0.8.0] - 2026-07-08
 
 Adds the stake-pool list for the delegation browse screen.

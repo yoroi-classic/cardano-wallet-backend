@@ -197,6 +197,41 @@ export interface PoolInfo {
   metadata?: PoolMetadata
 }
 
+/**
+ * Normalized metadata for a native token. On-chain basics (fingerprint, supply, names)
+ * always apply; the registry fields (name, ticker, description, decimals, url) come from
+ * the CIP-26 off-chain token registry and are only present for tokens that registered.
+ *
+ * Editorial curation the closed backend layered on top (scam/verified status, an
+ * "application" category, a display symbol) is not chain data and is intentionally not
+ * produced here. Token/NFT images are served from a separate media surface, so the raw
+ * registry logo is not inlined.
+ */
+export interface TokenMetadata {
+  /** CIP-26 subject: policy id concatenated with the hex asset name. */
+  subject: string
+  /** Policy id (hex). */
+  policyId: string
+  /** Asset name (hex). */
+  assetName: string
+  /** Asset name decoded as ASCII, when it is printable. */
+  assetNameAscii?: string
+  /** CIP-14 asset fingerprint (asset1...). */
+  fingerprint: string
+  /** Total supply across all mints/burns, as a string. */
+  supply: string
+  /** Human-readable name, from the token registry. */
+  name?: string
+  /** Ticker, from the token registry. */
+  ticker?: string
+  /** Description, from the token registry. */
+  description?: string
+  /** Decimal places, from the token registry. */
+  decimals?: number
+  /** Project URL, from the token registry. */
+  url?: string
+}
+
 /** Query for a page of the stake-pool list. */
 export interface PoolListParams {
   /** Maximum pools to return. */

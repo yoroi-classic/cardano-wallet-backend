@@ -1,5 +1,16 @@
 import { z } from 'zod'
-import type { AccountState, ProtocolParams, Tip, TxStatus, Utxo } from '../domain/types.js'
+import type {
+  AccountState,
+  CertificateKind,
+  ProtocolParams,
+  Tip,
+  TxCertificate,
+  TxIo,
+  TxStatus,
+  Utxo,
+  WalletTransaction,
+  Withdrawal,
+} from '../domain/types.js'
 import {
   BadRequestError,
   MalformedUpstreamError,
@@ -101,6 +112,84 @@ const txStatusRow = z.object({
   num_confirmations: z.number().nullish(),
 })
 
+const accountTxRow = z.object({
+  tx_hash: z.string(),
+  block_height: z.number(),
+  block_time: z.number(),
+  epoch_no: z.number(),
+})
+
+const assetItem = z.object({
+  policy_id: z.string(),
+  asset_name: z.string(),
+  quantity: numeric,
+})
+
+// Lenient on the address: display history should not 502 on an exotic (e.g. Byron) output.
+const txIoRow = z.object({
+  payment_addr: z.object({ bech32: z.string() }).nullish(),
+  value: numeric,
+  asset_list: z.array(assetItem).nullish(),
+})
+
+const withdrawalRow = z.object({ stake_addr: z.string(), amount: numeric })
+const certRow = z.object({
+  index: z.number(),
+  type: z.string(),
+  info: z.record(z.string(), z.unknown()).nullish(),
+})
+
+// Koios certificate type -> our normalized kind. Unrecognized types fall to 'other'.
+const CERT_KIND: Record<string, CertificateKind> = {
+  stake_registration: 'stake_registration',
+  stake_deregistration: 'stake_deregistration',
+  delegation: 'stake_delegation',
+  pool_update: 'pool_registration',
+  pool_retire: 'pool_retirement',
+  vote_delegation: 'vote_delegation',
+  drep_registration: 'drep_registration',
+  drep_update: 'drep_update',
+  drep_deregistration: 'drep_deregistration',
+  committee_hot_auth: 'committee_hot_auth',
+  committee_cold_resign: 'committee_cold_resign',
+  treasury_MIR: 'move_instantaneous_rewards',
+  reserve_MIR: 'move_instantaneous_rewards',
+  genesis: 'genesis_key_delegation',
+}
+
+const txInfoRow = z.object({
+  tx_hash: z.string(),
+  block_hash: z.string(),
+  block_height: z.number(),
+  epoch_no: z.number(),
+  absolute_slot: z.number(),
+  tx_timestamp: z.number(),
+  tx_block_index: z.number(),
+  fee: numeric,
+  invalid_after: numeric.nullish(),
+  inputs: z.array(txIoRow).nullish(),
+  outputs: z.array(txIoRow).nullish(),
+  withdrawals: z.array(withdrawalRow).nullish(),
+  certificates: z.array(certRow).nullish(),
+  metadata: z.unknown().nullish(),
+})
+
+function mapCertificate(c: z.infer<typeof certRow>): TxCertificate {
+  const kind = CERT_KIND[c.type] ?? 'other'
+  const info = c.info ?? undefined
+  // For an unrecognized kind, keep the provider's raw type so nothing is lost. Spread
+  // info first so a stray `providerType` key in it can't shadow the real provider type.
+  const details = kind === 'other' ? { ...(info ?? {}), providerType: c.type } : info
+  return {
+    kind,
+    index: c.index,
+    details: details && Object.keys(details).length > 0 ? details : undefined,
+  }
+}
+
+// How many transactions we detail per page. Matches the extension's request size.
+const HISTORY_PAGE_SIZE = 50
+
 interface KoiosRequestInit {
   method?: 'GET' | 'POST'
   body?: string | Uint8Array
@@ -195,6 +284,41 @@ export function createKoiosProvider(config: KoiosConfig): ChainProvider {
     }
   }
 
+  function mapTxIo(row: z.infer<typeof txIoRow>): TxIo {
+    return {
+      address: row.payment_addr?.bech32 ?? undefined,
+      value: String(row.value),
+      assets: (row.asset_list ?? []).map((a) => ({
+        policyId: a.policy_id,
+        assetName: a.asset_name,
+        quantity: String(a.quantity),
+      })),
+    }
+  }
+
+  function mapTx(row: z.infer<typeof txInfoRow>): WalletTransaction {
+    const withdrawals: Withdrawal[] = (row.withdrawals ?? []).map((w) => ({
+      stakeAddress: w.stake_addr,
+      amount: String(w.amount),
+    }))
+    const certificates: TxCertificate[] = (row.certificates ?? []).map(mapCertificate)
+    return {
+      txHash: row.tx_hash,
+      block: row.block_height,
+      blockHash: row.block_hash,
+      slot: row.absolute_slot,
+      epoch: row.epoch_no,
+      blockTime: row.tx_timestamp,
+      fee: String(row.fee),
+      ttl: row.invalid_after != null ? Number(row.invalid_after) : undefined,
+      inputs: (row.inputs ?? []).map(mapTxIo),
+      outputs: (row.outputs ?? []).map(mapTxIo),
+      withdrawals,
+      certificates,
+      metadata: row.metadata ?? undefined,
+    }
+  }
+
   return {
     name: 'koios',
 
@@ -255,6 +379,32 @@ export function createKoiosProvider(config: KoiosConfig): ChainProvider {
       })
       const rows = parseWith(z.array(accountUtxoRow), data, '/account_utxos')
       return rows.map(mapUtxo)
+    },
+
+    async getTxHistory(stakeAddress: string, afterBlock?: number): Promise<WalletTransaction[]> {
+      // account_txs is the single-account form; use GET with query params.
+      const query = new URLSearchParams({ _stake_address: stakeAddress })
+      if (afterBlock !== undefined) query.set('_after_block_height', String(afterBlock))
+      const listData = await request(`/account_txs?${query.toString()}`)
+      const list = parseWith(z.array(accountTxRow), listData, '/account_txs')
+      if (list.length === 0) return []
+
+      // One page, oldest first. The caller pages forward with the last block it saw.
+      const page = [...list]
+        .sort((a, b) => a.block_height - b.block_height)
+        .slice(0, HISTORY_PAGE_SIZE)
+      const data = await postJson('/tx_info', {
+        _tx_hashes: page.map((r) => r.tx_hash),
+        _inputs: true,
+        _metadata: true,
+        _assets: true,
+        _withdrawals: true,
+        _certs: true,
+      })
+      const rows = parseWith(z.array(txInfoRow), data, '/tx_info')
+      return rows
+        .sort((a, b) => a.block_height - b.block_height || a.tx_block_index - b.tx_block_index)
+        .map(mapTx)
     },
 
     async submitTx(cborHex: string): Promise<{ txHash: string }> {

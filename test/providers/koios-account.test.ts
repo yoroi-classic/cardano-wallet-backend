@@ -247,3 +247,170 @@ describe('koios getTxStatus', () => {
     await expect(provider.getTxStatus('bb')).resolves.toEqual({ seen: false, confirmations: 0 })
   })
 })
+
+// getTxHistory makes two calls (account_txs then tx_info), so route the fake by path.
+function fakeFetchByPath(responses: Record<string, unknown>): {
+  fetchImpl: FetchLike
+  calls: Call[]
+} {
+  const calls: Call[] = []
+  const fetchImpl: FetchLike = async (url, init) => {
+    calls.push({
+      url,
+      method: init?.method,
+      body: init?.body,
+      contentType: init?.headers?.['content-type'],
+    })
+    const key = Object.keys(responses).find((k) => url.includes(k))
+    const data = key !== undefined ? responses[key] : []
+    return { ok: true, status: 200, json: async () => data, text: async () => '' }
+  }
+  return { fetchImpl, calls }
+}
+
+describe('koios getTxHistory', () => {
+  const ACCOUNT_TXS = [
+    { tx_hash: 'aa', block_height: 10, block_time: 100, epoch_no: 1 },
+    { tx_hash: 'bb', block_height: 9, block_time: 90, epoch_no: 1 }, // older, listed second
+  ]
+  const TX_INFO = [
+    {
+      tx_hash: 'bb',
+      block_hash: 'h9',
+      block_height: 9,
+      epoch_no: 1,
+      absolute_slot: 900,
+      tx_timestamp: 90,
+      tx_block_index: 0,
+      fee: '150000',
+      invalid_after: 999,
+      inputs: [{ payment_addr: { bech32: 'addr_in' }, value: '5000000', asset_list: null }],
+      outputs: [
+        {
+          payment_addr: { bech32: 'addr_out' },
+          value: '4800000',
+          asset_list: [{ policy_id: 'pol', asset_name: '4142', quantity: '3' }],
+        },
+      ],
+      withdrawals: [{ stake_addr: 'stake_w', amount: '250000' }],
+      certificates: [{ index: 0, type: 'delegation', info: { pool: 'p' } }],
+      metadata: null,
+    },
+    {
+      tx_hash: 'aa',
+      block_hash: 'h10',
+      block_height: 10,
+      epoch_no: 1,
+      absolute_slot: 1000,
+      tx_timestamp: 100,
+      tx_block_index: 1,
+      fee: '170000',
+      invalid_after: null,
+      inputs: [],
+      outputs: [],
+      withdrawals: [],
+      certificates: [],
+      metadata: { '674': { msg: ['hi'] } },
+    },
+  ]
+
+  it('lists then details transactions, mapped and oldest-first (regression)', async () => {
+    const { fetchImpl, calls } = fakeFetchByPath({
+      '/account_txs': ACCOUNT_TXS,
+      '/tx_info': TX_INFO,
+    })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const history = await provider.getTxHistory(STAKE)
+
+    expect(history.map((t) => t.txHash)).toEqual(['bb', 'aa'])
+    expect(history[0]).toEqual({
+      txHash: 'bb',
+      block: 9,
+      blockHash: 'h9',
+      slot: 900,
+      epoch: 1,
+      blockTime: 90,
+      fee: '150000',
+      ttl: 999,
+      inputs: [{ address: 'addr_in', value: '5000000', assets: [] }],
+      outputs: [
+        {
+          address: 'addr_out',
+          value: '4800000',
+          assets: [{ policyId: 'pol', assetName: '4142', quantity: '3' }],
+        },
+      ],
+      withdrawals: [{ stakeAddress: 'stake_w', amount: '250000' }],
+      certificates: [{ kind: 'stake_delegation', index: 0, details: { pool: 'p' } }],
+      metadata: undefined,
+    })
+    expect(history[1]?.metadata).toEqual({ '674': { msg: ['hi'] } })
+    const accountCall = calls.find((c) => c.url.includes('/account_txs'))
+    expect(accountCall?.method ?? 'GET').toBe('GET')
+    expect(accountCall?.url).toContain(`_stake_address=${STAKE}`)
+  })
+
+  it('passes afterBlock to account_txs', async () => {
+    const { fetchImpl, calls } = fakeFetchByPath({
+      '/account_txs': ACCOUNT_TXS,
+      '/tx_info': TX_INFO,
+    })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await provider.getTxHistory(STAKE, 500)
+
+    const accountCall = calls.find((c) => c.url.includes('/account_txs'))
+    expect(accountCall?.url).toContain(`_stake_address=${STAKE}`)
+    expect(accountCall?.url).toContain('_after_block_height=500')
+  })
+
+  it('normalizes known certificates and preserves unknown ones as "other"', async () => {
+    const info = [
+      {
+        ...TX_INFO[1],
+        certificates: [
+          { index: 0, type: 'stake_registration', info: { stake_address: 's' } },
+          { index: 1, type: 'some_future_cert', info: { foo: 'bar' } },
+        ],
+      },
+    ]
+    const { fetchImpl } = fakeFetchByPath({ '/account_txs': [ACCOUNT_TXS[0]], '/tx_info': info })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [tx] = await provider.getTxHistory(STAKE)
+
+    expect(tx?.certificates).toEqual([
+      { kind: 'stake_registration', index: 0, details: { stake_address: 's' } },
+      { kind: 'other', index: 1, details: { providerType: 'some_future_cert', foo: 'bar' } },
+    ])
+  })
+
+  it('accepts invalid_after delivered as a numeric string', async () => {
+    const info = [{ ...TX_INFO[1], invalid_after: '12345' }]
+    const { fetchImpl } = fakeFetchByPath({ '/account_txs': [ACCOUNT_TXS[0]], '/tx_info': info })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [tx] = await provider.getTxHistory(STAKE)
+
+    expect(tx?.ttl).toBe(12345)
+  })
+
+  it('returns empty and skips tx_info when the account has no transactions', async () => {
+    const { fetchImpl, calls } = fakeFetchByPath({ '/account_txs': [] })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getTxHistory(STAKE)).resolves.toEqual([])
+    expect(calls.some((c) => c.url.includes('/tx_info'))).toBe(false)
+  })
+
+  it('rejects a malformed tx_info row', async () => {
+    const { fetchImpl } = fakeFetchByPath({
+      '/account_txs': ACCOUNT_TXS,
+      '/tx_info': [{ tx_hash: 'aa' }],
+    })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getTxHistory(STAKE)).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+})

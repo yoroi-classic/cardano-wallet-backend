@@ -3,7 +3,7 @@ import { bech32 } from '@scure/base'
 import type { FastifyInstance } from 'fastify'
 import { buildServer } from '../../src/http/server.js'
 import type { ChainProvider } from '../../src/providers/provider.js'
-import type { AccountState, Utxo } from '../../src/domain/types.js'
+import type { AccountState, Utxo, WalletTransaction } from '../../src/domain/types.js'
 import { ProviderError } from '../../src/domain/errors.js'
 
 // A well-formed (valid checksum) preprod stake address for the happy path.
@@ -30,6 +30,7 @@ function providerWith(overrides: Partial<ChainProvider>): ChainProvider {
     getProtocolParams: unused,
     getAccountState: async () => structuredClone(STATE),
     getAccountUtxos: async () => structuredClone(UTXOS),
+    getTxHistory: async () => [],
     submitTx: unused,
     getTxStatus: unused,
     ...overrides,
@@ -96,5 +97,48 @@ describe('account routes', () => {
 
     expect(res.statusCode).toBe(502)
     expect(res.json()).toMatchObject({ error: { code: 'UPSTREAM_ERROR' } })
+  })
+
+  it('GET /v1/account/:stake/txs returns transaction history', async () => {
+    const TXS: WalletTransaction[] = [
+      {
+        txHash: 'aa',
+        block: 1,
+        blockHash: 'bb',
+        slot: 2,
+        epoch: 3,
+        blockTime: 4,
+        fee: '170000',
+        inputs: [],
+        outputs: [],
+        withdrawals: [],
+        certificates: [],
+      },
+    ]
+    app = buildServer({ provider: providerWith({ getTxHistory: async () => TXS }) })
+    const res = await app.inject({ method: 'GET', url: `/v1/account/${STAKE}/txs` })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual(TXS)
+  })
+
+  it('rejects a non-numeric or empty after with 400', async () => {
+    app = buildServer({ provider: providerWith({}) })
+
+    const nonNumeric = await app.inject({
+      method: 'GET',
+      url: `/v1/account/${STAKE}/txs?after=abc`,
+    })
+    expect(nonNumeric.statusCode).toBe(400)
+    expect(nonNumeric.json()).toMatchObject({ error: { code: 'BAD_REQUEST' } })
+
+    const empty = await app.inject({ method: 'GET', url: `/v1/account/${STAKE}/txs?after=` })
+    expect(empty.statusCode).toBe(400)
+
+    const huge = await app.inject({
+      method: 'GET',
+      url: `/v1/account/${STAKE}/txs?after=999999999999999999999`,
+    })
+    expect(huge.statusCode).toBe(400)
   })
 })

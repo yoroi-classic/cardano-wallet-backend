@@ -32,4 +32,20 @@ export function registerAccountRoutes(app: FastifyInstance, provider: ChainProvi
     const { stake } = request.params as { stake: string }
     return provider.getAccountUtxos(assertStakeAddress(stake))
   })
+
+  app.get('/v1/account/:stake/txs', async (request) => {
+    const { stake } = request.params as { stake: string }
+    const { after } = request.query as { after?: string }
+    let afterBlock: number | undefined
+    if (after !== undefined) {
+      // Digits only and within safe-integer range, so an empty, malformed, or absurdly
+      // large cursor is a 400 rather than a silent page 0 or a rounded block height.
+      const n = Number(after)
+      if (!/^\d+$/.test(after) || !Number.isSafeInteger(n)) {
+        throw new BadRequestError('after must be a non-negative block height')
+      }
+      afterBlock = n
+    }
+    return provider.getTxHistory(assertStakeAddress(stake), afterBlock)
+  })
 }

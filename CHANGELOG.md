@@ -3,6 +3,18 @@
 All notable changes to this project are recorded here. The format follows
 Keep a Changelog, and the project uses semantic versioning.
 
+## [0.4.0] - 2026-07-08
+
+Toward parity with the data the existing wallet reads from the closed backend.
+
+### Added
+
+- `GET /v1/account/{stake}/txs` for transaction history: inputs, outputs (with native
+  assets), fee, withdrawals, certificates, metadata, and block info, oldest first, with
+  `?after={block}` to page forward. Built from Koios `account_txs` + `tx_info`.
+- The e2e slice now reads history after its self-payment confirms and asserts the
+  transaction shows up, exercising the new endpoint against the live network.
+
 ## [0.3.0] - 2026-07-08
 
 ### Added

@@ -44,12 +44,19 @@ export interface V1TxStatus {
   confirmations: number
 }
 
+export interface V1Transaction {
+  txHash: string
+  block: number
+  fee: string
+}
+
 export interface V1Client {
   getHealth(): Promise<{ status?: string; service?: string }>
   getTip(): Promise<V1Tip>
   getProtocolParams(): Promise<V1ProtocolParams>
   getAccountState(stake: string): Promise<V1AccountState>
   getAccountUtxos(stake: string): Promise<V1Utxo[]>
+  getTxHistory(stake: string): Promise<V1Transaction[]>
   submitTx(cborHex: string): Promise<{ txHash: string }>
   getTxStatus(hash: string): Promise<V1TxStatus>
 }
@@ -75,6 +82,7 @@ export function createV1Client(baseUrl: string): V1Client {
     getProtocolParams: () => get<V1ProtocolParams>('/v1/chain/protocol-params'),
     getAccountState: (stake) => get<V1AccountState>(`/v1/account/${stake}/state`),
     getAccountUtxos: (stake) => get<V1Utxo[]>(`/v1/account/${stake}/utxos`),
+    getTxHistory: (stake) => get<V1Transaction[]>(`/v1/account/${stake}/txs`),
     getTxStatus: (hash) => get<V1TxStatus>(`/v1/tx/${hash}/status`),
     submitTx: async (cborHex) => {
       const res = await fetch(`${baseUrl}/v1/tx/submit`, {

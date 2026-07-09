@@ -43,6 +43,7 @@ function providerWith(overrides: Partial<ChainProvider>): ChainProvider {
     getProtocolParams: async () => structuredClone(PARAMS),
     getAccountState: unused,
     getAccountUtxos: unused,
+    getTxHistory: unused,
     submitTx: unused,
     getTxStatus: unused,
     ...overrides,

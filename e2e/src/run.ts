@@ -86,7 +86,14 @@ async function main(): Promise<void> {
     const status = await client.getTxStatus(tx.txHash)
     console.log(`  seen=${status.seen} confirmations=${status.confirmations}`)
     if (status.confirmations >= cfg.confirmations) {
-      console.log('confirmed. vertical slice complete.')
+      // The tx is in a block, so it should now show up in history via /v1.
+      const history = await client.getTxHistory(wallet.stakeAddress)
+      const present = history.some((t) => t.txHash === tx.txHash)
+      console.log(`history:      ${history.length} tx(s), this one present: ${present}`)
+      if (!present) {
+        throw new Error('submitted transaction did not appear in /v1 history')
+      }
+      console.log('confirmed and in history. vertical slice complete.')
       return
     }
   }

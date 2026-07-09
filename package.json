@@ -1,8 +1,9 @@
 {
   "name": "cardano-wallet-backend",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Provider-agnostic Cardano wallet data backend for Yoroi Classic (Koios, Blockfrost, bring-your-own Dingo node)",
   "type": "module",
+  "packageManager": "npm@10.9.7",
   "engines": {
     "node": ">=22"
   },
@@ -20,8 +21,12 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:contract": "vitest run test/http/api-contract.test.ts",
     "test:coverage": "vitest run --coverage",
     "test:integration": "vitest run --config vitest.integration.config.ts",
+    "audit:prod": "npm audit --omit=dev --audit-level=high",
+    "docker:build": "docker build -t cardano-wallet-backend:ci .",
+    "check:ci": "npm run lint && npm run format:check && npm run typecheck && npm run build && npm run test:coverage && npm run audit:prod && npm run docker:build",
     "check:version": "node scripts/check-version-bump.mjs"
   },
   "dependencies": {

@@ -20,10 +20,12 @@ development  ->  preview  ->  preprod  ->  main
 
 ## CI gates by branch
 
-Every branch runs the baseline `ci` job (lint, format, typecheck, build, unit tests
-with coverage). On top of that:
+Every branch runs the baseline `ci` job (lint, format, typecheck, build, unit/API
+contract tests with coverage, production dependency audit, and Docker build). On top of
+that:
 
-- `development` — baseline `ci` only. Kept light so day-to-day work moves.
+- `development` — baseline `ci` only. Live provider integration stays out of this gate
+  so day-to-day work moves.
 - `preview` — `ci` plus the semver bump check.
 - `preprod` — `ci`, the semver check, the live-preprod integration suite, and a
   dependency audit.
@@ -40,8 +42,26 @@ Every feature ships with tests along three paths:
 - Regression, a shape or mapping assertion that fails loudly if the contract drifts.
 
 Providers take an injectable `fetch` so their tests are deterministic and never touch
-the network. Integration tests that hit real preprod live under `test/integration` and
-run only in the preprod and main gates.
+the network. API contract tests live under `test/http` and are included in the default
+unit and coverage commands. Integration tests that hit real preprod live under
+`test/integration` and run only in the preprod and main gates.
+
+## Toolchain upgrades
+
+Runtime and package-manager pins live in `.nvmrc`, `package.json` (`engines` and
+`packageManager`), `package-lock.json`, the Dockerfile base image, and the GitHub
+Actions Node setup. Keep those in sync when changing Node or npm.
+
+For Node, package-manager, framework, compiler, linter, or test-runner major bumps:
+
+- Update the pin, manifest, and lockfile together.
+- Note the reason and any migration impact in `CHANGELOG.md`.
+- Run `npm ci`, `npm run lint`, `npm run format:check`, `npm run typecheck`,
+  `npm run build`, `npm run test:coverage`, `npm run audit:prod`, and
+  `npm run docker:build` before opening the PR.
+- Keep provider tests deterministic by using injected fetch fixtures. Live provider
+  endpoints must remain configurable by environment variables, and defaults must stay on
+  neutral network services rather than wallet-vendor hosted services.
 
 ## Versioning
 

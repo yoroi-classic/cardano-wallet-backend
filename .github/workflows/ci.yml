@@ -1,7 +1,8 @@
 name: ci
 
-# Baseline gate for every branch in the flow. Lint, format, types, and the full
-# unit suite with coverage. This is the check required on development and up.
+# Baseline gate for every branch in the flow. Lint, format, types, build,
+# unit/contract tests with coverage, production dependency audit, and Docker build.
+# This is the check required on development and up, including Dependabot PRs.
 on:
   push:
     branches: [development, preview, preprod, main]
@@ -29,4 +30,9 @@ jobs:
       - run: npm run format:check
       - run: npm run typecheck
       - run: npm run build
-      - run: npm run test:coverage
+      - name: Unit and contract tests with coverage
+        run: npm run test:coverage
+      - name: Audit production dependencies
+        run: npm run audit:prod
+      - name: Docker build check
+        run: npm run docker:build

@@ -3,6 +3,19 @@
 All notable changes to this project are recorded here. The format follows
 Keep a Changelog, and the project uses semantic versioning.
 
+## [0.7.1] - 2026-07-09
+
+Modernizes the backend build and CI toolchain checks.
+
+### Changed
+
+- Documented the Node/npm toolchain pins and the upgrade checklist for runtime,
+  framework, compiler, linter, and test-runner major bumps.
+- Extended the baseline CI and local `check:ci` script to cover lint, format,
+  typecheck, build, unit/API contract coverage, production dependency audit, and Docker
+  build checks for regular and Dependabot PRs.
+- Synced package-lock metadata with the current package version.
+
 ## [0.7.0] - 2026-07-08
 
 Closes the account-rewards parity gap with the closed backend.

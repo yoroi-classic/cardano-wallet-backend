@@ -3,6 +3,28 @@
 All notable changes to this project are recorded here. The format follows
 Keep a Changelog, and the project uses semantic versioning.
 
+## [0.6.0] - 2026-07-08
+
+Toward parity with the pool data the existing wallet reads from the closed backend.
+
+### Added
+
+- `POST /v1/pools/info`: given `{ poolIds: [...] }` (bech32 `pool1...`), returns normalized
+  stake-pool info in input order: registration status and retiring epoch, margin, fixed
+  cost, declared and live pledge, active and live stake, saturation (as a fraction of the
+  cap), live delegator count, lifetime blocks minted, and off-chain metadata (name,
+  ticker, homepage, description). Built from Koios `pool_info`. Malformed input is
+  rejected with `400` before any upstream call, and unknown pool ids are omitted.
+- Live preprod integration coverage for pool info against a currently-registered pool.
+- The e2e slice reads pool info back through `/v1/pools/info` for a live registered pool
+  and checks the normalized shape, exercising the endpoint on the read path.
+
+### Note
+
+- Estimated ROA is intentionally not included yet: it is a derived analytic (the closed
+  backend sources it from cexplorer), not raw chain data. It will be computed from pool
+  reward history in a later change.
+
 ## [0.5.0] - 2026-07-08
 
 ### Added

@@ -50,6 +50,16 @@ export interface V1Transaction {
   fee: string
 }
 
+export interface V1PoolInfo {
+  poolId: string
+  poolIdHex: string
+  status: string
+  margin: number
+  liveStake: string
+  saturation: number
+  metadata?: { name?: string; ticker?: string; homepage?: string; description?: string }
+}
+
 export interface V1Client {
   getHealth(): Promise<{ status?: string; service?: string }>
   getTip(): Promise<V1Tip>
@@ -59,6 +69,7 @@ export interface V1Client {
   /** History oldest-first; `afterBlock` pages forward past that block height. */
   getTxHistory(stake: string, afterBlock?: number): Promise<V1Transaction[]>
   filterUsedAddresses(addresses: string[]): Promise<string[]>
+  getPoolInfo(poolIds: string[]): Promise<V1PoolInfo[]>
   submitTx(cborHex: string): Promise<{ txHash: string }>
   getTxStatus(hash: string): Promise<V1TxStatus>
 }
@@ -103,6 +114,7 @@ export function createV1Client(baseUrl: string): V1Client {
     },
     getTxStatus: (hash) => get<V1TxStatus>(`/v1/tx/${hash}/status`),
     filterUsedAddresses: (addresses) => post<string[]>('/v1/addresses/filter-used', { addresses }),
+    getPoolInfo: (poolIds) => post<V1PoolInfo[]>('/v1/pools/info', { poolIds }),
     submitTx: (cborHex) => post<{ txHash: string }>('/v1/tx/submit', { cbor: cborHex }),
   }
 }

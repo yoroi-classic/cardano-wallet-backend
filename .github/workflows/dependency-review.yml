@@ -8,13 +8,11 @@ on:
       - 'package-lock.json'
       - 'e2e/package.json'
       - 'e2e/package-lock.json'
-      - 'Dockerfile'
       - '.github/workflows/*.yml'
       - '.github/workflows/*.yaml'
 
 permissions:
   contents: read
-  pull-requests: read
 
 concurrency:
   group: dependency-review-${{ github.ref }}

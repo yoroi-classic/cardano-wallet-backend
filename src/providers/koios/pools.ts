@@ -1,8 +1,20 @@
 import { z } from 'zod'
-import type { PoolInfo, PoolMetadata } from '../../domain/types/pools.js'
+import type { PoolInfo, PoolListParams, PoolMetadata } from '../../domain/types/pools.js'
 import type { PoolCapability } from '../capabilities/pools.js'
 import type { KoiosClient } from './client.js'
-import { numeric } from './schema.js'
+import { chunked, numeric } from './schema.js'
+
+// Koios rejects a /pool_info body carrying 100 ids with a 413, so hydrate in smaller
+// batches. 50 leaves room for the id set to grow without brushing the limit again.
+const POOL_INFO_CHUNK = 50
+// Koios caps a single response at 1000 rows.
+const POOL_LIST_PAGE_SIZE = 1000
+// ~3k registered pools on mainnet today. 20 pages is far above that and keeps the walk
+// bounded if upstream ever stops shrinking the last page.
+const POOL_LIST_MAX_PAGES = 20
+
+// Pools with no active stake sort last, so give them a value below every real stake.
+const NO_ACTIVE_STAKE = -1n
 
 const poolMetaJson = z.object({
   name: z.string().nullish(),
@@ -35,6 +47,27 @@ const poolInfoRow = z.object({
   block_count: count.nullish(),
   meta_json: poolMetaJson.nullish(),
 })
+
+const poolStakeRow = z.object({
+  pool_id_bech32: z.string(),
+  active_stake: numeric.nullish(),
+})
+
+type PoolStakeRow = z.infer<typeof poolStakeRow>
+
+function activeStakeOf(row: PoolStakeRow): bigint {
+  return row.active_stake == null ? NO_ACTIVE_STAKE : BigInt(row.active_stake)
+}
+
+// Largest active stake first. Ties break on pool id so that the order is total and paging
+// stays stable: without it, equally-staked pools could shuffle between calls and the same
+// pool could be served twice, or skipped, across two pages.
+function byActiveStakeDesc(a: PoolStakeRow, b: PoolStakeRow): number {
+  const left = activeStakeOf(a)
+  const right = activeStakeOf(b)
+  if (left !== right) return left > right ? -1 : 1
+  return a.pool_id_bech32 < b.pool_id_bech32 ? -1 : a.pool_id_bech32 > b.pool_id_bech32 ? 1 : 0
+}
 
 function mapPoolMetadata(
   m: z.infer<typeof poolMetaJson> | null | undefined,
@@ -69,17 +102,65 @@ function mapPoolInfo(row: z.infer<typeof poolInfoRow>): PoolInfo {
 }
 
 export function createPoolMethods(koios: KoiosClient): PoolCapability {
-  return {
-    async getPoolInfo(poolIds: string[]): Promise<PoolInfo[]> {
-      if (poolIds.length === 0) return []
-      const data = await koios.postJson('/pool_info', { _pool_bech32_ids: poolIds })
+  // Hydrate a set of pool ids with full pool_info, preserving the input order. Unknown ids
+  // are simply absent from Koios, so the result is never longer than the input.
+  //
+  // Koios rejects an oversized request body with a 413, and a single batch of 100 ids is
+  // already over that limit, so the ids are hydrated in chunks and stitched back together.
+  async function poolInfoByIds(poolIds: string[]): Promise<PoolInfo[]> {
+    if (poolIds.length === 0) return []
+    const byId = new Map<string, z.infer<typeof poolInfoRow>>()
+    for (const chunk of chunked(poolIds, POOL_INFO_CHUNK)) {
+      const data = await koios.postJson('/pool_info', { _pool_bech32_ids: chunk })
       const rows = koios.parseWith(z.array(poolInfoRow), data, '/pool_info')
-      const byId = new Map(rows.map((r) => [r.pool_id_bech32, r]))
-      // Return in the caller's order; unknown pool ids are simply absent from Koios.
-      return poolIds.flatMap((id) => {
-        const row = byId.get(id)
-        return row ? [mapPoolInfo(row)] : []
+      for (const row of rows) byId.set(row.pool_id_bech32, row)
+    }
+    return poolIds.flatMap((id) => {
+      const row = byId.get(id)
+      return row ? [mapPoolInfo(row)] : []
+    })
+  }
+
+  // Read every registered pool's id and active stake, following Koios's paging to the end.
+  // The page cap bounds the walk so a misbehaving upstream cannot spin here forever.
+  async function registeredPoolStakes(ticker?: string): Promise<PoolStakeRow[]> {
+    const rows: PoolStakeRow[] = []
+    for (let page = 0; page < POOL_LIST_MAX_PAGES; page += 1) {
+      const query = new URLSearchParams({
+        pool_status: 'eq.registered',
+        // active_stake is a text column upstream, so it is selected for the local sort
+        // below rather than ordered on here.
+        select: 'pool_id_bech32,active_stake',
+        limit: String(POOL_LIST_PAGE_SIZE),
+        offset: String(page * POOL_LIST_PAGE_SIZE),
       })
+      if (ticker !== undefined) query.set('ticker', `ilike.*${ticker}*`)
+      const data = await koios.request(`/pool_list?${query.toString()}`)
+      const parsed = koios.parseWith(z.array(poolStakeRow), data, '/pool_list')
+      rows.push(...parsed)
+      if (parsed.length < POOL_LIST_PAGE_SIZE) return rows
+    }
+    return rows
+  }
+
+  return {
+    getPoolInfo(poolIds: string[]): Promise<PoolInfo[]> {
+      return poolInfoByIds(poolIds)
+    },
+
+    async getPoolList({ limit, offset, ticker }: PoolListParams): Promise<PoolInfo[]> {
+      // Neutral ordering: registered pools by active stake, largest first, no promotional
+      // ranking.
+      //
+      // The sort has to happen here, not upstream. Koios stores active_stake as text, so
+      // ordering on it in the query sorts lexicographically: a pool with 9_998_813_687
+      // lovelace comes out above one with 7_682_048_683_977, because '9' > '7'. Ordering
+      // by stake is this endpoint's contract, so read the whole registered set (id and
+      // stake only, which is light), sort it numerically, and hydrate just the requested
+      // page with full pool_info.
+      const stakes = await registeredPoolStakes(ticker)
+      const page = stakes.sort(byActiveStakeDesc).slice(offset, offset + limit)
+      return poolInfoByIds(page.map((r) => r.pool_id_bech32))
     },
   }
 }

@@ -15,14 +15,41 @@ const POOL_KEY_HASH_BYTES = 28
 // Validate a bech32 pool id (charset, checksum, `pool` HRP, and a 28-byte key hash) so a
 // malformed value is rejected here rather than passed on to the provider. Checking the
 // decoded length rejects a well-formed-but-wrong-size payload that still carries the HRP.
+//
+// Every step has to be non-throwing: the checksum passing does not mean the 5-bit payload
+// converts back to bytes, and the throwing `fromWords` would surface that as a 500 rather
+// than the 400 this bad input deserves.
 function isPoolId(value: string): boolean {
   const decoded = bech32.decodeUnsafe(value, BECH32_LIMIT)
   if (decoded === undefined || decoded.prefix !== 'pool') return false
-  return bech32.fromWords(decoded.words).length === POOL_KEY_HASH_BYTES
+  const bytes = bech32.fromWordsUnsafe(decoded.words)
+  return bytes !== undefined && bytes.length === POOL_KEY_HASH_BYTES
 }
+
+// Page bounds for the list. A page hydrates each pool with full info, so cap the size.
+const listQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(250).default(50),
+  offset: z.coerce.number().int().min(0).max(100_000).default(0),
+  // Restricted to an alphanumeric substring so it can't smuggle PostgREST filter syntax
+  // into the upstream query.
+  ticker: z
+    .string()
+    .regex(/^[A-Za-z0-9]{1,15}$/)
+    .optional(),
+})
 
 /** Stake-pool reads. */
 export function registerPoolRoutes(app: FastifyInstance, provider: ChainProvider): void {
+  app.get('/v1/pools', async (request) => {
+    const parsed = listQuery.safeParse(request.query)
+    if (!parsed.success) {
+      throw new BadRequestError(
+        'query must be limit (1-250), offset (>=0), and an optional alphanumeric ticker',
+      )
+    }
+    return provider.getPoolList(parsed.data)
+  })
+
   app.post('/v1/pools/info', async (request) => {
     const parsed = body.safeParse(request.body)
     if (!parsed.success) {

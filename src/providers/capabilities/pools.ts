@@ -1,4 +1,4 @@
-import type { PoolInfo } from '../../domain/types/pools.js'
+import type { PoolInfo, PoolListParams } from '../../domain/types/pools.js'
 
 /** Stake-pool reads. */
 export interface PoolCapability {
@@ -8,4 +8,10 @@ export interface PoolCapability {
    * result is never longer than `poolIds`.
    */
   getPoolInfo(poolIds: string[]): Promise<PoolInfo[]>
+
+  /**
+   * A page of registered stake pools, ordered by active stake, largest first. Neutral by
+   * construction: no promotional ranking, and no pool is given a house position.
+   */
+  getPoolList(params: PoolListParams): Promise<PoolInfo[]>
 }

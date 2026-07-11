@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify'
-import type { ProtocolParams, Tip } from '../../domain/types.js'
+import type { ProtocolParams, Tip } from '../../domain/types/chain.js'
 import type { ChainProvider } from '../../providers/provider.js'
 
 /**

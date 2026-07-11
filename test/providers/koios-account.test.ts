@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createKoiosProvider, type FetchLike } from '../../src/providers/koios.js'
+import { createKoiosProvider, type FetchLike } from '../../src/providers/koios/index.js'
 import { BadRequestError, MalformedUpstreamError, ProviderError } from '../../src/domain/errors.js'
 
 const BASE = 'https://preprod.koios.rest/api/v1'

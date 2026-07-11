@@ -2,8 +2,9 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { buildServer } from '../../src/http/server.js'
 import type { ChainProvider } from '../../src/providers/provider.js'
-import type { ProtocolParams, Tip } from '../../src/domain/types.js'
+import type { ProtocolParams, Tip } from '../../src/domain/types/chain.js'
 import { ProviderError, ProviderTimeoutError } from '../../src/domain/errors.js'
+import { fakeProvider } from '../support/fake-provider.js'
 
 const TIP: Tip = { block: 3_500_000, slot: 86_400_123, epoch: 199, hash: 'aa11bb22' }
 
@@ -33,23 +34,12 @@ const PARAMS: ProtocolParams = {
  * accidental in-place mutation in a route or serializer would fail the assertion
  * instead of silently mutating the shared fixture too.
  */
-function providerWith(overrides: Partial<ChainProvider>): ChainProvider {
-  const unused = async () => {
-    throw new Error('unused')
-  }
-  return {
-    name: 'fake',
+function providerWith(overrides: Partial<ChainProvider> = {}): ChainProvider {
+  return fakeProvider({
     getTip: async () => structuredClone(TIP),
     getProtocolParams: async () => structuredClone(PARAMS),
-    filterUsedAddresses: unused,
-    getAccountState: unused,
-    getAccountUtxos: unused,
-    getTxHistory: unused,
-    submitTx: unused,
-    getTxStatus: unused,
-    getPoolInfo: unused,
     ...overrides,
-  }
+  })
 }
 
 let app: FastifyInstance

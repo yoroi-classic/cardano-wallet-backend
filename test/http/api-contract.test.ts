@@ -1,13 +1,14 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { buildServer } from '../../src/http/server.js'
-import type { ProtocolParams, Tip } from '../../src/domain/types.js'
+import type { ProtocolParams, Tip } from '../../src/domain/types/chain.js'
 import {
   MalformedUpstreamError,
   ProviderError,
   ProviderTimeoutError,
 } from '../../src/domain/errors.js'
 import type { ChainProvider } from '../../src/providers/provider.js'
+import { fakeProvider } from '../support/fake-provider.js'
 
 const TIP: Tip = {
   block: 3_500_000,
@@ -46,10 +47,7 @@ function providerWith(
   overrides: Partial<ChainProvider> = {},
   calls: ProviderCallCounts = { tip: 0, protocolParams: 0 },
 ): ChainProvider {
-  const unused = async () => {
-    throw new Error('unused')
-  }
-  return {
+  return fakeProvider({
     name: 'contract-test',
     getTip: async () => {
       calls.tip += 1
@@ -59,15 +57,8 @@ function providerWith(
       calls.protocolParams += 1
       return structuredClone(PROTOCOL_PARAMS)
     },
-    filterUsedAddresses: unused,
-    getAccountState: unused,
-    getAccountUtxos: unused,
-    getTxHistory: unused,
-    getPoolInfo: unused,
-    submitTx: unused,
-    getTxStatus: unused,
     ...overrides,
-  }
+  })
 }
 
 function expectJson(res: { headers: Record<string, unknown> }): void {

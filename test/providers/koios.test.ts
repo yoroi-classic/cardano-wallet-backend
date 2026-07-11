@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createKoiosProvider, type FetchLike } from '../../src/providers/koios.js'
+import { createKoiosProvider, type FetchLike } from '../../src/providers/koios/index.js'
 import {
   MalformedUpstreamError,
   ProviderError,

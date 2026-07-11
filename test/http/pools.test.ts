@@ -3,7 +3,8 @@ import { bech32 } from '@scure/base'
 import type { FastifyInstance } from 'fastify'
 import { buildServer } from '../../src/http/server.js'
 import type { ChainProvider } from '../../src/providers/provider.js'
-import type { PoolInfo } from '../../src/domain/types.js'
+import type { PoolInfo } from '../../src/domain/types/pools.js'
+import { fakeProvider } from '../support/fake-provider.js'
 
 const POOL_A = 'pool1wn6a6f23ctq06udwhw27ravdpd6zcr7jlut3yez0wzdackz3222'
 const POOL_B = 'pool174mw7e20768e8vj4fn8y6p536n8rkzswsapwtwn354dckpjqzr8'
@@ -27,23 +28,11 @@ function poolInfo(poolId: string): PoolInfo {
   }
 }
 
-function providerWith(overrides: Partial<ChainProvider>): ChainProvider {
-  const unused = async () => {
-    throw new Error('unused')
-  }
-  return {
-    name: 'fake',
-    getTip: unused,
-    getProtocolParams: unused,
-    filterUsedAddresses: unused,
-    getAccountState: unused,
-    getAccountUtxos: unused,
-    getTxHistory: unused,
+function providerWith(overrides: Partial<ChainProvider> = {}): ChainProvider {
+  return fakeProvider({
     getPoolInfo: async (ids) => ids.map(poolInfo),
-    submitTx: unused,
-    getTxStatus: unused,
     ...overrides,
-  }
+  })
 }
 
 let app: FastifyInstance

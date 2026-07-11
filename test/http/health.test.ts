@@ -1,24 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { buildServer } from '../../src/http/server.js'
-import type { ChainProvider } from '../../src/providers/provider.js'
+import { fakeProvider } from '../support/fake-provider.js'
 
-const unused = async () => {
-  throw new Error('unused')
-}
-
-const stubProvider: ChainProvider = {
-  name: 'stub',
-  getTip: async () => ({ block: 1, slot: 1, epoch: 1, hash: 'x' }),
-  getProtocolParams: unused,
-  filterUsedAddresses: unused,
-  getAccountState: unused,
-  getAccountUtxos: unused,
-  getTxHistory: unused,
-  submitTx: unused,
-  getTxStatus: unused,
-  getPoolInfo: unused,
-}
+// Neither route touches the provider, so nothing needs stubbing: any call would throw.
+const stubProvider = fakeProvider()
 
 let app: FastifyInstance
 afterEach(async () => {

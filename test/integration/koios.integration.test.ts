@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createKoiosProvider } from '../../src/providers/koios.js'
+import { createKoiosProvider } from '../../src/providers/koios/index.js'
 
 // Hits real preprod Koios. Runs only in the integration suite (preprod/main gates),
 // not in the default unit run. Uses the public free tier, no token required.

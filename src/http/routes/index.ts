@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import type { ChainProvider } from '../../providers/provider.js'
 import { registerAccountRoutes } from './account.js'
 import { registerAddressRoutes } from './addresses.js'
+import { registerAssetRoutes } from './assets.js'
 import { registerChainRoutes } from './chain.js'
 import { registerGovernanceRoutes } from './governance.js'
 import { registerHealthRoutes } from './health.js'
@@ -21,6 +22,7 @@ export const routeRegistrars: readonly RouteRegistrar[] = [
   registerAccountRoutes,
   registerAddressRoutes,
   registerPoolRoutes,
+  registerAssetRoutes,
   registerGovernanceRoutes,
   registerTxRoutes,
 ]

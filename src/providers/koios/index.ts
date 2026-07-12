@@ -1,6 +1,7 @@
 import type { ChainProvider } from '../provider.js'
 import { createAccountMethods } from './account.js'
 import { createAddressMethods } from './addresses.js'
+import { createAssetMethods } from './assets.js'
 import { createChainMethods } from './chain.js'
 import { createGovernanceMethods } from './governance.js'
 import { createKoiosClient, type KoiosConfig } from './client.js'
@@ -22,6 +23,7 @@ export function createKoiosProvider(config: KoiosConfig): ChainProvider {
     ...createChainMethods(koios),
     ...createAccountMethods(koios),
     ...createAddressMethods(koios),
+    ...createAssetMethods(koios),
     ...createGovernanceMethods(koios),
     ...createPoolMethods(koios),
     ...createTxMethods(koios),

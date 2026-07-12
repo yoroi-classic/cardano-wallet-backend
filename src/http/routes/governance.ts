@@ -18,14 +18,18 @@ const boundedInt = (min: number, max: number, fallback: number) =>
 
 // A page hydrates each DRep with full info, so cap the size.
 //
-// The offset ceiling is the provider's scan bound, not a round number: advertising an offset
-// the provider could never reach is a promise the API cannot keep. There are ~1.7k registered
+// The offset ceiling leaves room for a full page beneath the provider's scan bound, because
+// what the provider has to reach is offset + limit, not offset. An offset of exactly the scan
+// bound with the largest limit would ask for row 20,250 of a 20,000-row scan and fail. The API
+// must not advertise a page it cannot serve. There are ~1.7k registered
 // DReps, so this is already far past the end of any real list, where the answer is an empty
 // page rather than an error.
-const MAX_OFFSET = 20_000
+const PROVIDER_SCAN_BOUND = 20_000
+const MAX_LIMIT = 250
+const MAX_OFFSET = PROVIDER_SCAN_BOUND - MAX_LIMIT
 
 const listQuery = z.object({
-  limit: boundedInt(1, 250, 50),
+  limit: boundedInt(1, MAX_LIMIT, 50),
   offset: boundedInt(0, MAX_OFFSET, 0),
 })
 
@@ -34,7 +38,7 @@ export function registerGovernanceRoutes(app: FastifyInstance, provider: ChainPr
   app.get('/v1/governance/dreps', async (request) => {
     const parsed = listQuery.safeParse(request.query)
     if (!parsed.success) {
-      throw new BadRequestError(`query must be limit (1-250) and offset (0-${MAX_OFFSET})`)
+      throw new BadRequestError(`query must be limit (1-${MAX_LIMIT}) and offset (0-${MAX_OFFSET})`)
     }
     return provider.getDrepList(parsed.data)
   })

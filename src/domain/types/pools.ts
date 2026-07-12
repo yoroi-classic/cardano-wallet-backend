@@ -47,3 +47,13 @@ export interface PoolInfo {
   /** Off-chain metadata, when the pool registered any. */
   metadata?: PoolMetadata
 }
+
+/** Query for a page of the stake-pool list. */
+export interface PoolListParams {
+  /** Maximum pools to return. */
+  limit: number
+  /** How many pools to skip, for paging. */
+  offset: number
+  /** Case-insensitive ticker substring filter, when present. */
+  ticker?: string
+}

@@ -217,3 +217,46 @@ describe('pools list route', () => {
     expect(res.json()).toMatchObject({ error: { code: 'BAD_REQUEST' } })
   })
 })
+
+describe('pools list route — paging is validated, not coerced', () => {
+  // z.coerce.number() runs the query string through JS Number(), which accepts far more
+  // than a page bound should. Each of these was silently accepted before.
+  it.each([
+    ['an empty offset', '?offset='],
+    ['a whitespace offset', '?offset=%20%20'],
+    ['scientific notation', '?offset=1e3'],
+    ['a hex literal', '?offset=0x10'],
+    ['a negative offset', '?offset=-1'],
+    ['a fractional limit', '?limit=1.5'],
+  ])('rejects %s with 400', async (_name, query) => {
+    app = buildServer({
+      provider: providerWith({
+        getPoolList: async () => {
+          throw new Error('provider must not be called for malformed paging')
+        },
+      }),
+    })
+
+    const res = await app.inject({ method: 'GET', url: `/v1/pools${query}` })
+
+    expect(res.statusCode).toBe(400)
+    expect(res.json()).toMatchObject({ error: { code: 'BAD_REQUEST' } })
+  })
+
+  it('still defaults an absent limit and offset to numbers', async () => {
+    let seen: unknown
+    app = buildServer({
+      provider: providerWith({
+        getPoolList: async (params) => {
+          seen = params
+          return []
+        },
+      }),
+    })
+
+    const res = await app.inject({ method: 'GET', url: '/v1/pools' })
+
+    expect(res.statusCode).toBe(200)
+    expect(seen).toEqual({ limit: 50, offset: 0 })
+  })
+})

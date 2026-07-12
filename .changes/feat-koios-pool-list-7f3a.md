@@ -8,3 +8,6 @@
 
 - A bech32 pool id whose checksum passes but whose 5-bit payload does not convert back to
   bytes is now a 400 rather than a 500.
+- `limit` and `offset` on the pool list are validated rather than coerced. `?offset=`,
+  `?offset=1e3` and `?offset=0x10` were silently read as 0, 1000 and 16 respectively; they
+  are now 400s.

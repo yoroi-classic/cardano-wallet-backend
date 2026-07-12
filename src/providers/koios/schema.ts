@@ -16,14 +16,14 @@ import type { Asset } from '../../domain/types/common.js'
 export const numeric = z.union([z.number().int().nonnegative().safe(), z.string().regex(/^\d+$/)])
 
 /** A minting policy id is the 28-byte hash of the policy script: always 56 hex chars. */
-const policyId = z.string().regex(/^[0-9a-fA-F]{56}$/)
+export const policyId = z.string().regex(/^[0-9a-fA-F]{56}$/)
 
 /**
  * An asset name is up to 32 bytes, hex-encoded, so 0 to 64 hex chars. Empty is deliberate
  * and common: a policy's unnamed asset is a real, valid token, so this cannot demand at
  * least one character the way the policy id does.
  */
-const assetName = z.string().regex(/^[0-9a-fA-F]{0,64}$/)
+export const assetName = z.string().regex(/^[0-9a-fA-F]{0,64}$/)
 
 /** A native asset as Koios spells it, on a UTxO or on a transaction input/output. */
 export const assetItem = z.object({

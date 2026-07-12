@@ -451,8 +451,10 @@ describe('koios filterUsedAddresses', () => {
   })
 })
 
-describe('koios getTxHistory — upstream boundary', () => {
-  const txInfoRowFor = (hash: string, block: number) => ({
+// A minimal, schema-valid /tx_info row. Shared by the boundary suites below so there is
+// one fixture to keep in step with the schema, not two.
+function txInfoRowFor(hash: string, block: number) {
+  return {
     tx_hash: hash,
     block_hash: `h${block}`,
     block_height: block,
@@ -465,8 +467,10 @@ describe('koios getTxHistory — upstream boundary', () => {
     outputs: [],
     withdrawals: [],
     certificates: [],
-  })
+  }
+}
 
+describe('koios getTxHistory — upstream boundary', () => {
   it('chunks /tx_info when the boundary block pushes the page past the batch size', async () => {
     // 60 transactions all in the same block. The page can't be cut mid-block, so the
     // boundary extension carries all 60 past the 50-tx page size, and a single body of 60
@@ -519,21 +523,6 @@ describe('koios getTxHistory — upstream boundary', () => {
 })
 
 describe('koios getTxHistory — /tx_info must return exactly what was asked for', () => {
-  const row = (hash: string, block: number) => ({
-    tx_hash: hash,
-    block_hash: `h${block}`,
-    block_height: block,
-    epoch_no: 1,
-    absolute_slot: block * 100,
-    tx_timestamp: block * 10,
-    tx_block_index: 0,
-    fee: '150000',
-    inputs: [],
-    outputs: [],
-    withdrawals: [],
-    certificates: [],
-  })
-
   const ACCOUNT_TXS = [{ tx_hash: 'aa', block_height: 9, block_time: 90, epoch_no: 1 }]
 
   it('rejects a transaction that was never requested', async () => {
@@ -541,7 +530,7 @@ describe('koios getTxHistory — /tx_info must return exactly what was asked for
     // account's history.
     const { fetchImpl } = fakeFetchByPath({
       '/account_txs': ACCOUNT_TXS,
-      '/tx_info': [row('aa', 9), row('zz', 9)],
+      '/tx_info': [txInfoRowFor('aa', 9), txInfoRowFor('zz', 9)],
     })
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
@@ -552,7 +541,7 @@ describe('koios getTxHistory — /tx_info must return exactly what was asked for
     // A duplicate would show the same payment twice.
     const { fetchImpl } = fakeFetchByPath({
       '/account_txs': ACCOUNT_TXS,
-      '/tx_info': [row('aa', 9), row('aa', 9)],
+      '/tx_info': [txInfoRowFor('aa', 9), txInfoRowFor('aa', 9)],
     })
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 

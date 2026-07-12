@@ -88,7 +88,9 @@ Actions Node setup. Keep those in sync when changing Node or npm.
 For Node, package-manager, framework, compiler, linter, or test-runner major bumps:
 
 - Update the pin, manifest, and lockfile together.
-- Note the reason and any migration impact in `CHANGELOG.md`.
+- Note the reason and any migration impact in a `.changes/` fragment, under `Changed`. Not
+  in `CHANGELOG.md` directly: a toolchain PR is a feature PR like any other, and the same
+  reason applies (see below).
 - Run `npm ci`, `npm run lint`, `npm run format:check`, `npm run typecheck`,
   `npm run build`, `npm run test:coverage`, `npm run audit:prod`, and
   `npm run docker:build` before opening the PR.

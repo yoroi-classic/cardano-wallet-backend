@@ -26,7 +26,7 @@ function fragmentFiles() {
 }
 
 /**
- * Parse one fragment into { section: [entry, ...] }. A fragment is only `### Section`
+ * Parse one fragment into { section: [line, ...] }. A fragment is only `### Section`
  * headings and the lines under them, so anything before the first heading, or under an
  * unknown heading, is a mistake we fail on rather than silently drop from the release.
  */
@@ -36,25 +36,38 @@ function parseFragment(name, text) {
 
   for (const raw of text.split('\n')) {
     const line = raw.trimEnd()
-    if (line.trim() === '') continue
+    const trimmed = line.trim()
 
-    const heading = /^#{1,6}\s+(.+)$/.exec(line)
+    // Match the heading against the *trimmed* line. An indented `  ### Fixed` is still a
+    // heading to anyone reading the fragment, and treating it as content instead would
+    // quietly file those entries under whichever section came before it: a whole section
+    // would vanish from the release and nothing would say so.
+    const heading = /^#{1,6}\s+(.+)$/.exec(trimmed)
     if (heading) {
       const title = heading[1].trim()
       if (!SECTIONS.includes(title)) {
         throw new Error(`${name}: unknown section "${title}". Use one of: ${SECTIONS.join(', ')}.`)
       }
       section = title
+      if (!entries.has(section)) entries.set(section, [])
       continue
     }
 
     if (section === null) {
-      throw new Error(`${name}: content before any "### Section" heading: ${line.trim()}`)
+      if (trimmed === '') continue
+      throw new Error(`${name}: content before any "### Section" heading: ${trimmed}`)
     }
 
-    const existing = entries.get(section)
-    if (existing) existing.push(line)
-    else entries.set(section, [line])
+    // Blank lines *inside* a section are content, not noise: they separate paragraphs and
+    // are what makes a markdown list loose. Dropping them silently reflows the entry.
+    // Original indentation is kept for the same reason, so nested lists survive.
+    entries.get(section).push(line)
+  }
+
+  for (const [title, lines] of entries) {
+    while (lines.length > 0 && lines[0].trim() === '') lines.shift()
+    while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop()
+    if (lines.length === 0) throw new Error(`${name}: section "${title}" has no entries`)
   }
 
   if (entries.size === 0) throw new Error(`${name}: no entries found`)
@@ -87,13 +100,32 @@ function main() {
     .join('\n')
   const section = `## [${version}] - ${date}\n\n${body}`
 
+  const changelog = readFileSync(CHANGELOG, 'utf8')
+  const alreadyReleased = changelog.includes(`\n## [${version}] `)
+
   if (checkOnly) {
+    if (alreadyReleased) {
+      console.log(`warning: ${CHANGELOG} already has a ${version} section; bump the version.\n`)
+    }
     console.log(`${files.length} fragment(s) would assemble into:\n\n${section}`)
     return
   }
 
+  // The changelog is written first and the fragments deleted second, because the reverse
+  // order would lose them outright if the write failed. That leaves one bad state: a write
+  // that lands and a delete that doesn't. Rerunning then would append the same release a
+  // second time, so refuse to write a version the changelog already carries. Recovery is
+  // to delete the leftover fragments by hand, which is safe because their content is
+  // already in the file.
+  if (alreadyReleased) {
+    throw new Error(
+      `${CHANGELOG} already has a ${version} section. Either bump the version first, or (if a ` +
+        `previous run wrote the section but left fragments behind) delete the fragments in ` +
+        `${CHANGES_DIR}, whose content is already in the changelog.`,
+    )
+  }
+
   // Insert above the newest release, so the preamble stays at the top of the file.
-  const changelog = readFileSync(CHANGELOG, 'utf8')
   const firstRelease = changelog.indexOf('\n## [')
   if (firstRelease === -1) {
     throw new Error(`${CHANGELOG}: no existing "## [version]" section to insert above`)

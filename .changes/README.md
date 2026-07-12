@@ -10,11 +10,17 @@ never collide on it.
 
 ## Writing one
 
-Name the file after your branch, so it's unique by construction:
+Name the file after your branch, plus a few random characters:
 
 ```
-.changes/feat-koios-pool-list.md
+.changes/feat-koios-pool-list-7f3a.md
 ```
+
+The branch name is for the human reading the directory. The random suffix is what actually
+keeps the name unique: two people (or two forks) can pick the same obvious branch name for
+the same obvious fix, and then their "conflict-free" fragments would collide on the one
+thing this directory exists to prevent. The assembler doesn't care what the file is called,
+only that no two are called the same, so spend the four characters.
 
 Write it as the Keep a Changelog sections your change belongs under. Nothing else:
 

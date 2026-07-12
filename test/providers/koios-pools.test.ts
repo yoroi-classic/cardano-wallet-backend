@@ -189,8 +189,14 @@ function routedFetch(
     calls.push({ url, method: init?.method, body: init?.body })
     let rows: unknown
     if (url.includes('/pool_list')) {
-      const offset = Number(new URL(url).searchParams.get('offset') ?? 0)
-      rows = poolListRows.slice(offset, offset + pageSize)
+      // Keyset paging: the provider anchors on the last pool id it saw (`pool_id_bech32=gt.x`)
+      // rather than an offset, so the fake serves from after that id.
+      const params = new URL(url).searchParams
+      const gt = params.get('pool_id_bech32')?.replace(/^gt\./, '')
+      const limit = Number(params.get('limit') ?? pageSize)
+      const start =
+        gt === undefined ? 0 : poolListRows.findIndex((r) => r['pool_id_bech32'] === gt) + 1
+      rows = poolListRows.slice(start, start + Math.min(limit, pageSize))
     } else {
       const asked = new Set(
         (JSON.parse(String(init?.body ?? '{}')) as { _pool_bech32_ids?: string[] })
@@ -312,8 +318,8 @@ describe('koios getPoolList', () => {
 
     const listCalls = calls.filter((c) => c.url.includes('/pool_list'))
     expect(listCalls).toHaveLength(2)
-    expect(listCalls[0]?.url).toContain('offset=0')
-    expect(listCalls[1]?.url).toContain('offset=1000')
+    expect(new URL(listCalls[0]!.url).searchParams.get('pool_id_bech32')).toBeNull()
+    expect(new URL(listCalls[1]!.url).searchParams.get('pool_id_bech32')).toBe(`gt.${poolId(999)}`)
     // The largest stake is the last row, so it is only found if page two was read.
     expect(pools.map((p) => p.poolId)).toEqual([poolId(1499)])
   })
@@ -391,6 +397,52 @@ describe('koios getPoolInfo — upstream value integrity', () => {
 })
 
 describe('koios getPoolList — the upstream walk is ordered and honest', () => {
+  it('pages by keyset, not offset, so a pool retiring mid-walk cannot slide the window', async () => {
+    // An offset counts rows from the start on every request. If a pool leaves the list while
+    // the walk is in flight, the tail slides up by one and the next offset page skips a pool
+    // that was never read. Anchoring on the last id seen survives that.
+    const listRows = Array.from({ length: 1200 }, (_, i) => ({
+      pool_id_bech32: poolId(i),
+      active_stake: String(1200 - i),
+    }))
+    const infoRows = listRows.map((r) => ({
+      ...ROW_A,
+      pool_id_bech32: r.pool_id_bech32 as string,
+      active_stake: r.active_stake as string,
+    }))
+    const { fetchImpl, calls } = routedFetch(listRows, infoRows, 1000)
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await provider.getPoolList({ limit: 5, offset: 0 })
+
+    const listCalls = calls.filter((c) => c.url.includes('/pool_list'))
+    expect(listCalls.length).toBeGreaterThan(1)
+    // First page has no cursor; every page after it anchors on the last id of the one before.
+    expect(new URL(listCalls[0]!.url).searchParams.get('pool_id_bech32')).toBeNull()
+    expect(new URL(listCalls[1]!.url).searchParams.get('pool_id_bech32')).toBe(`gt.${poolId(999)}`)
+    for (const call of listCalls) {
+      expect(new URL(call.url).searchParams.get('offset')).toBeNull()
+    }
+  })
+
+  it('reads a list that ends exactly on the cap boundary without failing it', async () => {
+    // 20 full pages and nothing after them is a complete read, not a truncated one. Failing
+    // here would reject a request that actually succeeded, so the cap is probed rather than
+    // assumed.
+    const listRows = Array.from({ length: 20_000 }, (_, i) => ({
+      pool_id_bech32: poolId(i),
+      active_stake: '1',
+    }))
+    const infoRows = listRows.slice(0, 5).map((r) => ({
+      ...ROW_A,
+      pool_id_bech32: r.pool_id_bech32 as string,
+    }))
+    const { fetchImpl } = routedFetch(listRows, infoRows, 1000)
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getPoolList({ limit: 5, offset: 0 })).resolves.toHaveLength(5)
+  })
+
   it('asks Koios for a deterministic row order while paging', async () => {
     // A limit/offset walk with no ORDER BY has no defined row order upstream: pages can
     // overlap or leave gaps, so a pool gets served twice or is never seen at all. The stake

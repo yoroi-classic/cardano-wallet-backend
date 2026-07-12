@@ -130,31 +130,48 @@ export function createPoolMethods(koios: KoiosClient): PoolCapability {
   // still depends on the last pool read.
   async function registeredPoolStakes(ticker?: string): Promise<PoolStakeRow[]> {
     const rows: PoolStakeRow[] = []
-    for (let page = 0; page < POOL_LIST_MAX_PAGES; page += 1) {
+    let after: string | undefined
+
+    function pageQuery(limit: number): URLSearchParams {
       const query = new URLSearchParams({
         pool_status: 'eq.registered',
-        // A limit/offset walk with no ORDER BY has no defined row order upstream, so pages
-        // can overlap or leave gaps, and a pool would be served twice or never seen at all.
-        // Order by id: it is unique and stable. The stake sort still happens locally
-        // afterwards, because active_stake is a text column upstream and ordering on it
-        // there would sort lexicographically.
+        // Order by id: unique and stable. A limit walk with no ORDER BY has no defined row
+        // order upstream, so pages could overlap or leave gaps and a pool would be served
+        // twice, or never. The stake sort still happens locally, because active_stake is a
+        // text column upstream and ordering on it there sorts lexicographically.
         order: 'pool_id_bech32.asc',
         select: 'pool_id_bech32,active_stake',
-        limit: String(POOL_LIST_PAGE_SIZE),
-        offset: String(page * POOL_LIST_PAGE_SIZE),
+        limit: String(limit),
       })
+      // Keyset, not offset. Pools register and retire while this walk is in flight, and an
+      // offset counts rows from the start every time: one pool leaving mid-walk slides the
+      // whole tail up by one and the next page skips a pool that was never read. Anchoring
+      // on the last id seen instead means the cursor survives anything happening behind it.
+      if (after !== undefined) query.set('pool_id_bech32', `gt.${after}`)
       if (ticker !== undefined) query.set('ticker', `ilike.*${ticker}*`)
-      const data = await koios.request(`/pool_list?${query.toString()}`)
+      return query
+    }
+
+    for (let page = 0; page < POOL_LIST_MAX_PAGES; page += 1) {
+      const data = await koios.request(`/pool_list?${pageQuery(POOL_LIST_PAGE_SIZE).toString()}`)
       const parsed = koios.parseWith(z.array(poolStakeRow), data, '/pool_list')
       rows.push(...parsed)
 
       // A short page is the end of the list upstream.
       if (parsed.length < POOL_LIST_PAGE_SIZE) return rows
+      after = parsed[parsed.length - 1]?.pool_id_bech32
+      if (after === undefined) return rows
     }
 
-    // The page cap ran out while upstream was still handing back full pages, so there are
-    // more registered pools than were read. Every page here is cut from the sorted whole, so
-    // a truncated read does not merely shorten the tail: a missed pool with large stake would
+    // The cap ran out on a full page, which does not by itself mean anything was missed: a
+    // list of exactly POOL_LIST_MAX_PAGES * POOL_LIST_PAGE_SIZE pools ends on a full page and
+    // has been read in full. Ask for one more row to tell the two apart, rather than failing
+    // a request that actually succeeded.
+    const probe = await koios.request(`/pool_list?${pageQuery(1).toString()}`)
+    if (koios.parseWith(z.array(poolStakeRow), probe, '/pool_list').length === 0) return rows
+
+    // There really are more. Every page of this endpoint is cut from the sorted whole, so a
+    // truncated read does not merely shorten the tail: a missed pool with large stake would
     // be absent from page one. Say so rather than serve a quietly wrong ranking.
     throw new ProviderError(
       `koios /pool_list has more than ${POOL_LIST_MAX_PAGES * POOL_LIST_PAGE_SIZE} registered ` +

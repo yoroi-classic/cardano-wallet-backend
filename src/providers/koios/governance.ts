@@ -94,14 +94,24 @@ export function createGovernanceMethods(koios: KoiosClient): GovernanceCapabilit
   // twenty, which is a straight cut in latency and in rate-limit exposure.
   async function registeredDreps(needed: number): Promise<string[]> {
     const ids: string[] = []
-    for (let page = 0; page < DREP_LIST_MAX_PAGES; page += 1) {
+    let after: string | undefined
+
+    function pageQuery(limit: number): URLSearchParams {
       const query = new URLSearchParams({
         order: 'drep_id.asc',
         select: 'drep_id,registered',
-        limit: String(DREP_LIST_PAGE_SIZE),
-        offset: String(page * DREP_LIST_PAGE_SIZE),
+        limit: String(limit),
       })
-      const data = await koios.request(`/drep_list?${query.toString()}`)
+      // Keyset, not offset. DReps register and retire while this walk is in flight, and an
+      // offset counts rows from the start every time: one DRep leaving mid-walk slides the
+      // whole tail up by one and the next page skips a DRep that was never read. Anchoring
+      // on the last id seen instead means the cursor survives anything happening behind it.
+      if (after !== undefined) query.set('drep_id', `gt.${after}`)
+      return query
+    }
+
+    for (let page = 0; page < DREP_LIST_MAX_PAGES; page += 1) {
+      const data = await koios.request(`/drep_list?${pageQuery(DREP_LIST_PAGE_SIZE).toString()}`)
       const rows = koios.parseWith(z.array(drepListRow), data, '/drep_list')
       for (const row of rows) {
         if (row.registered) ids.push(row.drep_id)
@@ -110,13 +120,21 @@ export function createGovernanceMethods(koios: KoiosClient): GovernanceCapabilit
       // A short page is the end of the list upstream. An offset past the end then yields an
       // empty page, which is the correct answer, not an error.
       if (rows.length < DREP_LIST_PAGE_SIZE) return ids
+      after = rows[rows.length - 1]?.drep_id
+      if (after === undefined) return ids
       if (ids.length >= needed) return ids
     }
 
-    // The page cap ran out while upstream was still handing back full pages, so there is
-    // more DRep list than was scanned. Say so rather than serving a truncated list as if it
-    // were the whole one: silently short pages are how a DRep disappears from a wallet's
-    // list and nobody finds out.
+    // The cap ran out on a full page, which does not by itself mean anything was missed: a
+    // list of exactly DREP_LIST_MAX_PAGES * DREP_LIST_PAGE_SIZE rows ends on a full page and
+    // has been read in full. Ask for one more row to tell the two apart, rather than failing
+    // a request that actually succeeded.
+    const probe = await koios.request(`/drep_list?${pageQuery(1).toString()}`)
+    if (koios.parseWith(z.array(drepListRow), probe, '/drep_list').length === 0) return ids
+
+    // There really is more list than was scanned. Say so rather than serving a truncated list
+    // as if it were the whole one: silently short pages are how a DRep disappears from a
+    // wallet's list and nobody finds out.
     throw new ProviderError(
       `koios /drep_list has more than ${DREP_LIST_MAX_PAGES * DREP_LIST_PAGE_SIZE} rows, ` +
         `beyond this provider's scan bound`,

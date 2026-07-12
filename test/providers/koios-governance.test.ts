@@ -76,8 +76,12 @@ function routedFetch(
     calls.push({ url, method: init?.method, body: init?.body })
     let rows: unknown
     if (url.includes('/drep_list')) {
-      const offset = Number(new URL(url).searchParams.get('offset') ?? 0)
-      rows = listRows.slice(offset, offset + pageSize)
+      // Keyset paging: the provider anchors on the last drep id it saw (`drep_id=gt.x`).
+      const params = new URL(url).searchParams
+      const gt = params.get('drep_id')?.replace(/^gt\./, '')
+      const limit = Number(params.get('limit') ?? pageSize)
+      const start = gt === undefined ? 0 : listRows.findIndex((r) => r['drep_id'] === gt) + 1
+      rows = listRows.slice(start, start + Math.min(limit, pageSize))
     } else {
       const asked = new Set(
         (JSON.parse(String(init?.body ?? '{}')) as { _drep_ids?: string[] })._drep_ids ?? [],
@@ -368,8 +372,10 @@ describe('koios getDrepList', () => {
     expect(dreps).toHaveLength(3)
     const listCalls = calls.filter((c) => c.url.includes('/drep_list'))
     expect(listCalls).toHaveLength(2)
-    expect(listCalls[0]?.url).toContain('offset=0')
-    expect(listCalls[1]?.url).toContain('offset=1000')
+    expect(new URL(listCalls[0]!.url).searchParams.get('drep_id')).toBeNull()
+    expect(new URL(listCalls[1]!.url).searchParams.get('drep_id')).toBe(
+      `gt.${syntheticDrepId(999)}`,
+    )
   })
 })
 
@@ -446,5 +452,37 @@ describe('koios getDrepInfo — upstream credential integrity', () => {
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
     await expect(provider.getDrepInfo([DREP_A])).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+})
+
+describe('koios getDrepList — the walk is keyset-paged and probes its bound', () => {
+  it('reads a list that ends exactly on the cap boundary without failing it', async () => {
+    // 20 full pages and nothing after them is a complete read, not a truncated one. Failing
+    // here would reject a request that actually succeeded, so the cap is probed, not assumed.
+    const listRows = Array.from({ length: 20_000 }, (_, i) => ({
+      drep_id: syntheticDrepId(i),
+      registered: i < 3,
+    }))
+    const infoRows = listRows.filter((r) => r.registered).map((r) => drepRow(r.drep_id))
+    const { fetchImpl } = routedFetch(listRows, infoRows, 1000)
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getDrepList({ limit: 50, offset: 0 })).resolves.toHaveLength(3)
+  })
+
+  it('pages by keyset, so a DRep retiring mid-walk cannot slide the window', async () => {
+    const listRows = Array.from({ length: 1200 }, (_, i) => ({
+      drep_id: syntheticDrepId(i),
+      registered: i % 400 === 0,
+    }))
+    const infoRows = listRows.filter((r) => r.registered).map((r) => drepRow(r.drep_id))
+    const { fetchImpl, calls } = routedFetch(listRows, infoRows, 1000)
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await provider.getDrepList({ limit: 50, offset: 0 })
+
+    for (const call of calls.filter((c) => c.url.includes('/drep_list'))) {
+      expect(new URL(call.url).searchParams.get('offset')).toBeNull()
+    }
   })
 })

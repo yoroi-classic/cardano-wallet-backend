@@ -8,8 +8,15 @@ import { createKoiosProvider } from '../../../src/providers/koios/index.js'
  * These hit real preprod Koios and run only in the preprod and main gates, never in the
  * default unit run. The public free tier is enough, so no token is required.
  */
-export const KOIOS_BASE_URL = process.env.KOIOS_URL ?? 'https://preprod.koios.rest/api/v1'
+// Trailing slashes are stripped for the same reason the provider client strips them: a
+// configured KOIOS_URL ending in `/` would otherwise build `/api/v1//pool_list`.
+export const KOIOS_BASE_URL = (
+  process.env.KOIOS_URL ?? 'https://preprod.koios.rest/api/v1'
+).replace(/\/+$/, '')
 
+// Discovery is a plain index read, but it runs before the behavior under test, so it gets
+// a longer leash than the provider's own 10s: a slow-but-working Koios should fail the
+// assertion, not the setup.
 const DISCOVERY_TIMEOUT_MS = 15_000
 
 export function integrationProvider() {
@@ -21,9 +28,9 @@ export function integrationProvider() {
  * currently-registered pool, a reward account with real history) so they can't rot when a
  * hardcoded one retires.
  *
- * Routed through the same token and timeout the provider itself uses. A bare `fetch` would
- * skip both, so the discovery step could exhaust the anonymous rate limit and fail the
- * test before it ever reached the behavior under test, even with KOIOS_TOKEN set.
+ * Carries the same token the provider does, and its own bounded timeout. A bare `fetch`
+ * would carry neither, so the discovery step could exhaust the anonymous rate limit and
+ * fail the test before it ever reached the behavior under test, even with KOIOS_TOKEN set.
  */
 export async function discover<T>(path: string): Promise<T[]> {
   const headers: Record<string, string> = { accept: 'application/json' }

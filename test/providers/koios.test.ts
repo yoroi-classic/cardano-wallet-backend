@@ -319,3 +319,34 @@ describe('koios provider — upstream value integrity', () => {
     await expect(provider.getTxStatus(TX_HASH)).rejects.toBeInstanceOf(MalformedUpstreamError)
   })
 })
+
+describe('koios provider — asset identifiers', () => {
+  const utxoWith = (policyId: string, assetName: string) => [
+    {
+      tx_hash: 'aa',
+      tx_index: 0,
+      address: 'addr_test1',
+      value: '2000000',
+      asset_list: [{ policy_id: policyId, asset_name: assetName, quantity: '1' }],
+    },
+  ]
+
+  it('accepts an asset with an empty name, which is a real and common token', async () => {
+    // A policy's unnamed asset is valid on chain, so the boundary must not demand a name.
+    const { fetchImpl } = fakeFetch({ json: async () => utxoWith('a'.repeat(56), '') })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [utxo] = await provider.getAccountUtxos('stake_test1abc')
+
+    expect(utxo?.assets).toEqual([{ policyId: 'a'.repeat(56), assetName: '', quantity: '1' }])
+  })
+
+  it('rejects an empty policy id, which is never valid', async () => {
+    const { fetchImpl } = fakeFetch({ json: async () => utxoWith('', '4142') })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getAccountUtxos('stake_test1abc')).rejects.toBeInstanceOf(
+      MalformedUpstreamError,
+    )
+  })
+})

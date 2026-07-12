@@ -119,7 +119,7 @@ describe('koios getAccountUtxos', () => {
     tx_index: 2,
     address: 'addr_test1xyz',
     value: '2000000',
-    asset_list: [{ policy_id: 'a0b1c2', asset_name: '414243', quantity: '5' }],
+    asset_list: [{ policy_id: 'a'.repeat(56), asset_name: '414243', quantity: '5' }],
     datum_hash: null,
     inline_datum: { bytes: 'd87980' },
     reference_script: null,
@@ -137,7 +137,7 @@ describe('koios getAccountUtxos', () => {
         outputIndex: 2,
         address: 'addr_test1xyz',
         value: '2000000',
-        assets: [{ policyId: 'a0b1c2', assetName: '414243', quantity: '5' }],
+        assets: [{ policyId: 'a'.repeat(56), assetName: '414243', quantity: '5' }],
         inlineDatum: 'd87980',
       },
     ])
@@ -295,7 +295,7 @@ describe('koios getTxHistory', () => {
         {
           payment_addr: { bech32: 'addr_out' },
           value: '4800000',
-          asset_list: [{ policy_id: 'd0e1f2', asset_name: '4142', quantity: '3' }],
+          asset_list: [{ policy_id: 'd'.repeat(56), asset_name: '4142', quantity: '3' }],
         },
       ],
       withdrawals: [{ stake_addr: 'stake_w', amount: '250000' }],
@@ -344,7 +344,7 @@ describe('koios getTxHistory', () => {
         {
           address: 'addr_out',
           value: '4800000',
-          assets: [{ policyId: 'd0e1f2', assetName: '4142', quantity: '3' }],
+          assets: [{ policyId: 'd'.repeat(56), assetName: '4142', quantity: '3' }],
         },
       ],
       withdrawals: [{ stakeAddress: 'stake_w', amount: '250000' }],
@@ -511,6 +511,48 @@ describe('koios getTxHistory — upstream boundary', () => {
         { tx_hash: 'bb', block_height: 10, block_time: 100, epoch_no: 1 },
       ],
       '/tx_info': [txInfoRowFor('aa', 9)],
+    })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getTxHistory(STAKE)).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+})
+
+describe('koios getTxHistory — /tx_info must return exactly what was asked for', () => {
+  const row = (hash: string, block: number) => ({
+    tx_hash: hash,
+    block_hash: `h${block}`,
+    block_height: block,
+    epoch_no: 1,
+    absolute_slot: block * 100,
+    tx_timestamp: block * 10,
+    tx_block_index: 0,
+    fee: '150000',
+    inputs: [],
+    outputs: [],
+    withdrawals: [],
+    certificates: [],
+  })
+
+  const ACCOUNT_TXS = [{ tx_hash: 'aa', block_height: 9, block_time: 90, epoch_no: 1 }]
+
+  it('rejects a transaction that was never requested', async () => {
+    // An unrequested row would put a transaction belonging to someone else into this
+    // account's history.
+    const { fetchImpl } = fakeFetchByPath({
+      '/account_txs': ACCOUNT_TXS,
+      '/tx_info': [row('aa', 9), row('zz', 9)],
+    })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getTxHistory(STAKE)).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+
+  it('rejects a duplicated transaction', async () => {
+    // A duplicate would show the same payment twice.
+    const { fetchImpl } = fakeFetchByPath({
+      '/account_txs': ACCOUNT_TXS,
+      '/tx_info': [row('aa', 9), row('aa', 9)],
     })
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 

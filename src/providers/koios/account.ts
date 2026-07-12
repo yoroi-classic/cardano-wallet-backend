@@ -215,15 +215,27 @@ export function createAccountMethods(koios: KoiosClient): AccountCapability {
         rows.push(...koios.parseWith(z.array(txInfoRow), data, '/tx_info'))
       }
 
-      // Every hash we asked about has to come back. The caller pages forward from the last
-      // block of this page, so a transaction quietly missing from the response would be
-      // stepped over and never requested again: a permanent hole in the user's history.
-      // Failing loudly here costs a retry; missing a payment silently does not heal.
-      const returned = new Set(rows.map((r) => r.tx_hash))
-      const missing = hashes.filter((h) => !returned.has(h))
-      if (missing.length > 0) {
+      // What comes back must be exactly what we asked for, no more and no less.
+      //
+      // A missing transaction is a permanent hole: the caller pages forward from the last
+      // block of this page, so an omitted one is stepped over and never requested again.
+      // An *extra* one is worse, because it would put a transaction that has nothing to do
+      // with this account into the account's history. A duplicate would show a payment
+      // twice. Failing loudly costs a retry; any of these silently costs the truth.
+      const requested = new Set(hashes)
+      const seen = new Set<string>()
+      for (const row of rows) {
+        if (!requested.has(row.tx_hash)) {
+          throw new MalformedUpstreamError('koios /tx_info returned an unrequested transaction')
+        }
+        if (seen.has(row.tx_hash)) {
+          throw new MalformedUpstreamError('koios /tx_info returned a duplicate transaction')
+        }
+        seen.add(row.tx_hash)
+      }
+      if (seen.size !== requested.size) {
         throw new MalformedUpstreamError(
-          `koios /tx_info omitted ${missing.length} of ${hashes.length} requested transactions`,
+          `koios /tx_info omitted ${requested.size - seen.size} of ${hashes.length} requested transactions`,
         )
       }
 

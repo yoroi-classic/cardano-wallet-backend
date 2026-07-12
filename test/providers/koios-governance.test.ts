@@ -486,3 +486,49 @@ describe('koios getDrepList — the walk is keyset-paged and probes its bound', 
     }
   })
 })
+
+describe('koios governance — the list and the lookup make different promises', () => {
+  it('drops a DRep that deregistered between /drep_list and /drep_info', async () => {
+    // The list is a two-round-trip read. A DRep can deregister in between, and this endpoint
+    // promises registered DReps, so serving it anyway would make a claim that is no longer
+    // true. The page comes back short instead.
+    const listRows = [
+      { drep_id: syntheticDrepId(1), registered: true },
+      { drep_id: syntheticDrepId(2), registered: true },
+    ]
+    const infoRows = [
+      drepRow(syntheticDrepId(1)),
+      { ...drepRow(syntheticDrepId(2)), drep_status: 'deregistered' },
+    ]
+    const { fetchImpl } = routedFetch(listRows, infoRows)
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const dreps = await provider.getDrepList({ limit: 50, offset: 0 })
+
+    expect(dreps.map((d) => d.drepId)).toEqual([syntheticDrepId(1)])
+  })
+
+  it('still reports a known-but-unregistered DRep on a direct lookup', async () => {
+    // The lookup makes the opposite promise from the list: "well-formed and never registered"
+    // is a real answer, and it is not the same as "we could not look it up".
+    const { fetchImpl } = fakeFetch(async () => [
+      { ...drepRow(DREP_A), drep_status: 'not_registered' },
+    ])
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [drep] = await provider.getDrepInfo([DREP_A])
+
+    expect(drep?.drepId).toBe(DREP_A)
+    expect(drep?.status).toBe('not_registered')
+  })
+
+  it('rejects a row whose drep_id and hex describe different credentials', async () => {
+    // The lookup joins on hex. If the two disagree, trusting hex would emit the *other*
+    // DRep's id to the caller; trusting drep_id would file the row under a credential it does
+    // not have. Neither is safe, so the row is malformed upstream data.
+    const { fetchImpl } = fakeFetch(async () => [{ ...drepRow(DREP_A), hex: 'b'.repeat(56) }])
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getDrepInfo([DREP_A])).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+})

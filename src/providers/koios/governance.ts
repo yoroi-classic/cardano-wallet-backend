@@ -17,34 +17,42 @@ const drepListRow = z.object({
   registered: z.boolean(),
 })
 
-const drepInfoRow = z.object({
-  drep_id: z.string(),
-  // The 28-byte credential, so 56 hex chars. This is the key every lookup below joins on, so
-  // a malformed value here does not merely look wrong: the row fails to match the id the
-  // caller asked about, and the DRep silently disappears from the response. Constrain it and
-  // bad upstream data takes the malformed path instead.
-  hex: z.string().regex(/^[0-9a-fA-F]{56}$/),
-  has_script: z.boolean(),
-  // The three values Koios's own API spec declares for this field. `not_registered` does not
-  // appear in any drep_list row (every DRep listed there is registered or deregistered), but
-  // it is what a query for a DRep id that never registered comes back with, so it belongs
-  // here. Anything outside the spec is unexpected upstream data and takes the malformed
-  // path, the same as pool_status. Constraining it is also what keeps the public `status`
-  // field a normalized DrepStatus rather than a pass-through of Koios's vocabulary, so a
-  // different provider can satisfy the same contract.
-  drep_status: z.enum(['registered', 'deregistered', 'not_registered']),
-  // Strict, per the spec, which declares this a plain boolean. Mainnet has been seen
-  // answering with it null from the same instances that intermittently fail a filtered
-  // drep_list (reported as koios-artifacts#411). That is an upstream defect, and it fails
-  // loudly here rather than being defaulted: a DRep's standing is not something to guess at,
-  // and quietly reading a broken response as "not active" would hide the problem.
-  active: z.boolean(),
-  deposit: numeric.nullish(),
-  amount: numeric.nullish(),
-  expires_epoch_no: z.number().int().nonnegative().nullish(),
-  meta_url: z.string().nullish(),
-  meta_hash: z.string().nullish(),
-})
+const drepInfoRow = z
+  .object({
+    drep_id: z.string(),
+    // The 28-byte credential, so 56 hex chars. This is the key every lookup below joins on, so
+    // a malformed value here does not merely look wrong: the row fails to match the id the
+    // caller asked about, and the DRep silently disappears from the response. Constrain it and
+    // bad upstream data takes the malformed path instead.
+    hex: z.string().regex(/^[0-9a-fA-F]{56}$/),
+    has_script: z.boolean(),
+    // The three values Koios's own API spec declares for this field. `not_registered` does not
+    // appear in any drep_list row (every DRep listed there is registered or deregistered), but
+    // it is what a query for a DRep id that never registered comes back with, so it belongs
+    // here. Anything outside the spec is unexpected upstream data and takes the malformed
+    // path, the same as pool_status. Constraining it is also what keeps the public `status`
+    // field a normalized DrepStatus rather than a pass-through of Koios's vocabulary, so a
+    // different provider can satisfy the same contract.
+    drep_status: z.enum(['registered', 'deregistered', 'not_registered']),
+    // Strict, per the spec, which declares this a plain boolean. Mainnet has been seen
+    // answering with it null from the same instances that intermittently fail a filtered
+    // drep_list (reported as koios-artifacts#411). That is an upstream defect, and it fails
+    // loudly here rather than being defaulted: a DRep's standing is not something to guess at,
+    // and quietly reading a broken response as "not active" would hide the problem.
+    active: z.boolean(),
+    deposit: numeric.nullish(),
+    amount: numeric.nullish(),
+    expires_epoch_no: z.number().int().nonnegative().nullish(),
+    meta_url: z.string().nullish(),
+    meta_hash: z.string().nullish(),
+  })
+  // drep_id and hex are two encodings of one credential, so they have to agree. If they do
+  // not, the row is internally inconsistent and there is no safe way to pick a winner: the
+  // lookup below joins on hex, so trusting it would emit the *other* DRep's id to the caller,
+  // and trusting drep_id would file the row under a credential it does not have.
+  .refine((row) => drepCredentialHex(row.drep_id) === row.hex.toLowerCase(), {
+    message: 'drep_id and hex describe different credentials',
+  })
 
 const drepMetadataRow = z.object({
   drep_id: z.string(),
@@ -222,7 +230,13 @@ export function createGovernanceMethods(koios: KoiosClient): GovernanceCapabilit
       // paging honest: filtering after an upstream limit/offset would hand back short pages.
       const registered = await registeredDreps(offset + limit)
       const page = registered.slice(offset, offset + limit)
-      return drepInfoByIds(page)
+
+      // /drep_list said these were registered, but /drep_info is a second round trip and a
+      // DRep can deregister in between. This endpoint promises registered DReps, so anything
+      // whose hydrated status disagrees is dropped rather than served under a claim that is
+      // no longer true.
+      const hydrated = await drepInfoByIds(page)
+      return hydrated.filter((drep) => drep.status === 'registered')
     },
   }
 }

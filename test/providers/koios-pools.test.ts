@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createKoiosProvider, type FetchLike } from '../../src/providers/koios/index.js'
-import { MalformedUpstreamError } from '../../src/domain/errors.js'
+import { MalformedUpstreamError, ProviderError } from '../../src/domain/errors.js'
 
 const BASE = 'https://preprod.koios.rest/api/v1'
 const POOL_A = 'pool1wn6a6f23ctq06udwhw27ravdpd6zcr7jlut3yez0wzdackz3222'
@@ -387,5 +387,47 @@ describe('koios getPoolInfo — upstream value integrity', () => {
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
     await expect(provider.getPoolInfo([POOL_A])).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+})
+
+describe('koios getPoolList — the upstream walk is ordered and honest', () => {
+  it('asks Koios for a deterministic row order while paging', async () => {
+    // A limit/offset walk with no ORDER BY has no defined row order upstream: pages can
+    // overlap or leave gaps, so a pool gets served twice or is never seen at all. The stake
+    // sort still has to happen locally, because active_stake is a text column upstream.
+    const listRows = Array.from({ length: 1200 }, (_, i) => ({
+      pool_id_bech32: poolId(i),
+      active_stake: String(1200 - i),
+    }))
+    const infoRows = listRows.map((r) => ({
+      ...ROW_A,
+      pool_id_bech32: r.pool_id_bech32 as string,
+      active_stake: r.active_stake as string,
+    }))
+    const { fetchImpl, calls } = routedFetch(listRows, infoRows, 1000)
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await provider.getPoolList({ limit: 5, offset: 0 })
+
+    const listCalls = calls.filter((c) => c.url.includes('/pool_list'))
+    expect(listCalls.length).toBeGreaterThan(0)
+    for (const call of listCalls) {
+      expect(new URL(call.url).searchParams.get('order')).toBe('pool_id_bech32.asc')
+    }
+  })
+
+  it('refuses to rank a truncated set as if it were the whole set', async () => {
+    // Every page of this endpoint is cut from the sorted whole, so a truncated read does not
+    // merely shorten the tail: a missed pool with large stake would be absent from page one.
+    const listRows = Array.from({ length: 25_000 }, (_, i) => ({
+      pool_id_bech32: poolId(i),
+      active_stake: '1',
+    }))
+    const { fetchImpl } = routedFetch(listRows, [], 1000)
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getPoolList({ limit: 5, offset: 0 })).rejects.toBeInstanceOf(
+      ProviderError,
+    )
   })
 })

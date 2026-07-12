@@ -54,7 +54,8 @@ export function registerPoolRoutes(app: FastifyInstance, provider: ChainProvider
     const parsed = listQuery.safeParse(request.query)
     if (!parsed.success) {
       throw new BadRequestError(
-        'query must be limit (1-250), offset (>=0), and an optional alphanumeric ticker',
+        'query must be limit (1-250), offset (0-100000), and an optional alphanumeric ' +
+          'ticker of 1 to 15 characters',
       )
     }
     return provider.getPoolList(parsed.data)

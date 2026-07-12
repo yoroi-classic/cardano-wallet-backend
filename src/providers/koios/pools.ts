@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { ProviderError } from '../../domain/errors.js'
 import type { PoolInfo, PoolListParams, PoolMetadata } from '../../domain/types/pools.js'
 import type { PoolCapability } from '../capabilities/pools.js'
 import type { KoiosClient } from './client.js'
@@ -122,14 +123,22 @@ export function createPoolMethods(koios: KoiosClient): PoolCapability {
   }
 
   // Read every registered pool's id and active stake, following Koios's paging to the end.
-  // The page cap bounds the walk so a misbehaving upstream cannot spin here forever.
+  //
+  // The whole set is needed before even the first page can be served, because the ordering
+  // this endpoint promises is by active stake and that sort cannot be pushed upstream (see
+  // getPoolList). So unlike the DRep list there is no early exit: page one of the result
+  // still depends on the last pool read.
   async function registeredPoolStakes(ticker?: string): Promise<PoolStakeRow[]> {
     const rows: PoolStakeRow[] = []
     for (let page = 0; page < POOL_LIST_MAX_PAGES; page += 1) {
       const query = new URLSearchParams({
         pool_status: 'eq.registered',
-        // active_stake is a text column upstream, so it is selected for the local sort
-        // below rather than ordered on here.
+        // A limit/offset walk with no ORDER BY has no defined row order upstream, so pages
+        // can overlap or leave gaps, and a pool would be served twice or never seen at all.
+        // Order by id: it is unique and stable. The stake sort still happens locally
+        // afterwards, because active_stake is a text column upstream and ordering on it
+        // there would sort lexicographically.
+        order: 'pool_id_bech32.asc',
         select: 'pool_id_bech32,active_stake',
         limit: String(POOL_LIST_PAGE_SIZE),
         offset: String(page * POOL_LIST_PAGE_SIZE),
@@ -138,9 +147,19 @@ export function createPoolMethods(koios: KoiosClient): PoolCapability {
       const data = await koios.request(`/pool_list?${query.toString()}`)
       const parsed = koios.parseWith(z.array(poolStakeRow), data, '/pool_list')
       rows.push(...parsed)
+
+      // A short page is the end of the list upstream.
       if (parsed.length < POOL_LIST_PAGE_SIZE) return rows
     }
-    return rows
+
+    // The page cap ran out while upstream was still handing back full pages, so there are
+    // more registered pools than were read. Every page here is cut from the sorted whole, so
+    // a truncated read does not merely shorten the tail: a missed pool with large stake would
+    // be absent from page one. Say so rather than serve a quietly wrong ranking.
+    throw new ProviderError(
+      `koios /pool_list has more than ${POOL_LIST_MAX_PAGES * POOL_LIST_PAGE_SIZE} registered ` +
+        `pools, beyond this provider's scan bound`,
+    )
   }
 
   return {

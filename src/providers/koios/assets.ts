@@ -118,8 +118,25 @@ function extractCip68(cip68: unknown): Cip68Fields | undefined {
     }
     return undefined
   }
-  const asString = (v: unknown): string | undefined =>
-    isRecord(v) ? hexToUtf8(v.bytes) : undefined
+  // A PlutusData bytestring is capped at 64 bytes, so CIP-68 requires anything longer to be
+  // split across a list of them. A long https or data URI in `image` is the usual case.
+  // Reading only the single-bytestring form drops exactly those images on the floor.
+  //
+  // The chunks are joined as *bytes* and decoded once, not decoded individually and then
+  // concatenated: a multi-byte UTF-8 character can straddle a chunk boundary, and decoding
+  // half of one would fail (the decoder is fatal) and take the whole field with it.
+  const asString = (v: unknown): string | undefined => {
+    if (!isRecord(v)) return undefined
+    if (Array.isArray(v.list)) {
+      const parts: string[] = []
+      for (const chunk of v.list) {
+        if (!isRecord(chunk) || typeof chunk.bytes !== 'string') return undefined
+        parts.push(chunk.bytes)
+      }
+      return parts.length > 0 ? hexToUtf8(parts.join('')) : undefined
+    }
+    return hexToUtf8(v.bytes)
+  }
 
   // decimals is a count of places, and it comes from a datum the minter controls. It is
   // held to the same bar as the registry's decimals: a non-negative integer inside the

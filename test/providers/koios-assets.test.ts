@@ -518,3 +518,93 @@ describe('koios getTokenMetadata', () => {
     expect(calls).toHaveLength(3)
   })
 })
+
+describe('koios getTokenMetadata — CIP-68 chunked byte strings', () => {
+  const POLICY = 'e'.repeat(56)
+  const NAME_HEX = '000de140434855'
+  const SUBJECT = POLICY + NAME_HEX
+
+  function cip68Row(map: unknown[]) {
+    return {
+      [SUBJECT]: {
+        policy_id: POLICY,
+        asset_name: NAME_HEX,
+        fingerprint: 'asset1chunked',
+        total_supply: '1',
+        name: null,
+        ticker: null,
+        description: null,
+        url: null,
+        decimals: null,
+        minting_tx_metadata: null,
+        cip68_metadata: { '100': { constructor: 0, fields: [{ map }] } },
+      },
+    }
+  }
+
+  it('joins a chunked image URI, which a bytestring over 64 bytes must be', async () => {
+    // PlutusData caps a bytestring at 64 bytes, so CIP-68 requires a longer value to be
+    // split across a list. A long image URI is the usual case; reading only the single
+    // form drops exactly those images.
+    const uri =
+      'https://example.com/very/long/asset/image/path/that/exceeds/the/sixty-four-byte/plutus/bytestring/limit.png'
+    const known = cip68Row([
+      { k: { bytes: '6e616d65' }, v: { bytes: '434855' } },
+      {
+        k: { bytes: '696d616765' },
+        v: {
+          list: [
+            {
+              bytes:
+                '68747470733a2f2f6578616d706c652e636f6d2f766572792f6c6f6e672f61737365742f696d6167652f706174682f746861742f657863656564732f7468652f',
+            },
+            {
+              bytes:
+                '73697874792d666f75722d627974652f706c757475732f62797465737472696e672f6c696d69742e706e67',
+            },
+          ],
+        },
+      },
+    ])
+    const { fetchImpl } = assetFetch(known)
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [token] = await provider.getTokenMetadata([SUBJECT])
+
+    expect(token?.source).toBe('cip68')
+    expect(token?.image).toBe(uri)
+  })
+
+  it('joins chunks as bytes, so a multi-byte character split across a boundary survives', async () => {
+    // The chunks below cut the middle of a 3-byte UTF-8 character (e2 98 95). Decoding each
+    // chunk on its own and concatenating the results would fail on both halves (the decoder
+    // is fatal) and lose the field entirely. Joining the bytes first is what makes it work.
+    const known = cip68Row([
+      {
+        k: { bytes: '6e616d65' },
+        v: { list: [{ bytes: '4361666520e2' }, { bytes: '989520546f6b656e' }] },
+      },
+    ])
+    const { fetchImpl } = assetFetch(known)
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [token] = await provider.getTokenMetadata([SUBJECT])
+
+    expect(token?.source).toBe('cip68')
+    expect(token?.name).toBe('Cafe ☕ Token')
+  })
+
+  it('drops a chunk list holding a non-bytestring rather than trusting it', async () => {
+    const known = cip68Row([
+      { k: { bytes: '6e616d65' }, v: { list: [{ bytes: '4361666520e2' }, { int: 7 }] } },
+      { k: { bytes: '7469636b6572' }, v: { bytes: '434855' } },
+    ])
+    const { fetchImpl } = assetFetch(known)
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [token] = await provider.getTokenMetadata([SUBJECT])
+
+    expect(token?.name).toBeUndefined()
+    expect(token?.ticker).toBe('CHU')
+  })
+})

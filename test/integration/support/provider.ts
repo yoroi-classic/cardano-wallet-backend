@@ -32,13 +32,25 @@ export function integrationProvider() {
  * would carry neither, so the discovery step could exhaust the anonymous rate limit and
  * fail the test before it ever reached the behavior under test, even with KOIOS_TOKEN set.
  */
-export async function discover<T>(path: string): Promise<T[]> {
+export function discover<T>(path: string): Promise<T[]> {
+  return discoverRequest<T>(path)
+}
+
+/** Discovery against an endpoint that only answers to a POST body, such as `/asset_info`. */
+export function discoverPost<T>(path: string, body: unknown): Promise<T[]> {
+  return discoverRequest<T>(path, body)
+}
+
+async function discoverRequest<T>(path: string, body?: unknown): Promise<T[]> {
   const headers: Record<string, string> = { accept: 'application/json' }
   const token = process.env.KOIOS_TOKEN
   if (token) headers.authorization = `Bearer ${token}`
+  if (body !== undefined) headers['content-type'] = 'application/json'
 
   const res = await fetch(`${KOIOS_BASE_URL}${path}`, {
     headers,
+    method: body === undefined ? 'GET' : 'POST',
+    body: body === undefined ? undefined : JSON.stringify(body),
     signal: AbortSignal.timeout(DISCOVERY_TIMEOUT_MS),
   })
   if (!res.ok) {

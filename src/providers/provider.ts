@@ -1,5 +1,6 @@
 import type { AccountCapability } from './capabilities/account.js'
 import type { AddressCapability } from './capabilities/addresses.js'
+import type { AssetCapability } from './capabilities/assets.js'
 import type { ChainCapability } from './capabilities/chain.js'
 import type { PoolCapability } from './capabilities/pools.js'
 import type { TxCapability } from './capabilities/tx.js'
@@ -15,7 +16,13 @@ import type { TxCapability } from './capabilities/tx.js'
  * which is the reason the split exists.
  */
 export interface ChainProvider
-  extends ChainCapability, AccountCapability, AddressCapability, PoolCapability, TxCapability {
+  extends
+    ChainCapability,
+    AccountCapability,
+    AddressCapability,
+    AssetCapability,
+    PoolCapability,
+    TxCapability {
   /** A short name for logs and diagnostics, e.g. "koios". */
   readonly name: string
 }

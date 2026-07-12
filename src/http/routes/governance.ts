@@ -27,7 +27,7 @@ export function registerGovernanceRoutes(app: FastifyInstance, provider: ChainPr
   app.get('/v1/governance/dreps', async (request) => {
     const parsed = listQuery.safeParse(request.query)
     if (!parsed.success) {
-      throw new BadRequestError('query must be limit (1-250) and offset (>=0)')
+      throw new BadRequestError('query must be limit (1-250) and offset (0-100000)')
     }
     return provider.getDrepList(parsed.data)
   })

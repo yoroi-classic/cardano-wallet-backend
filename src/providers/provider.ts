@@ -2,6 +2,7 @@ import type { AccountCapability } from './capabilities/account.js'
 import type { AddressCapability } from './capabilities/addresses.js'
 import type { AssetCapability } from './capabilities/assets.js'
 import type { ChainCapability } from './capabilities/chain.js'
+import type { GovernanceCapability } from './capabilities/governance.js'
 import type { PoolCapability } from './capabilities/pools.js'
 import type { TxCapability } from './capabilities/tx.js'
 
@@ -21,6 +22,7 @@ export interface ChainProvider
     AccountCapability,
     AddressCapability,
     AssetCapability,
+    GovernanceCapability,
     PoolCapability,
     TxCapability {
   /** A short name for logs and diagnostics, e.g. "koios". */

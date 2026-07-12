@@ -4,6 +4,7 @@ import { registerAccountRoutes } from './account.js'
 import { registerAddressRoutes } from './addresses.js'
 import { registerAssetRoutes } from './assets.js'
 import { registerChainRoutes } from './chain.js'
+import { registerGovernanceRoutes } from './governance.js'
 import { registerHealthRoutes } from './health.js'
 import { registerPoolRoutes } from './pools.js'
 import { registerTxRoutes } from './tx.js'
@@ -22,5 +23,6 @@ export const routeRegistrars: readonly RouteRegistrar[] = [
   registerAddressRoutes,
   registerPoolRoutes,
   registerAssetRoutes,
+  registerGovernanceRoutes,
   registerTxRoutes,
 ]

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createKoiosProvider, type FetchLike } from '../../src/providers/koios.js'
+import { createKoiosProvider, type FetchLike } from '../../src/providers/koios/index.js'
 import { MalformedUpstreamError } from '../../src/domain/errors.js'
 
 const BASE = 'https://preprod.koios.rest/api/v1'
@@ -82,7 +82,7 @@ describe('koios getPoolInfo', () => {
   it('returns pools in the caller order and omits unknown ids', async () => {
     // Koios responds unordered and without a row for an unknown pool.
     const { fetchImpl } = fakeFetch(async () => [
-      { ...ROW_A, pool_id_bech32: POOL_B, pool_id_hex: 'ff', meta_json: null },
+      { ...ROW_A, pool_id_bech32: POOL_B, pool_id_hex: 'b'.repeat(56), meta_json: null },
       ROW_A,
     ])
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
@@ -96,7 +96,7 @@ describe('koios getPoolInfo', () => {
     const { fetchImpl } = fakeFetch(async () => [
       {
         pool_id_bech32: POOL_A,
-        pool_id_hex: 'aa',
+        pool_id_hex: 'c'.repeat(56),
         pool_status: 'retiring',
         retiring_epoch: 130,
         margin: 0,
@@ -117,7 +117,7 @@ describe('koios getPoolInfo', () => {
 
     expect(pool).toEqual({
       poolId: POOL_A,
-      poolIdHex: 'aa',
+      poolIdHex: 'c'.repeat(56),
       status: 'retiring',
       retiringEpoch: 130,
       margin: 0,
@@ -154,6 +154,31 @@ describe('koios getPoolInfo', () => {
 
   it('rejects an unexpected pool_status as malformed upstream', async () => {
     const { fetchImpl } = fakeFetch(async () => [{ ...ROW_A, pool_status: 'gone' }])
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getPoolInfo([POOL_A])).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+})
+
+describe('koios getPoolInfo — upstream value integrity', () => {
+  it('rejects a margin outside [0, 1]', async () => {
+    // An operator margin is a fraction of rewards by definition. A value outside the range
+    // is upstream junk, and passing it through would let a UI show a 220% fee as fact.
+    const { fetchImpl } = fakeFetch(async () => [{ ...ROW_A, margin: 2.2 }])
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getPoolInfo([POOL_A])).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+
+  it('rejects a fractional delegator count', async () => {
+    const { fetchImpl } = fakeFetch(async () => [{ ...ROW_A, live_delegators: 10.5 }])
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getPoolInfo([POOL_A])).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+
+  it('rejects a negative block count', async () => {
+    const { fetchImpl } = fakeFetch(async () => [{ ...ROW_A, block_count: -1 }])
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
     await expect(provider.getPoolInfo([POOL_A])).rejects.toBeInstanceOf(MalformedUpstreamError)

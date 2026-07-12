@@ -3,6 +3,7 @@ import { bech32 } from '@scure/base'
 import type { FastifyInstance } from 'fastify'
 import { buildServer } from '../../src/http/server.js'
 import type { ChainProvider } from '../../src/providers/provider.js'
+import { fakeProvider } from '../support/fake-provider.js'
 
 // Two well-formed addr_test payment addresses so the route's bech32 validation passes;
 // the bytes are arbitrary but produce a valid HRP + checksum.
@@ -21,23 +22,11 @@ function nonPaymentTypeAddress(): string {
 }
 const NON_PAYMENT_TYPE = nonPaymentTypeAddress()
 
-function providerWith(overrides: Partial<ChainProvider>): ChainProvider {
-  const unused = async () => {
-    throw new Error('unused')
-  }
-  return {
-    name: 'fake',
-    getTip: unused,
-    getProtocolParams: unused,
+function providerWith(overrides: Partial<ChainProvider> = {}): ChainProvider {
+  return fakeProvider({
     filterUsedAddresses: async (addresses) => addresses.filter((a) => a === USED),
-    getAccountState: unused,
-    getAccountUtxos: unused,
-    getTxHistory: unused,
-    submitTx: unused,
-    getTxStatus: unused,
-    getPoolInfo: unused,
     ...overrides,
-  }
+  })
 }
 
 let app: FastifyInstance

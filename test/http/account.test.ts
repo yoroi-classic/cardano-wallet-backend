@@ -3,8 +3,10 @@ import { bech32 } from '@scure/base'
 import type { FastifyInstance } from 'fastify'
 import { buildServer } from '../../src/http/server.js'
 import type { ChainProvider } from '../../src/providers/provider.js'
-import type { AccountState, Utxo, WalletTransaction } from '../../src/domain/types.js'
+import type { AccountState } from '../../src/domain/types/account.js'
+import type { Utxo, WalletTransaction } from '../../src/domain/types/transactions.js'
 import { ProviderError } from '../../src/domain/errors.js'
+import { fakeProvider } from '../support/fake-provider.js'
 
 // A well-formed (valid checksum) preprod stake address for the happy path.
 const STAKE = bech32.encode('stake_test', bech32.toWords(new Uint8Array(29)), 1023)
@@ -22,23 +24,13 @@ const UTXOS: Utxo[] = [
   { txHash: 'aa', outputIndex: 0, address: 'addr_test1', value: '2000000', assets: [] },
 ]
 
-function providerWith(overrides: Partial<ChainProvider>): ChainProvider {
-  const unused = async () => {
-    throw new Error('unused')
-  }
-  return {
-    name: 'fake',
-    getTip: unused,
-    getProtocolParams: unused,
-    filterUsedAddresses: unused,
+function providerWith(overrides: Partial<ChainProvider> = {}): ChainProvider {
+  return fakeProvider({
     getAccountState: async () => structuredClone(STATE),
     getAccountUtxos: async () => structuredClone(UTXOS),
     getTxHistory: async () => [],
-    submitTx: unused,
-    getTxStatus: unused,
-    getPoolInfo: unused,
     ...overrides,
-  }
+  })
 }
 
 let app: FastifyInstance

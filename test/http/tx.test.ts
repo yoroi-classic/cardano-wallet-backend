@@ -3,26 +3,16 @@ import type { FastifyInstance } from 'fastify'
 import { buildServer } from '../../src/http/server.js'
 import type { ChainProvider } from '../../src/providers/provider.js'
 import { ProviderError } from '../../src/domain/errors.js'
+import { fakeProvider } from '../support/fake-provider.js'
 
 const TX_HASH = 'a'.repeat(64)
 
-function providerWith(overrides: Partial<ChainProvider>): ChainProvider {
-  const unused = async () => {
-    throw new Error('unused')
-  }
-  return {
-    name: 'fake',
-    getTip: unused,
-    getProtocolParams: unused,
-    filterUsedAddresses: unused,
-    getAccountState: unused,
-    getAccountUtxos: unused,
-    getTxHistory: unused,
-    getPoolInfo: unused,
+function providerWith(overrides: Partial<ChainProvider> = {}): ChainProvider {
+  return fakeProvider({
     submitTx: async () => ({ txHash: TX_HASH }),
     getTxStatus: async () => ({ seen: true, confirmations: 3 }),
     ...overrides,
-  }
+  })
 }
 
 let app: FastifyInstance

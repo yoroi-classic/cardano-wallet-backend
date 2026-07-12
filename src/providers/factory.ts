@@ -1,6 +1,6 @@
 import type { AppConfig } from '../config/index.js'
 import { ConfigError } from '../domain/errors.js'
-import { createKoiosProvider } from './koios.js'
+import { createKoiosProvider } from './koios/index.js'
 import type { ChainProvider } from './provider.js'
 
 /**

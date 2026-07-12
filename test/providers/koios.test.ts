@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createKoiosProvider, type FetchLike } from '../../src/providers/koios.js'
+import { createKoiosProvider, type FetchLike } from '../../src/providers/koios/index.js'
 import {
   MalformedUpstreamError,
   ProviderError,
@@ -241,5 +241,112 @@ describe('koios provider — unhappy path', () => {
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
     await expect(provider.getTip()).rejects.toBeInstanceOf(ProviderTimeoutError)
+  })
+})
+
+describe('koios provider — upstream value integrity', () => {
+  const TX_HASH = 'a'.repeat(64)
+
+  it('rejects a lovelace amount that JSON.parse already rounded past 2^53', async () => {
+    // Koios sends large amounts as strings. If one ever arrives as a JSON number above
+    // 2^53 it is corrupt before any schema sees it, and stringifying it back out would
+    // report a wrong-but-plausible balance as fact. Refuse it instead.
+    //
+    // Parsed from raw JSON rather than written as a literal, because that is how it would
+    // actually reach us, and because a literal this size is itself a lint error: eslint's
+    // no-loss-of-precision rule refuses to let the exact bug under test be typed by hand.
+    const body = JSON.parse(
+      '[{"stake_address":"stake_test1abc","status":"registered",' +
+        '"total_balance":7682048683977123456,' +
+        '"rewards_available":0,"rewards":0,"withdrawals":0}]',
+    ) as Array<{ total_balance: number }>
+    expect(Number.isSafeInteger(body[0]?.total_balance)).toBe(false)
+
+    const { fetchImpl } = fakeFetch({ json: async () => body })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getAccountState('stake_test1abc')).rejects.toBeInstanceOf(
+      MalformedUpstreamError,
+    )
+  })
+
+  it('still accepts a large lovelace amount sent as a string, digit for digit', async () => {
+    const { fetchImpl } = fakeFetch({
+      json: async () => [
+        {
+          stake_address: 'stake_test1abc',
+          status: 'registered',
+          total_balance: '7682048683977123456',
+          rewards_available: '0',
+          rewards: '0',
+          withdrawals: '0',
+        },
+      ],
+    })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const state = await provider.getAccountState('stake_test1abc')
+    expect(state.balance).toBe('7682048683977123456')
+  })
+
+  it('does not report another transaction’s confirmations as this one’s', async () => {
+    // A mismatched tx_status row must not be read as the requested tx, or a wallet would
+    // tell someone a payment landed when it did not.
+    const { fetchImpl } = fakeFetch({
+      json: async () => [{ tx_hash: 'b'.repeat(64), num_confirmations: 12 }],
+    })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getTxStatus(TX_HASH)).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+
+  it('reports an unseen transaction as unseen when tx_status is empty', async () => {
+    const { fetchImpl } = fakeFetch({ json: async () => [] })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getTxStatus(TX_HASH)).resolves.toEqual({
+      seen: false,
+      confirmations: 0,
+    })
+  })
+
+  it('rejects a negative confirmation count', async () => {
+    const { fetchImpl } = fakeFetch({
+      json: async () => [{ tx_hash: TX_HASH, num_confirmations: -3 }],
+    })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getTxStatus(TX_HASH)).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+})
+
+describe('koios provider — asset identifiers', () => {
+  const utxoWith = (policyId: string, assetName: string) => [
+    {
+      tx_hash: 'aa',
+      tx_index: 0,
+      address: 'addr_test1',
+      value: '2000000',
+      asset_list: [{ policy_id: policyId, asset_name: assetName, quantity: '1' }],
+    },
+  ]
+
+  it('accepts an asset with an empty name, which is a real and common token', async () => {
+    // A policy's unnamed asset is valid on chain, so the boundary must not demand a name.
+    const { fetchImpl } = fakeFetch({ json: async () => utxoWith('a'.repeat(56), '') })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [utxo] = await provider.getAccountUtxos('stake_test1abc')
+
+    expect(utxo?.assets).toEqual([{ policyId: 'a'.repeat(56), assetName: '', quantity: '1' }])
+  })
+
+  it('rejects an empty policy id, which is never valid', async () => {
+    const { fetchImpl } = fakeFetch({ json: async () => utxoWith('', '4142') })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getAccountUtxos('stake_test1abc')).rejects.toBeInstanceOf(
+      MalformedUpstreamError,
+    )
   })
 })

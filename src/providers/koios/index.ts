@@ -8,7 +8,7 @@ import { createKoiosClient, type KoiosConfig } from './client.js'
 import { createPoolMethods } from './pools.js'
 import { createTxMethods } from './tx.js'
 
-export type { FetchLike, KoiosConfig } from './client.js'
+export type { FetchLike, KoiosConfig, RetryEvent } from './client.js'
 
 /**
  * The Koios provider: one shared client (auth, timeout, error mapping, parsing) with a

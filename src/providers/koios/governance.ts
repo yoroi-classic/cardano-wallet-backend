@@ -39,6 +39,10 @@ const drepInfoRow = z
     // drep_list (reported as koios-artifacts#411). That is an upstream defect, and it fails
     // loudly here rather than being defaulted: a DRep's standing is not something to guess at,
     // and quietly reading a broken response as "not active" would hide the problem.
+    //
+    // Failing loudly is not the same as failing the request. The client retries a read that
+    // comes back off-spec, so a null from one bad instance is very likely answered correctly by
+    // the next attempt. What it must never do is coerce the null into a `false`.
     active: z.boolean(),
     deposit: numeric.nullish(),
     amount: numeric.nullish(),
@@ -119,8 +123,10 @@ export function createGovernanceMethods(koios: KoiosClient): GovernanceCapabilit
     }
 
     for (let page = 0; page < DREP_LIST_MAX_PAGES; page += 1) {
-      const data = await koios.request(`/drep_list?${pageQuery(DREP_LIST_PAGE_SIZE).toString()}`)
-      const rows = koios.parseWith(z.array(drepListRow), data, '/drep_list')
+      const rows = await koios.get(
+        z.array(drepListRow),
+        `/drep_list?${pageQuery(DREP_LIST_PAGE_SIZE).toString()}`,
+      )
       for (const row of rows) {
         if (row.registered) ids.push(row.drep_id)
       }
@@ -137,8 +143,8 @@ export function createGovernanceMethods(koios: KoiosClient): GovernanceCapabilit
     // list of exactly DREP_LIST_MAX_PAGES * DREP_LIST_PAGE_SIZE rows ends on a full page and
     // has been read in full. Ask for one more row to tell the two apart, rather than failing
     // a request that actually succeeded.
-    const probe = await koios.request(`/drep_list?${pageQuery(1).toString()}`)
-    if (koios.parseWith(z.array(drepListRow), probe, '/drep_list').length === 0) return ids
+    const probe = await koios.get(z.array(drepListRow), `/drep_list?${pageQuery(1).toString()}`)
+    if (probe.length === 0) return ids
 
     // There really is more list than was scanned. Say so rather than serving a truncated list
     // as if it were the whole one: silently short pages are how a DRep disappears from a
@@ -164,8 +170,9 @@ export function createGovernanceMethods(koios: KoiosClient): GovernanceCapabilit
     const byHex = new Map<string, { name?: string; image?: string }>()
     for (const chunk of chunked(drepIds, DREP_INFO_CHUNK)) {
       try {
-        const data = await koios.postJson('/drep_metadata', { _drep_ids: chunk })
-        const rows = koios.parseWith(z.array(drepMetadataRow), data, '/drep_metadata')
+        const rows = await koios.batch(z.array(drepMetadataRow), '/drep_metadata', {
+          _drep_ids: chunk,
+        })
         for (const row of rows) {
           const hex = drepCredentialHex(row.drep_id)
           if (hex !== undefined) byHex.set(hex, drepMetaFields(row.meta_json))
@@ -196,8 +203,7 @@ export function createGovernanceMethods(koios: KoiosClient): GovernanceCapabilit
       (async () => {
         const byHex = new Map<string, z.infer<typeof drepInfoRow>>()
         for (const chunk of chunked(drepIds, DREP_INFO_CHUNK)) {
-          const data = await koios.postJson('/drep_info', { _drep_ids: chunk })
-          const rows = koios.parseWith(z.array(drepInfoRow), data, '/drep_info')
+          const rows = await koios.batch(z.array(drepInfoRow), '/drep_info', { _drep_ids: chunk })
           for (const row of rows) byHex.set(row.hex.toLowerCase(), row)
         }
         return byHex

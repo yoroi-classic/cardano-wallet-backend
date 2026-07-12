@@ -125,8 +125,9 @@ export function createPoolMethods(koios: KoiosClient): PoolCapability {
     if (poolIds.length === 0) return []
     const byId = new Map<string, z.infer<typeof poolInfoRow>>()
     for (const chunk of chunked(poolIds, POOL_INFO_CHUNK)) {
-      const data = await koios.postJson('/pool_info', { _pool_bech32_ids: chunk })
-      const rows = koios.parseWith(z.array(poolInfoRow), data, '/pool_info')
+      const rows = await koios.batch(z.array(poolInfoRow), '/pool_info', {
+        _pool_bech32_ids: chunk,
+      })
       for (const row of rows) byId.set(row.pool_id_bech32, row)
     }
     return poolIds.flatMap((id) => {
@@ -166,8 +167,10 @@ export function createPoolMethods(koios: KoiosClient): PoolCapability {
     }
 
     for (let page = 0; page < POOL_LIST_MAX_PAGES; page += 1) {
-      const data = await koios.request(`/pool_list?${pageQuery(POOL_LIST_PAGE_SIZE).toString()}`)
-      const parsed = koios.parseWith(z.array(poolStakeRow), data, '/pool_list')
+      const parsed = await koios.get(
+        z.array(poolStakeRow),
+        `/pool_list?${pageQuery(POOL_LIST_PAGE_SIZE).toString()}`,
+      )
       rows.push(...parsed)
 
       // A short page is the end of the list upstream.
@@ -180,8 +183,8 @@ export function createPoolMethods(koios: KoiosClient): PoolCapability {
     // list of exactly POOL_LIST_MAX_PAGES * POOL_LIST_PAGE_SIZE pools ends on a full page and
     // has been read in full. Ask for one more row to tell the two apart, rather than failing
     // a request that actually succeeded.
-    const probe = await koios.request(`/pool_list?${pageQuery(1).toString()}`)
-    if (koios.parseWith(z.array(poolStakeRow), probe, '/pool_list').length === 0) return rows
+    const probe = await koios.get(z.array(poolStakeRow), `/pool_list?${pageQuery(1).toString()}`)
+    if (probe.length === 0) return rows
 
     // There really are more. Every page of this endpoint is cut from the sorted whole, so a
     // truncated read does not merely shorten the tail: a missed pool with large stake would

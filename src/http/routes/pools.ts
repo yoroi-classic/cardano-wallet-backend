@@ -38,14 +38,18 @@ const boundedInt = (min: number, max: number, fallback: number) =>
 
 // Page bounds for the list. A page hydrates each pool with full info, so cap the size.
 //
-// The offset ceiling leaves room for a full page beneath the provider's scan bound, because
-// what the provider has to reach is offset + limit, not offset. An offset of exactly the scan
-// bound with the largest limit would ask for row 20,250 of a 20,000-row scan and fail, so the
-// API must not advertise it. There are ~3k registered pools, so this is already far past the
-// end of any real list, where the answer is an empty page rather than an error.
-const PROVIDER_SCAN_BOUND = 20_000
+// The offset ceiling is generous on purpose, and deliberately unlike the DRep list's.
+//
+// getPoolList cannot stop scanning early: the order it promises is by active stake, so it
+// reads the whole registered set and then slices. The offset therefore never drives how far
+// the provider reads, and an offset past the end of the list is simply an empty page rather
+// than a failure. Tying this ceiling to the provider's scan bound, as the DRep list does,
+// would reject offsets that answer perfectly well.
+//
+// (The DRep list is the opposite: it stops as soon as offset + limit rows are in hand, so
+// there the offset does drive the read and the ceiling has to respect the bound.)
 const MAX_LIMIT = 250
-const MAX_OFFSET = PROVIDER_SCAN_BOUND - MAX_LIMIT
+const MAX_OFFSET = 100_000
 
 const listQuery = z.object({
   limit: boundedInt(1, MAX_LIMIT, 50),

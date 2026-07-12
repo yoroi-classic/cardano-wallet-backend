@@ -20,8 +20,22 @@ const checkOnly = process.argv.includes('--check')
 
 /** Read the fragment files, skipping the README that documents the format. */
 function fragmentFiles() {
-  return readdirSync(CHANGES_DIR)
-    .filter((f) => f.endsWith('.md') && f !== 'README.md')
+  const entries = readdirSync(CHANGES_DIR, { withFileTypes: true })
+
+  // A fragment named after a branch verbatim (`feat/koios-pool-list.md`) lands in a
+  // subdirectory, and this read is not recursive, so its entries would be dropped from the
+  // release without a word. Refuse to run rather than quietly ship an incomplete changelog.
+  const dirs = entries.filter((e) => e.isDirectory()).map((e) => e.name)
+  if (dirs.length > 0) {
+    throw new Error(
+      `${CHANGES_DIR} contains subdirectories (${dirs.join(', ')}), which are not read. ` +
+        `Flatten the slashes in the fragment name so it sits directly in ${CHANGES_DIR}.`,
+    )
+  }
+
+  return entries
+    .filter((e) => e.isFile() && e.name.endsWith('.md') && e.name !== 'README.md')
+    .map((e) => e.name)
     .sort()
 }
 
@@ -48,8 +62,14 @@ function parseFragment(name, text) {
       if (!SECTIONS.includes(title)) {
         throw new Error(`${name}: unknown section "${title}". Use one of: ${SECTIONS.join(', ')}.`)
       }
+      // Repeating a heading in one fragment merges the two under a single entry, which
+      // also lets an empty `### Added` slip past the empty-section check below by borrowing
+      // the content of a later one. Say so instead: it is a typo, not an intent.
+      if (entries.has(title)) {
+        throw new Error(`${name}: section "${title}" appears twice. Merge them into one.`)
+      }
       section = title
-      if (!entries.has(section)) entries.set(section, [])
+      entries.set(section, [])
       continue
     }
 

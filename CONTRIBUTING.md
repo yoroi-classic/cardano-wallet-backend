@@ -110,16 +110,21 @@ into `development` never needed either. Doing it anyway gave every concurrent PR
 guaranteed conflict in `package.json`, `package-lock.json`, and the top of
 `CHANGELOG.md`, which is what forced work to serialize.
 
-Instead, a PR that changes behavior adds one uniquely-named fragment under `.changes/`,
-named after its branch. New file per PR, so two PRs can never collide:
+Instead, a PR that changes behavior adds one fragment under `.changes/`. New file per PR,
+so two PRs can't collide on it. Name it after your branch with the slashes flattened, plus
+a few random characters, and keep it directly in `.changes/` (a name with a `/` in it would
+create a subdirectory, and the assembler does not look inside those):
 
 ```markdown
-<!-- .changes/feat-koios-pool-list.md -->
+<!-- branch feat/koios-pool-list -> .changes/feat-koios-pool-list-7f3a.md -->
 
 ### Added
 
 - `POST /v1/pools/list` returns the neutral stake pool list, sourced from Koios.
 ```
+
+The random suffix is what actually makes the name unique. Two forks can pick the same
+obvious branch name for the same obvious fix. See `.changes/README.md`.
 
 `npm run changelog:check` parses the fragments and prints what they would produce. A pure
 refactor, a test-only change, or a docs edit needs no fragment.

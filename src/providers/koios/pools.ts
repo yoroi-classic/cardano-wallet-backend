@@ -17,6 +17,16 @@ const POOL_LIST_MAX_PAGES = 20
 // Pools with no active stake sort last, so give them a value below every real stake.
 const NO_ACTIVE_STAKE = -1n
 
+// The pool id is doing two jobs here: it is the keyset cursor the walk pages on, and the key
+// the hydration joins on. A malformed one is not cosmetic, it silently ends the scan early or
+// drops the pool from its page, so it is held to a shape.
+//
+// A shape, not a full bech32 decode. This is upstream data being used as an opaque cursor and
+// join key, so what matters is that it is a well-formed, comparable pool id and not an empty
+// string or a fragment of an error message. Caller-supplied ids are a different matter and are
+// decoded properly at the HTTP boundary, checksum and all.
+const poolIdBech32 = z.string().regex(/^pool1[0-9a-z]+$/)
+
 const poolMetaJson = z.object({
   name: z.string().nullish(),
   ticker: z.string().nullish(),
@@ -30,7 +40,7 @@ const poolMetaJson = z.object({
 const count = z.number().int().nonnegative()
 
 const poolInfoRow = z.object({
-  pool_id_bech32: z.string(),
+  pool_id_bech32: poolIdBech32,
   pool_id_hex: z.string().regex(/^[0-9a-fA-F]{56}$/),
   // Koios documents exactly these three; anything else is unexpected upstream data.
   pool_status: z.enum(['registered', 'retiring', 'retired']),
@@ -50,7 +60,7 @@ const poolInfoRow = z.object({
 })
 
 const poolStakeRow = z.object({
-  pool_id_bech32: z.string(),
+  pool_id_bech32: poolIdBech32,
   active_stake: numeric.nullish(),
 })
 
@@ -68,6 +78,14 @@ function byActiveStakeDesc(a: PoolStakeRow, b: PoolStakeRow): number {
   const right = activeStakeOf(b)
   if (left !== right) return left > right ? -1 : 1
   return a.pool_id_bech32 < b.pool_id_bech32 ? -1 : a.pool_id_bech32 > b.pool_id_bech32 ? 1 : 0
+}
+
+// Same total order as byActiveStakeDesc, but over the PoolInfo values actually returned.
+function byExposedActiveStakeDesc(a: PoolInfo, b: PoolInfo): number {
+  const left = BigInt(a.activeStake)
+  const right = BigInt(b.activeStake)
+  if (left !== right) return left > right ? -1 : 1
+  return a.poolId < b.poolId ? -1 : a.poolId > b.poolId ? 1 : 0
 }
 
 function mapPoolMetadata(
@@ -196,7 +214,15 @@ export function createPoolMethods(koios: KoiosClient): PoolCapability {
       // page with full pool_info.
       const stakes = await registeredPoolStakes(ticker)
       const page = stakes.sort(byActiveStakeDesc).slice(offset, offset + limit)
-      return poolInfoByIds(page.map((r) => r.pool_id_bech32))
+      const hydrated = await poolInfoByIds(page.map((r) => r.pool_id_bech32))
+
+      // Rank on the values actually being returned, not on the snapshot they were selected
+      // from. The page is chosen from /pool_list and then hydrated by /pool_info, a second
+      // round trip: across an epoch boundary the two can disagree, and the page would go out
+      // with an `activeStake` sequence that is not descending while claiming to be sorted by
+      // it. Re-sorting the hydrated rows makes the response self-consistent with what it says
+      // about itself.
+      return hydrated.sort(byExposedActiveStakeDesc)
     },
   }
 }

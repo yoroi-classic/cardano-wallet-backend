@@ -211,12 +211,18 @@ function routedFetch(
 
 describe('koios getPoolList', () => {
   it('hydrates the requested page with pool info, in order', async () => {
+    // The hydrated rows carry the same stakes /pool_list reported, as real ones do. The page
+    // is ranked on the values it actually returns, so a fixture where the two disagree would
+    // be testing a contradiction rather than the mapping.
     const { fetchImpl, calls } = routedFetch(
       [
         { pool_id_bech32: POOL_A, active_stake: '2000' },
         { pool_id_bech32: POOL_B, active_stake: '1000' },
       ],
-      [ROW_B, ROW_A],
+      [
+        { ...ROW_B, active_stake: '1000' },
+        { ...ROW_A, active_stake: '2000' },
+      ],
     )
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
@@ -481,5 +487,34 @@ describe('koios getPoolList — the upstream walk is ordered and honest', () => 
     await expect(provider.getPoolList({ limit: 5, offset: 0 })).rejects.toBeInstanceOf(
       ProviderError,
     )
+  })
+})
+
+describe('koios getPoolList — the page is ranked on the values it returns', () => {
+  it('returns a descending activeStake sequence even when hydration disagrees with the list', async () => {
+    // The page is chosen from /pool_list and then hydrated by /pool_info, a second round trip.
+    // Across an epoch boundary the two can disagree about active stake. Ranking on the
+    // snapshot alone would send back a page whose own `activeStake` values are not descending
+    // while it claims to be sorted by them: a client rendering the list sees them out of order.
+    const listRows = [
+      { pool_id_bech32: poolId(1), active_stake: '3000' },
+      { pool_id_bech32: poolId(2), active_stake: '2000' },
+      { pool_id_bech32: poolId(3), active_stake: '1000' },
+    ]
+    // The epoch ticked over: the hydrated stakes are a different snapshot, in a different order.
+    const infoRows = [
+      { ...ROW_A, pool_id_bech32: poolId(1), active_stake: '1500' },
+      { ...ROW_A, pool_id_bech32: poolId(2), active_stake: '9000' },
+      { ...ROW_A, pool_id_bech32: poolId(3), active_stake: '4000' },
+    ]
+    const { fetchImpl } = routedFetch(listRows, infoRows)
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const pools = await provider.getPoolList({ limit: 3, offset: 0 })
+
+    expect(pools.map((p) => p.activeStake)).toEqual(['9000', '4000', '1500'])
+    for (let i = 1; i < pools.length; i += 1) {
+      expect(BigInt(pools[i - 1]!.activeStake) >= BigInt(pools[i]!.activeStake)).toBe(true)
+    }
   })
 })

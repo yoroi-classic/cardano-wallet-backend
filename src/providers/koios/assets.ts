@@ -254,15 +254,30 @@ function extractCip25(
   minting: unknown,
   policy: string,
   assetNameHex: string,
-  assetNameAscii: string | null | undefined,
 ): Cip25Fields | undefined {
   if (!isRecord(minting)) return undefined
   const nft = minting['721']
   if (!isRecord(nft)) return undefined
   const byPolicy = nft[policy]
   if (!isRecord(byPolicy)) return undefined
-  const entryRaw =
-    byPolicy[assetNameHex] ?? (assetNameAscii != null ? byPolicy[assetNameAscii] : undefined)
+
+  // CIP-25 keys the asset differently by version, and picking the wrong representation does
+  // not merely miss: it can return a *different asset's* metadata.
+  //
+  // Per the spec, version 1 keys the map by the asset name as UTF-8 text and version 2 by its
+  // raw bytes, with the version defaulting to 1 when absent. Trying the hex form first
+  // regardless would, inside a version-1 policy, look up "616263" and match an asset that is
+  // literally *named* "616263" when the caller asked about the asset named "abc" (whose hex
+  // is 616263). The wrong name and image would then be shown for the token.
+  //
+  // So exactly one key is used, chosen by the version. Decoding the v1 key from the hex
+  // rather than leaning on Koios's asset_name_ascii also means a non-ASCII v1 name still
+  // resolves, which the ASCII-only field could not do.
+  const version = Number(nft.version)
+  const assetKey = Number.isFinite(version) && version >= 2 ? assetNameHex : hexToUtf8(assetNameHex)
+  if (assetKey === undefined) return undefined
+
+  const entryRaw = byPolicy[assetKey]
   if (!isRecord(entryRaw)) return undefined
   const fields: Cip25Fields = {
     name: cip25String(entryRaw.name),
@@ -310,12 +325,7 @@ function mapTokenMetadata(row: z.infer<typeof assetInfoRow>): TokenMetadata {
     }
   }
 
-  const cip25 = extractCip25(
-    row.minting_tx_metadata,
-    row.policy_id,
-    row.asset_name,
-    row.asset_name_ascii,
-  )
+  const cip25 = extractCip25(row.minting_tx_metadata, row.policy_id, row.asset_name)
   if (cip25) {
     return {
       ...base,

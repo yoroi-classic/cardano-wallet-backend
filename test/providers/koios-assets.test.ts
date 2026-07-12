@@ -163,7 +163,7 @@ describe('koios getTokenMetadata', () => {
     expect(calls).toHaveLength(0)
   })
 
-  it('falls back to CIP-25 mint metadata for an NFT (image + name), keyed by hex name', async () => {
+  it('falls back to CIP-25 mint metadata for an NFT (image + name), keyed by the v1 text name', async () => {
     const POLICY = 'c'.repeat(56)
     const NAME_HEX = '4d794e4654' // "MyNFT"
     const subject = POLICY + NAME_HEX
@@ -179,9 +179,11 @@ describe('koios getTokenMetadata', () => {
         url: null,
         decimals: null,
         minting_tx_metadata: {
+          // Keyed by the asset name as text, which is CIP-25 version 1 and is what every one
+          // of the 131 live mainnet CIP-25 assets surveyed actually does.
           '721': {
             [POLICY]: {
-              [NAME_HEX]: {
+              MyNFT: {
                 name: 'My NFT',
                 image: 'ipfs://QmImageHash',
                 description: 'a picture',
@@ -474,7 +476,8 @@ describe('koios getTokenMetadata', () => {
         url: null,
         decimals: null,
         minting_tx_metadata: {
-          '721': { [POLICY]: { [NAME_HEX]: { name: 'CIP25 Name' } } },
+          // v1: keyed by the asset name as text ('61' is "a"), which is what live mints do.
+          '721': { [POLICY]: { a: { name: 'CIP25 Name' } } },
         },
         cip68_metadata: cip68,
       },
@@ -701,5 +704,105 @@ describe('koios getTokenMetadata — CIP-68 version 4 nested map', () => {
 
     expect(token?.source).toBe('none')
     expect(token?.name).toBeUndefined()
+  })
+})
+
+describe('koios getTokenMetadata — CIP-25 keys the asset by version', () => {
+  // Per CIP-25: version 1 keys the metadata map by the asset name as UTF-8 *text*, version 2
+  // by its *raw bytes*, and the version defaults to 1 when absent.
+  const POLICY = 'b'.repeat(56)
+  const ABC_HEX = '616263' // "abc"
+  const LITERAL_HEX = '363136323633' // the six characters "616263"
+
+  function row(assetNameHex: string, minting: unknown) {
+    return {
+      [POLICY + assetNameHex]: {
+        policy_id: POLICY,
+        asset_name: assetNameHex,
+        asset_name_ascii: Buffer.from(assetNameHex, 'hex').toString('utf8'),
+        fingerprint: 'asset1cip25',
+        total_supply: '1',
+        name: null,
+        ticker: null,
+        description: null,
+        url: null,
+        decimals: null,
+        minting_tx_metadata: minting,
+        cip68_metadata: null,
+      },
+    }
+  }
+
+  it('does not hand a v1 asset the metadata of another asset named after its hex', async () => {
+    // The collision: asset "abc" has hex 616263. A *different* asset in the same policy is
+    // literally named "616263". A v1 map is keyed by text, so it holds both "abc" and
+    // "616263" as keys. Looking up the hex form first would fetch the wrong one.
+    const minting = {
+      '721': {
+        [POLICY]: {
+          abc: { name: 'The real abc', image: 'ipfs://abc' },
+          '616263': { name: 'A different token', image: 'ipfs://impostor' },
+        },
+        version: 1,
+      },
+    }
+    const { fetchImpl } = assetFetch(row(ABC_HEX, minting))
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [token] = await provider.getTokenMetadata([POLICY + ABC_HEX])
+
+    expect(token?.source).toBe('cip25')
+    expect(token?.name).toBe('The real abc')
+    expect(token?.image).toBe('ipfs://abc')
+  })
+
+  it('reads the sibling asset in that same v1 policy correctly too', async () => {
+    const minting = {
+      '721': {
+        [POLICY]: {
+          abc: { name: 'The real abc' },
+          '616263': { name: 'A different token' },
+        },
+        version: 1,
+      },
+    }
+    const { fetchImpl } = assetFetch(row(LITERAL_HEX, minting))
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [token] = await provider.getTokenMetadata([POLICY + LITERAL_HEX])
+
+    expect(token?.name).toBe('A different token')
+  })
+
+  it('keys by raw bytes when the mint declares version 2', async () => {
+    const minting = {
+      '721': {
+        [POLICY]: { [ABC_HEX]: { name: 'v2 keyed by hex' } },
+        version: 2,
+      },
+    }
+    const { fetchImpl } = assetFetch(row(ABC_HEX, minting))
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [token] = await provider.getTokenMetadata([POLICY + ABC_HEX])
+
+    expect(token?.source).toBe('cip25')
+    expect(token?.name).toBe('v2 keyed by hex')
+  })
+
+  it('resolves a v1 asset whose name is not ASCII', async () => {
+    // asset_name_ascii is empty for these upstream, so the old lookup could never find them.
+    // Decoding the key from the hex does.
+    const CAFE_HEX = '636166c3a9' // "café"
+    const minting = {
+      '721': { [POLICY]: { café: { name: 'Café token' } }, version: 1 },
+    }
+    const { fetchImpl } = assetFetch(row(CAFE_HEX, minting))
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [token] = await provider.getTokenMetadata([POLICY + CAFE_HEX])
+
+    expect(token?.source).toBe('cip25')
+    expect(token?.name).toBe('Café token')
   })
 })

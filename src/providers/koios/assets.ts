@@ -260,7 +260,9 @@ interface Cip25Fields {
 }
 
 // Pull the CIP-25 entry for this asset out of the mint metadata. The asset key under the
-// policy is either the hex asset name or its decoded text form, so try both.
+// policy is the hex asset name or its text form depending on the declared version, and
+// exactly one of them is used: trying both is what lets one asset pick up another's metadata
+// (see below).
 function extractCip25(
   minting: unknown,
   policy: string,

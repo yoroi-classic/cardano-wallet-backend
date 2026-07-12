@@ -13,6 +13,8 @@ export interface AppConfig {
   port: number
   logLevel: string
   provider: ProviderName
+  /** Cache the chain-wide reads. On by default; an escape hatch for debugging upstream. */
+  cacheEnabled: boolean
   koios: {
     url: string
     token?: string
@@ -31,6 +33,12 @@ const schema = z.object({
   PORT: z.coerce.number().int().positive().max(65535).default(3010),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   PROVIDER: z.enum(PROVIDERS).default('koios'),
+  // Only an explicit "false" turns caching off. Anything else, including an unset variable,
+  // leaves it on: a typo in an env var must not silently multiply our upstream load.
+  CACHE_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
   KOIOS_URL: z.string().url().optional(),
   KOIOS_TOKEN: z.string().optional(),
 })
@@ -52,6 +60,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     port: e.PORT,
     logLevel: e.LOG_LEVEL,
     provider: e.PROVIDER,
+    cacheEnabled: e.CACHE_ENABLED,
     koios: {
       url: e.KOIOS_URL ?? DEFAULT_KOIOS_URL[e.NETWORK],
       token,

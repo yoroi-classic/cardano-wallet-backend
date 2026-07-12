@@ -806,3 +806,72 @@ describe('koios getTokenMetadata — CIP-25 keys the asset by version', () => {
     expect(token?.name).toBe('Café token')
   })
 })
+
+describe('koios getTokenMetadata — CIP-25 version edge cases', () => {
+  const POLICY = 'd'.repeat(56)
+
+  function row(assetNameHex: string, minting: unknown) {
+    return {
+      [POLICY + assetNameHex]: {
+        policy_id: POLICY,
+        asset_name: assetNameHex,
+        asset_name_ascii: Buffer.from(assetNameHex, 'hex').toString('utf8'),
+        fingerprint: 'asset1edge',
+        total_supply: '1',
+        name: null,
+        ticker: null,
+        description: null,
+        url: null,
+        decimals: null,
+        minting_tx_metadata: minting,
+        cip68_metadata: null,
+      },
+    }
+  }
+
+  it('reads an unknown version as v1 rather than letting it select the hex key', async () => {
+    // Only 1 and 2 exist. A `>= 2` test would send version 3 down the hex path on a map that
+    // is almost certainly text-keyed, which is the cross-asset collision, not a graceful
+    // degradation. Unknown means v1, which is also the spec's default.
+    const ABC_HEX = '616263'
+    const minting = {
+      '721': {
+        [POLICY]: {
+          abc: { name: 'Correct' },
+          '616263': { name: 'The impostor' },
+        },
+        version: 3,
+      },
+    }
+    const { fetchImpl } = assetFetch(row(ABC_HEX, minting))
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [token] = await provider.getTokenMetadata([POLICY + ABC_HEX])
+
+    expect(token?.name).toBe('Correct')
+  })
+
+  it('accepts the string "1.0", which a third of live mainnet mints emit', async () => {
+    const ABC_HEX = '616263'
+    const minting = { '721': { [POLICY]: { abc: { name: 'Dotted version' } }, version: '1.0' } }
+    const { fetchImpl } = assetFetch(row(ABC_HEX, minting))
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [token] = await provider.getTokenMetadata([POLICY + ABC_HEX])
+
+    expect(token?.name).toBe('Dotted version')
+  })
+
+  it('resolves an unnamed asset, whose v1 text key is the empty string', async () => {
+    // A policy's unnamed asset is a real and common token. Its CIP-25 v1 key is '', which a
+    // plain hex-to-text decode rejects along with genuinely absent values.
+    const minting = { '721': { [POLICY]: { '': { name: 'The unnamed one' } }, version: 1 } }
+    const { fetchImpl } = assetFetch(row('', minting))
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [token] = await provider.getTokenMetadata([POLICY])
+
+    expect(token?.source).toBe('cip25')
+    expect(token?.name).toBe('The unnamed one')
+  })
+})

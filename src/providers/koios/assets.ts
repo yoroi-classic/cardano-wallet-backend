@@ -242,6 +242,17 @@ function cip25String(value: unknown): string | undefined {
   return undefined
 }
 
+/**
+ * The version-1 CIP-25 map key for an asset: its name as UTF-8 text.
+ *
+ * An unnamed asset is a real and common token, and its text key is the empty string. hexToUtf8
+ * rejects '' (an empty *value* is absent, which is the right call for a metadata field), so
+ * the empty name is handled here rather than being dropped along with it.
+ */
+function v1TextKey(assetNameHex: string): string | undefined {
+  return assetNameHex === '' ? '' : hexToUtf8(assetNameHex)
+}
+
 interface Cip25Fields {
   name?: string
   description?: string
@@ -273,8 +284,15 @@ function extractCip25(
   // So exactly one key is used, chosen by the version. Decoding the v1 key from the hex
   // rather than leaning on Koios's asset_name_ascii also means a non-ASCII v1 name still
   // resolves, which the ASCII-only field could not do.
-  const version = Number(nft.version)
-  const assetKey = Number.isFinite(version) && version >= 2 ? assetNameHex : hexToUtf8(assetNameHex)
+  // Only versions 1 and 2 exist, and the spec makes 1 the default. Anything else (absent, a
+  // string, a future or bogus number) is read as version 1. A `>= 2` test would be worse than
+  // useless: an unknown version like 3 would select the hex key on a map that is almost
+  // certainly text-keyed, which is the collision path above rather than graceful degradation.
+  //
+  // It cannot be an identity check against the number 1 either: live data returns `version` as
+  // the *string* "1.0" for a third of mainnet CIP-25 assets.
+  const version = Number(nft.version) === 2 ? 2 : 1
+  const assetKey = version === 2 ? assetNameHex : v1TextKey(assetNameHex)
   if (assetKey === undefined) return undefined
 
   const entryRaw = byPolicy[assetKey]

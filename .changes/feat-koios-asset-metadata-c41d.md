@@ -13,4 +13,3 @@
   and reported the asset as having no metadata at all.
 - CIP-68 values split across a list of byte strings (which the spec requires for anything
   over 64 bytes, so most image URIs) are joined rather than dropped.
-

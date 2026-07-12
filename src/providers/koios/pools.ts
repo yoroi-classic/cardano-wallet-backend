@@ -14,8 +14,11 @@ const POOL_LIST_PAGE_SIZE = 1000
 // bounded if upstream ever stops shrinking the last page.
 const POOL_LIST_MAX_PAGES = 20
 
-// Pools with no active stake sort last, so give them a value below every real stake.
-const NO_ACTIVE_STAKE = -1n
+// A null active_stake is normalized to 0 here for exactly the reason mapPoolInfo normalizes it
+// to '0' on the way out: if the two disagreed, a pool with no stake and a pool with zero stake
+// would rank in an order the exposed values cannot explain, and the documented pool-id
+// tie-break between them would not hold.
+const NO_ACTIVE_STAKE = 0n
 
 // The pool id is doing two jobs here: it is the keyset cursor the walk pages on, and the key
 // the hydration joins on. A malformed one is not cosmetic, it silently ends the scan early or
@@ -78,14 +81,6 @@ function byActiveStakeDesc(a: PoolStakeRow, b: PoolStakeRow): number {
   const right = activeStakeOf(b)
   if (left !== right) return left > right ? -1 : 1
   return a.pool_id_bech32 < b.pool_id_bech32 ? -1 : a.pool_id_bech32 > b.pool_id_bech32 ? 1 : 0
-}
-
-// Same total order as byActiveStakeDesc, but over the PoolInfo values actually returned.
-function byExposedActiveStakeDesc(a: PoolInfo, b: PoolInfo): number {
-  const left = BigInt(a.activeStake)
-  const right = BigInt(b.activeStake)
-  if (left !== right) return left > right ? -1 : 1
-  return a.poolId < b.poolId ? -1 : a.poolId > b.poolId ? 1 : 0
 }
 
 function mapPoolMetadata(
@@ -216,13 +211,31 @@ export function createPoolMethods(koios: KoiosClient): PoolCapability {
       const page = stakes.sort(byActiveStakeDesc).slice(offset, offset + limit)
       const hydrated = await poolInfoByIds(page.map((r) => r.pool_id_bech32))
 
-      // Rank on the values actually being returned, not on the snapshot they were selected
-      // from. The page is chosen from /pool_list and then hydrated by /pool_info, a second
-      // round trip: across an epoch boundary the two can disagree, and the page would go out
-      // with an `activeStake` sequence that is not descending while claiming to be sorted by
-      // it. Re-sorting the hydrated rows makes the response self-consistent with what it says
-      // about itself.
-      return hydrated.sort(byExposedActiveStakeDesc)
+      // One snapshot, one truth: which pools are on this page, what order they come in, and
+      // the activeStake each one reports all come from the same /pool_list read.
+      //
+      // Hydration is a second round trip, and across an epoch boundary its active_stake is a
+      // different snapshot from the one the ranking was computed on. Two ways to get that
+      // wrong, and this endpoint has now been through both:
+      //
+      //   - Rank on the snapshot but expose the hydrated stake, and a page goes out whose own
+      //     activeStake values are not descending while it claims to be sorted by them.
+      //   - Re-rank each page on its hydrated values, and the pages stop agreeing with each
+      //     other: membership was still chosen from the snapshot, so two adjacent pages can
+      //     come back in the wrong order relative to one another. That is worse. A list that
+      //     is locally tidy and globally scrambled is harder to notice and harder to trust.
+      //
+      // So the snapshot wins outright. active_stake is an epoch-snapshot quantity to begin
+      // with, so reporting the value the ranking actually used is not a compromise; it is the
+      // more honest number. Every other field is hydrated as normal.
+      //
+      // Ranking on hydrated stake for the whole set would need every pool hydrated on every
+      // request. See #62.
+      const rankedStake = new Map(page.map((r) => [r.pool_id_bech32, String(r.active_stake ?? 0)]))
+      return hydrated.map((pool) => ({
+        ...pool,
+        activeStake: rankedStake.get(pool.poolId) ?? pool.activeStake,
+      }))
     },
   }
 }

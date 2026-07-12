@@ -101,23 +101,81 @@ interface Cip68Fields {
   decimals?: number
 }
 
-// CIP-68 metadata is a PlutusData map: fields[0].map is a list of {k:{bytes},v:{bytes|int}}
-// entries keyed by the hex of the field name. Walk it defensively.
-function extractCip68(cip68: unknown): Cip68Fields | undefined {
+/** The entries of a PlutusData map, or undefined when the value is not one. */
+function mapEntries(value: unknown): unknown[] | undefined {
+  return isRecord(value) && Array.isArray(value.map) ? value.map : undefined
+}
+
+/**
+ * Unwrap a CIP-68 version-4 datum down to this asset's own metadata map, or undefined when
+ * the datum is not in the nested form (versions 1 to 3), in which case the top-level map is
+ * already the metadata.
+ */
+function unwrapNested(
+  top: unknown[],
+  policyIdHex: string,
+  assetNameHex: string,
+): unknown[] | undefined {
+  const nested = valueForKeyHex(top, CIP68_NESTED_KEY_HEX)
+  if (nested === undefined) return undefined
+
+  const byPolicy = mapEntries(nested)
+  if (byPolicy === undefined) return undefined
+
+  const byAsset = mapEntries(valueForKeyHex(byPolicy, policyIdHex))
+  if (byAsset === undefined) return undefined
+
+  // The spec stores the asset name here without its CIP-67 label prefix. The prefixed form
+  // is tried as a fallback rather than assumed absent, because a minter writing the whole
+  // name is a mistake we can read through rather than one we need to punish.
+  const bare = assetNameHex.slice(CIP67_LABEL_HEX_LEN)
+  return (
+    mapEntries(valueForKeyHex(byAsset, bare)) ?? mapEntries(valueForKeyHex(byAsset, assetNameHex))
+  )
+}
+
+/** The value stored under a hex-encoded key in a PlutusData map. */
+function valueForKeyHex(entries: unknown[], keyHex: string): unknown {
+  const wanted = keyHex.toLowerCase()
+  for (const entry of entries) {
+    if (!isRecord(entry) || !isRecord(entry.k)) continue
+    if (typeof entry.k.bytes === 'string' && entry.k.bytes.toLowerCase() === wanted) return entry.v
+  }
+  return undefined
+}
+
+const hexOf = (text: string): string => Buffer.from(text, 'utf8').toString('hex')
+
+// CIP-68 version 4 wraps the metadata in a CIP-25-shaped nested map, keyed by "721":
+//
+//   { "721": { <policy_id>: { <asset_name>: <metadata> } } }
+//
+// Versions 1 to 3 put the metadata map directly in fields[0]. Both forms are live per the
+// spec (`version = 1 / 2 / 3 / 4`), so both are read: a v4 asset walked as if it were v1
+// finds no known field and resolves as `source: 'none'`, silently losing its name and image.
+const CIP68_NESTED_KEY_HEX = hexOf('721')
+
+// A CIP-67 asset-name label is 4 bytes (8 hex chars) prefixed to the name. The v4 nested map
+// keys the asset by its name *without* that prefix, per the spec.
+const CIP67_LABEL_HEX_LEN = 8
+
+// CIP-68 metadata is a PlutusData map: a list of {k:{bytes},v:{bytes|int|list}} entries keyed
+// by the hex of the field name. Walk it defensively; it is minter-controlled.
+function extractCip68(
+  cip68: unknown,
+  policyIdHex: string,
+  assetNameHex: string,
+): Cip68Fields | undefined {
   if (!isRecord(cip68)) return undefined
   const datum = Object.values(cip68)[0]
   if (!isRecord(datum) || !Array.isArray(datum.fields)) return undefined
-  const first = datum.fields[0]
-  if (!isRecord(first) || !Array.isArray(first.map)) return undefined
-  const entries = first.map
 
-  const valueFor = (fieldName: string): unknown => {
-    const keyHex = Buffer.from(fieldName, 'utf8').toString('hex')
-    for (const entry of entries) {
-      if (isRecord(entry) && isRecord(entry.k) && entry.k.bytes === keyHex) return entry.v
-    }
-    return undefined
-  }
+  const top = mapEntries(datum.fields[0])
+  if (top === undefined) return undefined
+
+  const entries = unwrapNested(top, policyIdHex, assetNameHex) ?? top
+
+  const valueFor = (fieldName: string): unknown => valueForKeyHex(entries, hexOf(fieldName))
   // A PlutusData bytestring is capped at 64 bytes, so CIP-68 requires anything longer to be
   // split across a list of them. A long https or data URI in `image` is the usual case.
   // Reading only the single-bytestring form drops exactly those images on the floor.
@@ -268,7 +326,7 @@ function mapTokenMetadata(row: z.infer<typeof assetInfoRow>): TokenMetadata {
     }
   }
 
-  const cip68 = extractCip68(row.cip68_metadata)
+  const cip68 = extractCip68(row.cip68_metadata, row.policy_id, row.asset_name)
   if (cip68) {
     return {
       ...base,

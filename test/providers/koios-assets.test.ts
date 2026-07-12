@@ -608,3 +608,98 @@ describe('koios getTokenMetadata — CIP-68 chunked byte strings', () => {
     expect(token?.ticker).toBe('CHU')
   })
 })
+
+describe('koios getTokenMetadata — CIP-68 version 4 nested map', () => {
+  // CIP-68 declares `version = 1 / 2 / 3 / 4`. Versions 1-3 put the metadata map directly in
+  // fields[0]; version 4 wraps it CIP-25 style under a "721" key:
+  //
+  //   { "721": { <policy_id>: { <asset_name>: <metadata> } } }
+  //
+  // A v4 datum walked as if it were v1 finds none of its fields and resolves as
+  // `source: 'none'`, silently losing the asset's name and image.
+  const POLICY = 'a'.repeat(56)
+  const LABEL = '000de140' // CIP-67 label (222, NFT). The nested map keys without it.
+  const BARE_NAME = '4d794e4654' // "MyNFT"
+  const NAME_HEX = LABEL + BARE_NAME
+  const SUBJECT = POLICY + NAME_HEX
+
+  const metadata = {
+    map: [
+      { k: { bytes: '6e616d65' }, v: { bytes: '41207634204e4654' } }, // name: "A v4 NFT"
+      { k: { bytes: '696d616765' }, v: { bytes: '697066733a2f2f7634696d616765' } }, // ipfs://v4image
+    ],
+  }
+
+  function v4Row(assetKeyHex: string) {
+    return {
+      [SUBJECT]: {
+        policy_id: POLICY,
+        asset_name: NAME_HEX,
+        fingerprint: 'asset1v4',
+        total_supply: '1',
+        name: null,
+        ticker: null,
+        description: null,
+        url: null,
+        decimals: null,
+        minting_tx_metadata: null,
+        cip68_metadata: {
+          '222': {
+            constructor: 0,
+            fields: [
+              {
+                map: [
+                  {
+                    k: { bytes: '373231' }, // "721"
+                    v: {
+                      map: [
+                        {
+                          k: { bytes: POLICY },
+                          v: { map: [{ k: { bytes: assetKeyHex }, v: metadata }] },
+                        },
+                      ],
+                    },
+                  },
+                ],
+              },
+              { int: 4 },
+            ],
+          },
+        },
+      },
+    }
+  }
+
+  it('resolves a version-4 datum that keys the asset without its CIP-67 label prefix', async () => {
+    const { fetchImpl } = assetFetch(v4Row(BARE_NAME))
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [token] = await provider.getTokenMetadata([SUBJECT])
+
+    expect(token?.source).toBe('cip68')
+    expect(token?.name).toBe('A v4 NFT')
+    expect(token?.image).toBe('ipfs://v4image')
+  })
+
+  it('also reads a version-4 datum whose minter kept the label prefix on the key', async () => {
+    const { fetchImpl } = assetFetch(v4Row(NAME_HEX))
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [token] = await provider.getTokenMetadata([SUBJECT])
+
+    expect(token?.source).toBe('cip68')
+    expect(token?.name).toBe('A v4 NFT')
+  })
+
+  it('does not mistake another asset’s entry in the nested map for this one', async () => {
+    // The nested form can carry several assets. Reading the wrong one would put a different
+    // NFT's name and image on this token.
+    const { fetchImpl } = assetFetch(v4Row('deadbeef'))
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [token] = await provider.getTokenMetadata([SUBJECT])
+
+    expect(token?.source).toBe('none')
+    expect(token?.name).toBeUndefined()
+  })
+})

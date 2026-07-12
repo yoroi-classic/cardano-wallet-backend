@@ -37,9 +37,16 @@ const boundedInt = (min: number, max: number, fallback: number) =>
   )
 
 // Page bounds for the list. A page hydrates each pool with full info, so cap the size.
+//
+// The offset ceiling is the provider's scan bound, not a round number: advertising an offset
+// the provider could never reach is a promise the API cannot keep. There are ~3k registered
+// pools, so this is already far past the end of any real list, where the answer is an empty
+// page rather than an error.
+const MAX_OFFSET = 20_000
+
 const listQuery = z.object({
   limit: boundedInt(1, 250, 50),
-  offset: boundedInt(0, 100_000, 0),
+  offset: boundedInt(0, MAX_OFFSET, 0),
   // Restricted to an alphanumeric substring so it can't smuggle PostgREST filter syntax
   // into the upstream query.
   ticker: z
@@ -54,7 +61,7 @@ export function registerPoolRoutes(app: FastifyInstance, provider: ChainProvider
     const parsed = listQuery.safeParse(request.query)
     if (!parsed.success) {
       throw new BadRequestError(
-        'query must be limit (1-250), offset (0-100000), and an optional alphanumeric ' +
+        `query must be limit (1-250), offset (0-${MAX_OFFSET}), and an optional alphanumeric ` +
           'ticker of 1 to 15 characters',
       )
     }

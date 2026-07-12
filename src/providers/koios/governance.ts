@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { ProviderError } from '../../domain/errors.js'
 import { drepCredentialHex } from '../../domain/drep.js'
 import type { DrepInfo, DrepListParams } from '../../domain/types/governance.js'
 import type { GovernanceCapability } from '../capabilities/governance.js'
@@ -18,7 +19,11 @@ const drepListRow = z.object({
 
 const drepInfoRow = z.object({
   drep_id: z.string(),
-  hex: z.string(),
+  // The 28-byte credential, so 56 hex chars. This is the key every lookup below joins on, so
+  // a malformed value here does not merely look wrong: the row fails to match the id the
+  // caller asked about, and the DRep silently disappears from the response. Constrain it and
+  // bad upstream data takes the malformed path instead.
+  hex: z.string().regex(/^[0-9a-fA-F]{56}$/),
   has_script: z.boolean(),
   // The three values Koios's own API spec declares for this field. `not_registered` does not
   // appear in any drep_list row (every DRep listed there is registered or deregistered), but
@@ -80,11 +85,14 @@ function drepMetaFields(metaJson: unknown): { name?: string; image?: string } {
 }
 
 export function createGovernanceMethods(koios: KoiosClient): GovernanceCapability {
-  // Read every DRep id Koios knows, keep the registered ones, and order them by id.
+  // Read DRep ids in upstream order, keeping the registered ones, until `needed` of them are
+  // in hand or the list runs out.
   //
-  // The `registered` filter is not pushed upstream on purpose: see getDrepList. The walk is
-  // bounded by the page cap, the same as the pool list.
-  async function registeredDreps(): Promise<string[]> {
+  // The `registered` filter is applied here rather than upstream: see getDrepList. Stopping
+  // at `needed` is what keeps that local filtering from costing a full scan of every DRep on
+  // every request. A caller asking for the first page of 50 reads one upstream page, not
+  // twenty, which is a straight cut in latency and in rate-limit exposure.
+  async function registeredDreps(needed: number): Promise<string[]> {
     const ids: string[] = []
     for (let page = 0; page < DREP_LIST_MAX_PAGES; page += 1) {
       const query = new URLSearchParams({
@@ -98,9 +106,21 @@ export function createGovernanceMethods(koios: KoiosClient): GovernanceCapabilit
       for (const row of rows) {
         if (row.registered) ids.push(row.drep_id)
       }
-      if (rows.length < DREP_LIST_PAGE_SIZE) break
+
+      // A short page is the end of the list upstream. An offset past the end then yields an
+      // empty page, which is the correct answer, not an error.
+      if (rows.length < DREP_LIST_PAGE_SIZE) return ids
+      if (ids.length >= needed) return ids
     }
-    return ids
+
+    // The page cap ran out while upstream was still handing back full pages, so there is
+    // more DRep list than was scanned. Say so rather than serving a truncated list as if it
+    // were the whole one: silently short pages are how a DRep disappears from a wallet's
+    // list and nobody finds out.
+    throw new ProviderError(
+      `koios /drep_list has more than ${DREP_LIST_MAX_PAGES * DREP_LIST_PAGE_SIZE} rows, ` +
+        `beyond this provider's scan bound`,
+    )
   }
 
   // Off-chain DRep names and images, best-effort.
@@ -182,7 +202,7 @@ export function createGovernanceMethods(koios: KoiosClient): GovernanceCapabilit
       // on some of the instances behind the endpoint). The field itself is reliably present
       // in the rows, so the whole list is read and filtered here. That is also what makes
       // paging honest: filtering after an upstream limit/offset would hand back short pages.
-      const registered = await registeredDreps()
+      const registered = await registeredDreps(offset + limit)
       const page = registered.slice(offset, offset + limit)
       return drepInfoByIds(page)
     },

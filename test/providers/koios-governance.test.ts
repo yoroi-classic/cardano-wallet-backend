@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { bech32 } from '@scure/base'
 import { createKoiosProvider, type FetchLike } from '../../src/providers/koios/index.js'
-import { MalformedUpstreamError } from '../../src/domain/errors.js'
+import { MalformedUpstreamError, ProviderError } from '../../src/domain/errors.js'
 import { drepCredentialHex } from '../../src/domain/drep.js'
 
 const BASE = 'https://preprod.koios.rest/api/v1'
@@ -351,18 +351,100 @@ describe('koios getDrepList', () => {
   })
 
   it('follows koios paging until a short page ends the walk', async () => {
+    // Registered DReps are sparse here, so the first upstream page does not supply the whole
+    // requested page and the walk has to continue. It stops at the short second page, which
+    // is the end of the list.
     const rows = Array.from({ length: 1200 }, (_, i) => ({
       drep_id: syntheticDrepId(i),
-      registered: true,
+      registered: i % 400 === 0,
     }))
-    const { fetchImpl, calls } = routedFetch(rows, [drepRow(syntheticDrepId(0))])
+    const registeredIds = rows.filter((r) => r.registered).map((r) => r.drep_id)
+    const { fetchImpl, calls } = routedFetch(rows, registeredIds.map(drepRow))
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
-    await provider.getDrepList({ limit: 1, offset: 0 })
+    const dreps = await provider.getDrepList({ limit: 50, offset: 0 })
 
+    // 1200 rows, every 400th registered: ids at 0, 400, 800 (page 1) and none in page 2.
+    expect(dreps).toHaveLength(3)
     const listCalls = calls.filter((c) => c.url.includes('/drep_list'))
     expect(listCalls).toHaveLength(2)
     expect(listCalls[0]?.url).toContain('offset=0')
     expect(listCalls[1]?.url).toContain('offset=1000')
+  })
+})
+
+describe('koios getDrepList — scanning is bounded and honest', () => {
+  it('stops reading /drep_list once the requested page is in hand', async () => {
+    // The registered filter is applied locally, which used to mean every request scanned the
+    // whole upstream list before returning even the first small page. A page of 5 should cost
+    // one upstream page, not twenty.
+    const listRows = Array.from({ length: 2500 }, (_, i) => ({
+      drep_id: syntheticDrepId(i),
+      registered: true,
+    }))
+    const infoRows = listRows.map((r) => drepRow(r.drep_id as string))
+    const { fetchImpl, calls } = routedFetch(listRows, infoRows, 1000)
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const dreps = await provider.getDrepList({ limit: 5, offset: 0 })
+
+    expect(dreps).toHaveLength(5)
+    const listCalls = calls.filter((c) => c.url.includes('/drep_list'))
+    expect(listCalls).toHaveLength(1)
+  })
+
+  it('still walks far enough to serve a deep offset', async () => {
+    const listRows = Array.from({ length: 2500 }, (_, i) => ({
+      drep_id: syntheticDrepId(i),
+      registered: true,
+    }))
+    const infoRows = listRows.map((r) => drepRow(r.drep_id as string))
+    const { fetchImpl, calls } = routedFetch(listRows, infoRows, 1000)
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const dreps = await provider.getDrepList({ limit: 2, offset: 1500 })
+
+    expect(dreps).toHaveLength(2)
+    expect(dreps[0]?.drepId).toBe(syntheticDrepId(1500))
+    // 1502 needed, so it has to read past the first page but not the whole list.
+    expect(calls.filter((c) => c.url.includes('/drep_list'))).toHaveLength(2)
+  })
+
+  it('returns an empty page for an offset past the end, rather than erroring', async () => {
+    const listRows = Array.from({ length: 10 }, (_, i) => ({
+      drep_id: syntheticDrepId(i),
+      registered: true,
+    }))
+    const infoRows = listRows.map((r) => drepRow(r.drep_id as string))
+    const { fetchImpl } = routedFetch(listRows, infoRows, 1000)
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getDrepList({ limit: 50, offset: 5000 })).resolves.toEqual([])
+  })
+
+  it('refuses to serve a truncated list as if it were the whole list', async () => {
+    // Upstream keeps handing back full pages past the scan bound: there is more list than was
+    // read. Serving a short page here is how a DRep silently vanishes from a wallet's list.
+    const listRows = Array.from({ length: 30_000 }, (_, i) => ({
+      drep_id: syntheticDrepId(i),
+      registered: false,
+    }))
+    const { fetchImpl } = routedFetch(listRows, [], 1000)
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getDrepList({ limit: 50, offset: 0 })).rejects.toBeInstanceOf(
+      ProviderError,
+    )
+  })
+})
+
+describe('koios getDrepInfo — upstream credential integrity', () => {
+  it('rejects a malformed hex credential instead of dropping the DRep', async () => {
+    // The lookup joins on hex. A malformed one does not merely look wrong: the row fails to
+    // match the id the caller asked for, and the DRep silently disappears from the response.
+    const { fetchImpl } = fakeFetch(async () => [{ ...drepRow(DREP_A), hex: 'nothex' }])
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getDrepInfo([DREP_A])).rejects.toBeInstanceOf(MalformedUpstreamError)
   })
 })

@@ -6,10 +6,20 @@ import type { ChainProvider } from '../../providers/provider.js'
 
 const body = z.object({ drepIds: z.array(z.string().min(1)).min(1).max(100) })
 
+// A query param arrives as a string. `z.coerce.number()` would put it through JS `Number()`,
+// which accepts a great deal more than a page bound should: '' and '   ' become 0, '1e3'
+// becomes 1000, and '0x10' becomes 16. Demand digits first and convert after, so anything
+// else stays a string and is rejected as the 400 it is.
+const boundedInt = (min: number, max: number, fallback: number) =>
+  z.preprocess(
+    (v) => (v === undefined ? fallback : typeof v === 'string' && /^\d+$/.test(v) ? Number(v) : v),
+    z.number().int().min(min).max(max),
+  )
+
 // A page hydrates each DRep with full info, so cap the size.
 const listQuery = z.object({
-  limit: z.coerce.number().int().min(1).max(250).default(50),
-  offset: z.coerce.number().int().min(0).max(100_000).default(0),
+  limit: boundedInt(1, 250, 50),
+  offset: boundedInt(0, 100_000, 0),
 })
 
 /** Governance reads (DReps). */

@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { MalformedUpstreamError } from '../../domain/errors.js'
 import type { AccountState } from '../../domain/types/account.js'
 import type {
   CertificateKind,
@@ -10,10 +11,13 @@ import type {
 } from '../../domain/types/transactions.js'
 import type { AccountCapability } from '../capabilities/account.js'
 import type { KoiosClient } from './client.js'
-import { assetItem, mapAssets, numeric } from './schema.js'
+import { assetItem, chunked, mapAssets, numeric } from './schema.js'
 
 // How many transactions we detail per page. Matches the extension's request size.
 const HISTORY_PAGE_SIZE = 50
+// Koios 413s on an oversized request body, and the boundary extension below can push a
+// page well past HISTORY_PAGE_SIZE, so /tx_info is asked in batches this size.
+const TX_INFO_CHUNK = 50
 
 const accountInfoRow = z.object({
   stake_address: z.string(),
@@ -193,16 +197,36 @@ export function createAccountMethods(koios: KoiosClient): AccountCapability {
       let end = Math.min(HISTORY_PAGE_SIZE, sorted.length)
       const boundaryBlock = sorted[end - 1]?.block_height
       while (end < sorted.length && sorted[end]?.block_height === boundaryBlock) end += 1
-      const page = sorted.slice(0, end)
-      const data = await koios.postJson('/tx_info', {
-        _tx_hashes: page.map((r) => r.tx_hash),
-        _inputs: true,
-        _metadata: true,
-        _assets: true,
-        _withdrawals: true,
-        _certs: true,
-      })
-      const rows = koios.parseWith(z.array(txInfoRow), data, '/tx_info')
+      const hashes = sorted.slice(0, end).map((r) => r.tx_hash)
+
+      // Hydrate in batches. A block holding many of this account's transactions can push
+      // the page past HISTORY_PAGE_SIZE via the boundary extension above, and a single
+      // oversized _tx_hashes body is what Koios answers with a 413.
+      const rows: z.infer<typeof txInfoRow>[] = []
+      for (const chunk of chunked(hashes, TX_INFO_CHUNK)) {
+        const data = await koios.postJson('/tx_info', {
+          _tx_hashes: chunk,
+          _inputs: true,
+          _metadata: true,
+          _assets: true,
+          _withdrawals: true,
+          _certs: true,
+        })
+        rows.push(...koios.parseWith(z.array(txInfoRow), data, '/tx_info'))
+      }
+
+      // Every hash we asked about has to come back. The caller pages forward from the last
+      // block of this page, so a transaction quietly missing from the response would be
+      // stepped over and never requested again: a permanent hole in the user's history.
+      // Failing loudly here costs a retry; missing a payment silently does not heal.
+      const returned = new Set(rows.map((r) => r.tx_hash))
+      const missing = hashes.filter((h) => !returned.has(h))
+      if (missing.length > 0) {
+        throw new MalformedUpstreamError(
+          `koios /tx_info omitted ${missing.length} of ${hashes.length} requested transactions`,
+        )
+      }
+
       return rows
         .sort((a, b) => a.block_height - b.block_height || a.tx_block_index - b.tx_block_index)
         .map(mapTx)

@@ -119,7 +119,7 @@ describe('koios getAccountUtxos', () => {
     tx_index: 2,
     address: 'addr_test1xyz',
     value: '2000000',
-    asset_list: [{ policy_id: 'pol1', asset_name: '414243', quantity: '5' }],
+    asset_list: [{ policy_id: 'a0b1c2', asset_name: '414243', quantity: '5' }],
     datum_hash: null,
     inline_datum: { bytes: 'd87980' },
     reference_script: null,
@@ -137,7 +137,7 @@ describe('koios getAccountUtxos', () => {
         outputIndex: 2,
         address: 'addr_test1xyz',
         value: '2000000',
-        assets: [{ policyId: 'pol1', assetName: '414243', quantity: '5' }],
+        assets: [{ policyId: 'a0b1c2', assetName: '414243', quantity: '5' }],
         inlineDatum: 'd87980',
       },
     ])
@@ -295,7 +295,7 @@ describe('koios getTxHistory', () => {
         {
           payment_addr: { bech32: 'addr_out' },
           value: '4800000',
-          asset_list: [{ policy_id: 'pol', asset_name: '4142', quantity: '3' }],
+          asset_list: [{ policy_id: 'd0e1f2', asset_name: '4142', quantity: '3' }],
         },
       ],
       withdrawals: [{ stake_addr: 'stake_w', amount: '250000' }],
@@ -344,7 +344,7 @@ describe('koios getTxHistory', () => {
         {
           address: 'addr_out',
           value: '4800000',
-          assets: [{ policyId: 'pol', assetName: '4142', quantity: '3' }],
+          assets: [{ policyId: 'd0e1f2', assetName: '4142', quantity: '3' }],
         },
       ],
       withdrawals: [{ stakeAddress: 'stake_w', amount: '250000' }],
@@ -448,5 +448,72 @@ describe('koios filterUsedAddresses', () => {
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
     await expect(provider.filterUsedAddresses(['a'])).rejects.toBeInstanceOf(ProviderError)
+  })
+})
+
+describe('koios getTxHistory — upstream boundary', () => {
+  const txInfoRowFor = (hash: string, block: number) => ({
+    tx_hash: hash,
+    block_hash: `h${block}`,
+    block_height: block,
+    epoch_no: 1,
+    absolute_slot: block * 100,
+    tx_timestamp: block * 10,
+    tx_block_index: 0,
+    fee: '150000',
+    inputs: [],
+    outputs: [],
+    withdrawals: [],
+    certificates: [],
+  })
+
+  it('chunks /tx_info when the boundary block pushes the page past the batch size', async () => {
+    // 60 transactions all in the same block. The page can't be cut mid-block, so the
+    // boundary extension carries all 60 past the 50-tx page size, and a single body of 60
+    // hashes is what Koios answers with a 413.
+    const hashes = Array.from({ length: 60 }, (_, i) => String(i).padStart(2, '0'))
+    const accountTxs = hashes.map((h) => ({
+      tx_hash: h,
+      block_height: 7,
+      block_time: 70,
+      epoch_no: 1,
+    }))
+
+    const calls: Call[] = []
+    const fetchImpl: FetchLike = async (url, init) => {
+      calls.push({ url, method: init?.method, body: init?.body })
+      if (url.includes('/account_txs')) {
+        return { ok: true, status: 200, json: async () => accountTxs, text: async () => '' }
+      }
+      const requested = (JSON.parse(String(init?.body)) as { _tx_hashes: string[] })._tx_hashes
+      const rows = requested.map((h) => txInfoRowFor(h, 7))
+      return { ok: true, status: 200, json: async () => rows, text: async () => '' }
+    }
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const txs = await provider.getTxHistory(STAKE)
+
+    expect(txs).toHaveLength(60)
+    const txInfoCalls = calls.filter((c) => c.url.includes('/tx_info'))
+    expect(txInfoCalls).toHaveLength(2)
+    const batches = txInfoCalls.map(
+      (c) => (JSON.parse(String(c.body)) as { _tx_hashes: string[] })._tx_hashes.length,
+    )
+    expect(batches).toEqual([50, 10])
+  })
+
+  it('raises malformed upstream when /tx_info omits a requested transaction', async () => {
+    // The caller pages forward from the last block it saw, so a transaction silently
+    // missing here would be stepped over and never fetched again.
+    const { fetchImpl } = fakeFetchByPath({
+      '/account_txs': [
+        { tx_hash: 'aa', block_height: 9, block_time: 90, epoch_no: 1 },
+        { tx_hash: 'bb', block_height: 10, block_time: 100, epoch_no: 1 },
+      ],
+      '/tx_info': [txInfoRowFor('aa', 9)],
+    })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getTxHistory(STAKE)).rejects.toBeInstanceOf(MalformedUpstreamError)
   })
 })

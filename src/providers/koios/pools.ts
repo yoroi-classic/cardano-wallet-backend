@@ -11,22 +11,28 @@ const poolMetaJson = z.object({
   description: z.string().nullish(),
 })
 
+// Counts are whole and non-negative; a fractional delegator or a negative block count is
+// upstream junk, and bounding it here routes it to MalformedUpstreamError instead of
+// letting it out through PoolInfo.
+const count = z.number().int().nonnegative()
+
 const poolInfoRow = z.object({
   pool_id_bech32: z.string(),
-  pool_id_hex: z.string(),
+  pool_id_hex: z.string().regex(/^[0-9a-fA-F]{56}$/),
   // Koios documents exactly these three; anything else is unexpected upstream data.
   pool_status: z.enum(['registered', 'retiring', 'retired']),
-  retiring_epoch: z.number().nullish(),
-  margin: z.number(),
+  retiring_epoch: count.nullish(),
+  // An operator margin is a fraction of rewards, so it lives in [0, 1] by definition.
+  margin: z.number().min(0).max(1),
   fixed_cost: numeric.nullish(),
   pledge: numeric.nullish(),
   live_pledge: numeric.nullish(),
   active_stake: numeric.nullish(),
   live_stake: numeric.nullish(),
   // Koios reports saturation as a percentage (e.g. 3.12 == 3.12%); normalize to a fraction.
-  live_saturation: z.number().nullish(),
-  live_delegators: z.number().nullish(),
-  block_count: z.number().nullish(),
+  live_saturation: z.number().nonnegative().nullish(),
+  live_delegators: count.nullish(),
+  block_count: count.nullish(),
   meta_json: poolMetaJson.nullish(),
 })
 

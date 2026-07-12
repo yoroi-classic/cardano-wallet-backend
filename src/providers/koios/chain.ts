@@ -11,25 +11,36 @@ const tipRow = z.object({
   block_no: z.number(),
 })
 
+// Counts, sizes, and the fee coefficients are all whole and non-negative. min_fee_a and
+// min_fee_b are lovelace-denominated fee coefficients, but they are small by construction
+// (44 and 155381 today) and the wallet's fee arithmetic wants them as numbers, so they
+// stay numeric rather than becoming strings like the lovelace *amounts* below. Bounding
+// them here means a negative or fractional fee coefficient is malformed upstream data,
+// not something we hand to a transaction builder.
+const wholeNonNegative = z.number().int().nonnegative()
+
+// Ratios Koios reports as decimals. They are fractions, never money.
+const ratio = z.number().nonnegative()
+
 const epochParamsRow = z.object({
-  epoch_no: z.number(),
-  min_fee_a: z.number(),
-  min_fee_b: z.number(),
-  max_tx_size: z.number(),
-  max_block_size: z.number(),
+  epoch_no: wholeNonNegative,
+  min_fee_a: wholeNonNegative,
+  min_fee_b: wholeNonNegative,
+  max_tx_size: wholeNonNegative,
+  max_block_size: wholeNonNegative,
   key_deposit: numeric,
   pool_deposit: numeric,
   min_pool_cost: numeric,
   coins_per_utxo_size: numeric,
-  max_val_size: z.number(),
-  collateral_percent: z.number(),
-  max_collateral_inputs: z.number(),
-  price_mem: z.number(),
-  price_step: z.number(),
+  max_val_size: wholeNonNegative,
+  collateral_percent: wholeNonNegative,
+  max_collateral_inputs: wholeNonNegative,
+  price_mem: ratio,
+  price_step: ratio,
   max_tx_ex_mem: numeric,
   max_tx_ex_steps: numeric,
-  protocol_major: z.number(),
-  protocol_minor: z.number(),
+  protocol_major: wholeNonNegative,
+  protocol_minor: wholeNonNegative,
   cost_models: z.record(z.string(), z.unknown()).nullish(),
 })
 

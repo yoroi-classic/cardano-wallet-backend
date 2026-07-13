@@ -10,7 +10,7 @@ const txStatusRow = z.object({
   num_confirmations: z.number().int().nonnegative().nullish(),
 })
 
-const txHash = z.string().regex(/^[0-9a-fA-F]{64}$/)
+const txHashRow = z.string().regex(/^[0-9a-fA-F]{64}$/)
 
 export function createTxMethods(koios: KoiosClient): TxCapability {
   return {
@@ -18,18 +18,20 @@ export function createTxMethods(koios: KoiosClient): TxCapability {
       if (!/^[0-9a-fA-F]+$/.test(cborHex) || cborHex.length % 2 !== 0) {
         throw new BadRequestError('transaction must be a hex-encoded CBOR string')
       }
-      const data = await koios.request('/submittx', {
-        method: 'POST',
-        // A Buffer is already a Uint8Array, so it goes out as-is rather than being copied.
-        body: Buffer.from(cborHex, 'hex'),
-        contentType: 'application/cbor',
-      })
-      return { txHash: koios.parseWith(txHash, data, '/submittx') }
+      // submit(), never a read: a transaction resent because the first response was garbled is
+      // a double-spend, so this call has no retry path. See the note on KoiosClient.
+      // A Buffer is already a Uint8Array, so the body goes out as-is rather than being copied.
+      const txHash = await koios.submit(
+        txHashRow,
+        '/submittx',
+        Buffer.from(cborHex, 'hex'),
+        'application/cbor',
+      )
+      return { txHash }
     },
 
     async getTxStatus(hash: string): Promise<TxStatus> {
-      const data = await koios.postJson('/tx_status', { _tx_hashes: [hash] })
-      const rows = koios.parseWith(z.array(txStatusRow), data, '/tx_status')
+      const rows = await koios.batch(z.array(txStatusRow), '/tx_status', { _tx_hashes: [hash] })
 
       // Match the row to the hash we asked about rather than trusting rows[0]. A
       // mismatched response would otherwise report another transaction's confirmations as

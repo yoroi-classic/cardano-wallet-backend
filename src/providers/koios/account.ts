@@ -146,8 +146,9 @@ function mapTx(row: z.infer<typeof txInfoRow>): WalletTransaction {
 export function createAccountMethods(koios: KoiosClient): AccountCapability {
   return {
     async getAccountState(stakeAddress: string): Promise<AccountState> {
-      const data = await koios.postJson('/account_info', { _stake_addresses: [stakeAddress] })
-      const rows = koios.parseWith(z.array(accountInfoRow), data, '/account_info')
+      const rows = await koios.batch(z.array(accountInfoRow), '/account_info', {
+        _stake_addresses: [stakeAddress],
+      })
       const row = rows[0]
       // An unknown or never-used stake key legitimately has no row. Report it as an
       // unregistered, zero-balance account rather than treating it as an error.
@@ -174,11 +175,10 @@ export function createAccountMethods(koios: KoiosClient): AccountCapability {
     },
 
     async getAccountUtxos(stakeAddress: string): Promise<Utxo[]> {
-      const data = await koios.postJson('/account_utxos', {
+      const rows = await koios.batch(z.array(accountUtxoRow), '/account_utxos', {
         _stake_addresses: [stakeAddress],
         _extended: true,
       })
-      const rows = koios.parseWith(z.array(accountUtxoRow), data, '/account_utxos')
       return rows.map(mapUtxo)
     },
 
@@ -186,8 +186,7 @@ export function createAccountMethods(koios: KoiosClient): AccountCapability {
       // account_txs is the single-account form; use GET with query params.
       const query = new URLSearchParams({ _stake_address: stakeAddress })
       if (afterBlock !== undefined) query.set('_after_block_height', String(afterBlock))
-      const listData = await koios.request(`/account_txs?${query.toString()}`)
-      const list = koios.parseWith(z.array(accountTxRow), listData, '/account_txs')
+      const list = await koios.get(z.array(accountTxRow), `/account_txs?${query.toString()}`)
       if (list.length === 0) return []
 
       // One page, oldest first. Don't cut through a block: include any trailing txs that
@@ -204,7 +203,7 @@ export function createAccountMethods(koios: KoiosClient): AccountCapability {
       // oversized _tx_hashes body is what Koios answers with a 413.
       const rows: z.infer<typeof txInfoRow>[] = []
       for (const chunk of chunked(hashes, TX_INFO_CHUNK)) {
-        const data = await koios.postJson('/tx_info', {
+        const batch = await koios.batch(z.array(txInfoRow), '/tx_info', {
           _tx_hashes: chunk,
           _inputs: true,
           _metadata: true,
@@ -212,7 +211,7 @@ export function createAccountMethods(koios: KoiosClient): AccountCapability {
           _withdrawals: true,
           _certs: true,
         })
-        rows.push(...koios.parseWith(z.array(txInfoRow), data, '/tx_info'))
+        rows.push(...batch)
       }
 
       // What comes back must be exactly what we asked for, no more and no less.

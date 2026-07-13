@@ -807,6 +807,117 @@ describe('koios getTokenMetadata — CIP-25 keys the asset by version', () => {
   })
 })
 
+// Minters do not reliably declare the version, and they do not reliably key by the form the
+// version implies. Every case below is one that a live asset actually exhibits, and every one
+// of them resolved as `source: 'none'` before: no name, no image, a blank NFT in the wallet.
+describe('koios getTokenMetadata — CIP-25 keyed against the spec', () => {
+  const POLICY = 'c'.repeat(56)
+
+  function row(assetNameHex: string, minting: unknown, cip68: unknown = null) {
+    return {
+      [POLICY + assetNameHex]: {
+        policy_id: POLICY,
+        asset_name: assetNameHex,
+        asset_name_ascii: '',
+        fingerprint: 'asset1cip25',
+        total_supply: '1',
+        name: null,
+        ticker: null,
+        description: null,
+        url: null,
+        decimals: null,
+        minting_tx_metadata: minting,
+        cip68_metadata: cip68,
+      },
+    }
+  }
+
+  // Live on preprod: policy 000156e0…, asset name 87895164…, a 32-byte hash. The 721 map keys
+  // it by that hex string, and declares no version at all, so the spec's default of 1 sends the
+  // lookup to a UTF-8 text key. The name is a hash and is not valid UTF-8, so no such key can
+  // even exist, and the asset resolved as 'none'.
+  it('falls back to the hex key when the version is absent but the map is hex-keyed', async () => {
+    const HASH_NAME = '87895164d4e332e30b1b5d38ab1f4c6a5a152c2d71b784be0cc78c3dfdc270a6'
+    const minting = {
+      '721': {
+        [POLICY]: { [HASH_NAME]: { name: 'Notarized document', image: 'ipfs://doc' } },
+        // No version key, exactly as upstream.
+      },
+    }
+    const { fetchImpl } = assetFetch(row(HASH_NAME, minting))
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [token] = await provider.getTokenMetadata([POLICY + HASH_NAME])
+
+    expect(token?.source).toBe('cip25')
+    expect(token?.name).toBe('Notarized document')
+    expect(token?.image).toBe('ipfs://doc')
+  })
+
+  // The fallback is a fallback. When the spec-correct key resolves, it wins, so an asset can
+  // never be handed a sibling's entry just because the other key form also happens to exist.
+  it('does not consult the other key form when the correct one resolves', async () => {
+    const ABC_HEX = '616263' // "abc"
+    const minting = {
+      '721': {
+        [POLICY]: {
+          abc: { name: 'The real abc' },
+          '616263': { name: 'A different token' },
+        },
+        version: 1,
+      },
+    }
+    const { fetchImpl } = assetFetch(row(ABC_HEX, minting))
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [token] = await provider.getTokenMetadata([POLICY + ABC_HEX])
+
+    expect(token?.name).toBe('The real abc')
+  })
+
+  // The regression guard for a fallback deliberately NOT added here.
+  //
+  // Assets with a CIP-67-labelled name that publish CIP-25 metadata keyed by the *bare* name are
+  // real (40 of them on mainnet, e.g. bcc954e4… + 000de140"MG0595"). It is tempting to make the
+  // CIP-25 lookup strip the label and find them. It would be a regression: every such asset also
+  // carries a CIP-68 datum and already resolves through it, and CIP-68 is the richer source (it
+  // carries ticker, url and decimals; a 721 entry does not). Since CIP-25 is tried *before*
+  // CIP-68, teaching CIP-25 to match here would demote the asset and silently drop those fields.
+  it('leaves a labelled asset to the CIP-68 datum rather than matching it as CIP-25', async () => {
+    const hex = (text: string) => Buffer.from(text, 'utf8').toString('hex')
+    const NAME_HEX = '000de140' + hex('MG0595')
+
+    // A 721 entry keyed by the bare name, which the CIP-25 lookup must NOT reach for...
+    const minting = {
+      '721': { [POLICY]: { MG0595: { name: 'MG0595', image: 'ipfs://from-721' } } },
+    }
+    // ...because the same asset carries a CIP-68 datum, which is what it should resolve from.
+    const cip68 = {
+      '100': {
+        constructor: 0,
+        fields: [
+          {
+            map: [
+              { k: { bytes: hex('name') }, v: { bytes: hex('MG0595') } },
+              { k: { bytes: hex('image') }, v: { bytes: hex('ipfs://from-datum') } },
+              { k: { bytes: hex('ticker') }, v: { bytes: hex('MOON') } },
+            ],
+          },
+        ],
+      },
+    }
+    const { fetchImpl } = assetFetch(row(NAME_HEX, minting, cip68))
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [token] = await provider.getTokenMetadata([POLICY + NAME_HEX])
+
+    expect(token?.source).toBe('cip68')
+    expect(token?.image).toBe('ipfs://from-datum')
+    // The field the 721 entry could not have given it, and the reason CIP-68 must keep this asset.
+    expect(token?.ticker).toBe('MOON')
+  })
+})
+
 describe('koios getTokenMetadata — CIP-25 version edge cases', () => {
   const POLICY = 'd'.repeat(56)
 

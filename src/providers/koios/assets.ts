@@ -259,10 +259,65 @@ interface Cip25Fields {
   image?: string
 }
 
-// Pull the CIP-25 entry for this asset out of the mint metadata. The asset key under the
-// policy is the hex asset name or its text form depending on the declared version, and
-// exactly one of them is used: trying both is what lets one asset pick up another's metadata
-// (see below).
+/**
+ * The keys an asset's CIP-25 entry can be filed under inside its policy map, in the order they
+ * should be tried. The first one that resolves to a metadata record wins.
+ *
+ * Per the spec, version 1 keys the map by the asset name as UTF-8 text and version 2 by its raw
+ * bytes, with the version defaulting to 1 when absent. That is the key tried first, and for a
+ * minter who followed the spec it is the end of it.
+ *
+ * The other form is then tried as a fallback, because the version field is far less reliable
+ * than the spec implies. Not one CIP-25 asset sampled across either network declares version 2,
+ * and yet assets keyed by raw hex exist anyway (21 on preprod), every one of them with the
+ * version *absent*, so the spec's default of 1 sends the lookup to a text key that is not there.
+ * Their names are 32-byte hashes, which are not valid UTF-8, so no text key could exist at all.
+ * Those assets have no registry entry and no CIP-68 datum either: today they resolve as `none`,
+ * and the wallet shows a token with no name and no image.
+ *
+ * Reading through that is what the CIP-68 path in this file already does, for the same reason: a
+ * minter writing the name in the other form is a mistake we can read through rather than one we
+ * need to punish.
+ *
+ * Order is what keeps the fallback safe, and it is not incidental. Picking the wrong
+ * representation does not merely miss: it can return a *different asset's* metadata. Inside a
+ * version-1 (text-keyed) policy, looking up the hex form first would search for "616263" and
+ * match an asset literally *named* "616263" when the caller asked about the asset named "abc"
+ * (whose hex is 616263). Trying the spec-correct key first means the fallback only runs for an
+ * asset that had no entry of its own, so the worst case is confined to a policy whose assets are
+ * all the same minter's to begin with, and the alternative in that case is showing nothing.
+ *
+ * Note what is deliberately *not* here: a fallback that strips a CIP-67 label off the name.
+ * Assets with a labelled name that publish CIP-25 metadata keyed by the bare name do exist (40
+ * on mainnet), but every one of them also carries a CIP-68 datum and so already resolves through
+ * that path, which is both correct and richer, since a datum carries ticker, url and decimals
+ * and a 721 entry does not. Adding the label fallback here would only demote those assets from
+ * `cip68` to `cip25` and lose fields. CIP-25 is tried before CIP-68, so a fallback here is not
+ * free: it takes assets away from a better source.
+ */
+function cip25Keys(nft: Record<string, unknown>, assetNameHex: string): string[] {
+  const keys: string[] = []
+  const add = (key: string | undefined): void => {
+    if (key !== undefined && !keys.includes(key)) keys.push(key)
+  }
+
+  // Only versions 1 and 2 exist, and the spec makes 1 the default. Anything else (absent, a
+  // string, a future or bogus number) is read as version 1. This cannot be an identity check
+  // against the number 1: live data returns `version` as the *string* "1.0" for a third of
+  // mainnet CIP-25 assets.
+  const textKey = v1TextKey(assetNameHex)
+  if (Number(nft.version) === 2) {
+    add(assetNameHex)
+    add(textKey)
+  } else {
+    add(textKey)
+    add(assetNameHex)
+  }
+
+  return keys
+}
+
+// Pull the CIP-25 entry for this asset out of the mint metadata.
 function extractCip25(
   minting: unknown,
   policy: string,
@@ -274,37 +329,17 @@ function extractCip25(
   const byPolicy = nft[policy]
   if (!isRecord(byPolicy)) return undefined
 
-  // CIP-25 keys the asset differently by version, and picking the wrong representation does
-  // not merely miss: it can return a *different asset's* metadata.
-  //
-  // Per the spec, version 1 keys the map by the asset name as UTF-8 text and version 2 by its
-  // raw bytes, with the version defaulting to 1 when absent. Trying the hex form first
-  // regardless would, inside a version-1 policy, look up "616263" and match an asset that is
-  // literally *named* "616263" when the caller asked about the asset named "abc" (whose hex
-  // is 616263). The wrong name and image would then be shown for the token.
-  //
-  // So exactly one key is used, chosen by the version. Decoding the v1 key from the hex
-  // rather than leaning on Koios's asset_name_ascii also means a non-ASCII v1 name still
-  // resolves, which the ASCII-only field could not do.
-  // Only versions 1 and 2 exist, and the spec makes 1 the default. Anything else (absent, a
-  // string, a future or bogus number) is read as version 1. A `>= 2` test would be worse than
-  // useless: an unknown version like 3 would select the hex key on a map that is almost
-  // certainly text-keyed, which is the collision path above rather than graceful degradation.
-  //
-  // It cannot be an identity check against the number 1 either: live data returns `version` as
-  // the *string* "1.0" for a third of mainnet CIP-25 assets.
-  const version = Number(nft.version) === 2 ? 2 : 1
-  const assetKey = version === 2 ? assetNameHex : v1TextKey(assetNameHex)
-  if (assetKey === undefined) return undefined
-
-  const entryRaw = byPolicy[assetKey]
-  if (!isRecord(entryRaw)) return undefined
-  const fields: Cip25Fields = {
-    name: cip25String(entryRaw.name),
-    description: cip25String(entryRaw.description),
-    image: cip25String(entryRaw.image),
+  for (const key of cip25Keys(nft, assetNameHex)) {
+    const entryRaw = byPolicy[key]
+    if (!isRecord(entryRaw)) continue
+    const fields: Cip25Fields = {
+      name: cip25String(entryRaw.name),
+      description: cip25String(entryRaw.description),
+      image: cip25String(entryRaw.image),
+    }
+    if (fields.name || fields.description || fields.image) return fields
   }
-  return fields.name || fields.description || fields.image ? fields : undefined
+  return undefined
 }
 
 function mapTokenMetadata(row: z.infer<typeof assetInfoRow>): TokenMetadata {
@@ -386,10 +421,9 @@ export function createAssetMethods(koios: KoiosClient): AssetCapability {
 
       // Send bounded chunks to stay under the upstream body cap, then merge the rows.
       const perChunk = await Promise.all(
-        chunked(pairs, ASSET_INFO_CHUNK).map(async (chunk) => {
+        chunked(pairs, ASSET_INFO_CHUNK).map((chunk) => {
           const path = `/asset_info?select=${encodeURIComponent(ASSET_INFO_SELECT)}`
-          const data = await koios.postJson(path, { _asset_list: chunk })
-          return koios.parseWith(z.array(assetInfoRow), data, '/asset_info')
+          return koios.batch(z.array(assetInfoRow), path, { _asset_list: chunk })
         }),
       )
       const rows = perChunk.flat()

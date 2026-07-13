@@ -2,13 +2,23 @@ import { createMemoryCache, noCache, type Cache } from '../cache/index.js'
 import type { AppConfig } from '../config/index.js'
 import { ConfigError } from '../domain/errors.js'
 import { withCache } from './cached.js'
-import { createKoiosProvider } from './koios/index.js'
+import { createKoiosProvider, type RetryEvent } from './koios/index.js'
 import type { ChainProvider } from './provider.js'
 
-function createDriver(config: AppConfig): ChainProvider {
+/** Cross-cutting dependencies a provider needs but should not construct for itself. */
+export interface ProviderDeps {
+  /** Called whenever an upstream read is retried, so the app can log it. */
+  onRetry?: (event: RetryEvent) => void
+}
+
+function createDriver(config: AppConfig, deps: ProviderDeps): ChainProvider {
   switch (config.provider) {
     case 'koios':
-      return createKoiosProvider({ baseUrl: config.koios.url, token: config.koios.token })
+      return createKoiosProvider({
+        baseUrl: config.koios.url,
+        token: config.koios.token,
+        onRetry: deps.onRetry,
+      })
     case 'blockfrost':
     case 'dingo':
       throw new ConfigError(`provider "${config.provider}" is not wired up yet`)
@@ -29,7 +39,7 @@ function createDriver(config: AppConfig): ChainProvider {
  * unit test that builds a driver directly gets no caching and its upstream call counts mean what
  * they look like.
  */
-export function createProvider(config: AppConfig): ChainProvider {
+export function createProvider(config: AppConfig, deps: ProviderDeps = {}): ChainProvider {
   const cache: Cache = config.cacheEnabled ? createMemoryCache() : noCache
-  return withCache(createDriver(config), cache)
+  return withCache(createDriver(config, deps), cache)
 }

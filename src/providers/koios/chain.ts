@@ -47,14 +47,12 @@ const epochParamsRow = z.object({
 export function createChainMethods(koios: KoiosClient): ChainCapability {
   return {
     async getTip(): Promise<Tip> {
-      const data = await koios.request('/tip')
-      const row = koios.parseFirst(tipRow, data, '/tip')
+      const row = await koios.getFirst(tipRow, '/tip')
       return { block: row.block_no, slot: row.abs_slot, epoch: row.epoch_no, hash: row.hash }
     },
 
     async getProtocolParams(): Promise<ProtocolParams> {
-      const data = await koios.request('/epoch_params?order=epoch_no.desc&limit=1')
-      const row = koios.parseFirst(epochParamsRow, data, '/epoch_params')
+      const row = await koios.getFirst(epochParamsRow, '/epoch_params?order=epoch_no.desc&limit=1')
       return {
         epoch: row.epoch_no,
         minFeeA: row.min_fee_a,

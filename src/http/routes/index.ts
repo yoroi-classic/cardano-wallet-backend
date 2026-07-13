@@ -7,6 +7,7 @@ import { registerChainRoutes } from './chain.js'
 import { registerGovernanceRoutes } from './governance.js'
 import { registerHealthRoutes } from './health.js'
 import { registerPoolRoutes } from './pools.js'
+import { registerPriceRoutes } from './price.js'
 import { registerTxRoutes } from './tx.js'
 
 /** Every route module registers through this one signature, so the server can iterate. */
@@ -24,5 +25,6 @@ export const routeRegistrars: readonly RouteRegistrar[] = [
   registerPoolRoutes,
   registerAssetRoutes,
   registerGovernanceRoutes,
+  registerPriceRoutes,
   registerTxRoutes,
 ]

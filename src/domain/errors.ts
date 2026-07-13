@@ -8,6 +8,7 @@ export type ErrorCode =
   | 'UPSTREAM_TIMEOUT'
   | 'UPSTREAM_MALFORMED'
   | 'BAD_REQUEST'
+  | 'NOT_IMPLEMENTED'
   | 'CONFIG_ERROR'
   | 'INTERNAL'
 
@@ -54,6 +55,20 @@ export class MalformedUpstreamError extends AppError {
 export class BadRequestError extends AppError {
   constructor(message: string, details?: unknown) {
     super('BAD_REQUEST', 400, message, details)
+  }
+}
+
+/**
+ * The endpoint exists in the contract but is not built yet.
+ *
+ * A distinct code, and not a 404, because the two mean opposite things to a client: a 404 says
+ * "you asked for something that does not exist, fix your call", and this says "you asked
+ * correctly, we owe you an answer". An adapter can be written against a route that answers this,
+ * and will start working the day the route does, with no client change.
+ */
+export class NotImplementedError extends AppError {
+  constructor(message: string) {
+    super('NOT_IMPLEMENTED', 501, message)
   }
 }
 

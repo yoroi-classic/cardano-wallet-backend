@@ -35,8 +35,9 @@ curl localhost:3010/v1/chain/protocol-params
 
 | Method | Path                        | Returns                                                                      |
 | ------ | --------------------------- | ---------------------------------------------------------------------------- |
-| GET    | `/health`                   | liveness                                                                     |
-| GET    | `/v1/chain/tip`             | `{ block, slot, epoch, hash }`                                               |
+| GET    | `/health`                   | liveness, no upstream call                                                   |
+| GET    | `/v1/status`                | `{ version, network, provider, chain, behindSeconds, tip }`                  |
+| GET    | `/v1/chain/tip`             | `{ block, slot, epoch, hash, blockTime }`                                    |
 | GET    | `/v1/chain/protocol-params` | normalized protocol parameters incl. cost models                             |
 | GET    | `/v1/account/{stake}/state` | `{ registered, balance, rewardsAvailable, rewardsSum, withdrawalsSum, ... }` |
 | GET    | `/v1/account/{stake}/utxos` | array of UTxOs incl. assets and inline datums                                |
@@ -50,8 +51,23 @@ curl localhost:3010/v1/chain/protocol-params
 | GET    | `/v1/tx/{hash}/status`      | `{ seen, confirmations }`                                                    |
 
 Errors come back as `{ "error": { "code", "message" } }` with a stable status code
-(`502` upstream error, `504` upstream timeout, `400` bad request, `404` unknown route,
-`500` otherwise).
+(`502` upstream error, `504` upstream timeout, `429` rate limited, `400` bad request,
+`404` unknown route, `500` otherwise).
+
+`/health` and `/v1/status` are not the same thing, and the difference matters. `/health` is
+liveness for the orchestrator: it makes no upstream call and answers instantly, because a load
+balancer asking "is this process alive" must not be told no merely because Koios is slow.
+`/v1/status` is for the wallet, whose question is "can I trust what you are about to tell me", so
+it does reach upstream and reports `chain: "ok" | "stale" | "down"`. It answers `200` even when
+the chain source is unreachable, so a client can tell "the backend is down" (a network error)
+apart from "the backend is up, its data source is not" (a maintenance notice).
+
+## Running it
+
+```bash
+docker compose up -d          # preprod on :3010
+curl localhost:3010/v1/status
+```
 
 ## Configuration
 
@@ -63,7 +79,35 @@ See `.env.example`. Key values:
 - `CACHE_ENABLED` — `true` (default) | `false`. Turn it off only to debug upstream: it exists
   because chain-wide reads are identical for every caller, and serving them from upstream on
   every request makes our load on the provider scale with our user count for no benefit.
+- `CORS_ORIGINS` — `*` (default) or a comma-separated list
+- `RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW_MS` — anonymous free tier, per client IP (default 120/min).
+  `0` disables the limiter, which is only correct on a private deployment.
 - `PORT`, `HOST`, `LOG_LEVEL`
+
+## Privacy
+
+**We do not log who asked what.** A wallet backend sees, on every call, the one thing a wallet
+most wants kept to itself: which addresses and which stake key belong to one person. So the
+request log carries the endpoint and nothing that identifies the caller. The stake key and the
+transaction hash are stripped out of the path, and the client IP is not written at all:
+
+```
+/v1/account/[redacted]/utxos
+```
+
+This is not the default behaviour of the framework, and it is not a detail. Fastify's stock
+request log writes the URL and the client IP on the same line, and our account routes carry the
+stake key _in the URL_, so the default is a durable record of who holds what, written on every
+balance refresh. The policy lives in `src/http/logging.ts` and there is a test that fails if it
+regresses.
+
+Be clear about the limit of it. We still _see_ the stake key in order to answer the request, and
+the IP in order to receive it. Not retaining that link is a real and worthwhile property; it is
+not the same as never having had it. If you want that guarantee, run your own node and point this
+at it. We would rather say so than imply this is more than it is.
+
+The rate limiter keeps a per-IP counter in memory. That is transient, never written down, and
+never joined to what was asked for.
 
 ### What is cached
 

@@ -10,6 +10,15 @@ export interface Tip {
   epoch: number
   /** Block hash (hex). */
   hash: string
+  /**
+   * When the tip block was minted, as unix seconds.
+   *
+   * Carried because an absolute slot is not a timestamp: converting one to the other needs the
+   * era boundaries of whichever network you are on, and getting that wrong yields a plausible
+   * number rather than an error. `/v1/status` uses this to report how far behind the chain data
+   * is, and a wallet can use it to show when it last saw the chain.
+   */
+  blockTime: number
 }
 
 /** Protocol version tuple. */

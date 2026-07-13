@@ -36,7 +36,7 @@ afterEach(async () => {
 
 describe('filter-used route', () => {
   it('POST /v1/addresses/filter-used returns the used subset', async () => {
-    app = buildServer({ provider: providerWith({}) })
+    app = await buildServer({ provider: providerWith({}) })
     const res = await app.inject({
       method: 'POST',
       url: '/v1/addresses/filter-used',
@@ -48,7 +48,7 @@ describe('filter-used route', () => {
   })
 
   it('rejects a missing addresses list with 400', async () => {
-    app = buildServer({ provider: providerWith({}) })
+    app = await buildServer({ provider: providerWith({}) })
 
     const missing = await app.inject({
       method: 'POST',
@@ -60,7 +60,7 @@ describe('filter-used route', () => {
   })
 
   it('rejects an empty addresses list with 400', async () => {
-    app = buildServer({ provider: providerWith({}) })
+    app = await buildServer({ provider: providerWith({}) })
 
     const empty = await app.inject({
       method: 'POST',
@@ -72,7 +72,7 @@ describe('filter-used route', () => {
   })
 
   it('rejects a malformed address with 400 before hitting the provider', async () => {
-    app = buildServer({
+    app = await buildServer({
       provider: providerWith({
         filterUsedAddresses: async () => {
           throw new Error('provider should not be called for a malformed address')
@@ -90,7 +90,7 @@ describe('filter-used route', () => {
   })
 
   it('rejects a well-formed non-payment (stake-type) address with 400', async () => {
-    app = buildServer({
+    app = await buildServer({
       provider: providerWith({
         filterUsedAddresses: async () => {
           throw new Error('provider should not be called for a non-payment address')

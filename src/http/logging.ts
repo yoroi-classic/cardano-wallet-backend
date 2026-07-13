@@ -1,0 +1,67 @@
+/**
+ * What this service is allowed to write down about who asked it what.
+ *
+ * A wallet backend sees, on every call, the one thing a wallet most wants kept to itself: which
+ * addresses and which stake key belong to one person. Our positioning is privacy-first, so what
+ * we log is part of the product, not an ops detail.
+ *
+ * Fastify's default request log is a privacy failure for exactly this service. It writes the
+ * request URL and the client's IP on the same line, and our account routes carry the stake key
+ * *in the URL*:
+ *
+ *   {"req":{"url":"/v1/account/stake1uyehk.../utxos","remoteAddress":"203.0.113.47"}}
+ *
+ * That is a durable, precise link between a wallet identity and a network identity, written to
+ * disk, on every balance refresh. Anyone who later reads those logs (us, a host, an attacker, a
+ * subpoena) can reconstruct who holds what. Nothing else we do about privacy matters if we are
+ * writing that line.
+ *
+ * So: the identifiers come out of the path, and the IP does not go in at all.
+ *
+ * Note the honest limit of this. We still *see* the stake key in order to answer the request, and
+ * we still see the IP in order to receive it. Not logging them means the linkage is not retained,
+ * which is a real and worthwhile property, but it is not the same as never having had it. A user
+ * who wants that guarantee needs to run their own node, and we should say so rather than imply
+ * this is more than it is.
+ */
+
+const REDACTED = '[redacted]'
+
+/** A bech32 stake address, mainnet or testnet. Appears as a path segment on the account routes. */
+const STAKE_ADDRESS = /^stake(_test)?1[0-9a-z]+$/i
+
+/** A 32-byte hash as hex: a transaction id, on /v1/tx/{hash}/status. */
+const TX_HASH = /^[0-9a-fA-F]{64}$/
+
+/**
+ * The request path with any wallet identifier removed, so the log still says which endpoint was
+ * called and how often, but not by whom.
+ *
+ * The query string is kept: `?limit=50`, `?ticker=ADA`, `?after=12345` say nothing about who is
+ * asking. Identifiers only ever arrive as path segments or in a POST body, and Fastify does not
+ * log bodies.
+ */
+export function scrubPath(url: string): string {
+  const [path = '', query] = url.split('?')
+  const scrubbed = path
+    .split('/')
+    .map((segment) => (STAKE_ADDRESS.test(segment) || TX_HASH.test(segment) ? REDACTED : segment))
+    .join('/')
+  return query === undefined ? scrubbed : `${scrubbed}?${query}`
+}
+
+interface LoggableRequest {
+  method: string
+  url: string
+}
+
+/**
+ * The request serializer the app logs through. Deliberately a short allowlist rather than a
+ * denylist of things to strip: a denylist silently starts leaking the day Fastify adds a field,
+ * and this is not a thing to be wrong about by default.
+ *
+ * `remoteAddress`, `remotePort`, headers, and the request body are all simply absent.
+ */
+export function serializeRequest(request: LoggableRequest): { method: string; url: string } {
+  return { method: request.method, url: scrubPath(request.url) }
+}

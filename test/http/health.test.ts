@@ -13,7 +13,7 @@ afterEach(async () => {
 
 describe('health and not-found', () => {
   it('GET /health returns ok', async () => {
-    app = buildServer({ provider: stubProvider })
+    app = await buildServer({ provider: stubProvider })
     const res = await app.inject({ method: 'GET', url: '/health' })
 
     expect(res.statusCode).toBe(200)
@@ -21,7 +21,7 @@ describe('health and not-found', () => {
   })
 
   it('unknown routes return a structured 404', async () => {
-    app = buildServer({ provider: stubProvider })
+    app = await buildServer({ provider: stubProvider })
     const res = await app.inject({ method: 'GET', url: '/nope' })
 
     expect(res.statusCode).toBe(404)

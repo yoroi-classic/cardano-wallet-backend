@@ -44,6 +44,8 @@ curl localhost:3010/v1/chain/protocol-params
 | POST   | `/v1/addresses/filter-used` | subset of `{ addresses: [...] }` seen on chain, in input order               |
 | POST   | `/v1/pools/info`            | stake-pool info for `{ poolIds: [...] }`, in input order                     |
 | POST   | `/v1/assets/info`           | token metadata for `{ subjects: [...] }` (registry + on-chain), input order  |
+| POST   | `/v1/assets/media`          | signed NFTCDN image/metadata URLs for `{ fingerprints: [...], size? }`       |
+| GET    | `/v1/assets/{fp}/image`     | 302 to a signed, resized NFTCDN image (`?size=`)                             |
 | POST   | `/v1/tx/submit`             | `{ txHash }` from `{ "cbor": "<hex tx>" }`                                   |
 | GET    | `/v1/governance/dreps`      | neutral page of registered DReps: `?limit=&offset=`                          |
 | POST   | `/v1/governance/dreps/info` | DRep info for `{ drepIds: [...] }`, in input order                           |
@@ -63,7 +65,30 @@ See `.env.example`. Key values:
 - `CACHE_ENABLED` — `true` (default) | `false`. Turn it off only to debug upstream: it exists
   because chain-wide reads are identical for every caller, and serving them from upstream on
   every request makes our load on the provider scale with our user count for no benefit.
+- `NFTCDN_SUBDOMAIN` / `NFTCDN_KEY` — optional, both or neither. Enables asset media (below).
 - `PORT`, `HOST`, `LOG_LEVEL`
+
+### Asset media
+
+`/v1/assets/info` returns a token's `image` as whatever URI the minter put on chain, which is
+usually `ipfs://`, sometimes `ar://`, and occasionally broken. None of that is renderable without
+a gateway and none of it is sized: a gallery of a hundred NFTs would pull a hundred
+full-resolution originals, some of them megabytes of animated GIF, onto a phone.
+
+With NFTCDN configured, `POST /v1/assets/media` returns signed, resized image URLs for up to 100
+assets in one call. **Call that, not the redirect, for a gallery.** `GET /v1/assets/{fp}/image` is
+a convenience 302 for a single asset; used per tile it would cost one request to us for every
+thumbnail on the screen, which at the default rate limit a single scroll would nearly exhaust.
+
+The signing key never leaves the backend. A key shipped inside an extension or an app would be
+extracted within the hour, and whoever pulled it could serve their own bandwidth on our account.
+
+NFTCDN serves powers of two (32 to 1024). The Yoroi apps ask for 720, which is not one, so a
+requested size is rounded **up** to a size that exists and the response says which size it
+actually served. Rounding down would hand the client a 512 to upscale into a blurry tile, and the
+user would conclude the wallet is broken.
+
+Without a key, media answers `503 FEATURE_UNAVAILABLE` and everything else works.
 
 ### What is cached
 

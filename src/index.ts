@@ -1,5 +1,6 @@
 import type { FastifyBaseLogger } from 'fastify'
 import { loadConfig } from './config/index.js'
+import { createNftcdnSigner } from './media/nftcdn.js'
 import { createProvider } from './providers/factory.js'
 import { buildServer } from './http/server.js'
 
@@ -15,13 +16,25 @@ async function main(): Promise<void> {
   const provider = createProvider(config, {
     onRetry: (event) => log.current?.warn(event, 'retrying an upstream read'),
   })
-  const app = buildServer({ provider, logger: { level: config.logLevel } })
+  // Optional upstream: without it, the media routes answer 503 and everything else works.
+  const nftcdn = config.nftcdn === undefined ? undefined : createNftcdnSigner(config.nftcdn)
+
+  const app = buildServer({
+    provider,
+    deps: { ...(nftcdn === undefined ? {} : { nftcdn }) },
+    logger: { level: config.logLevel },
+  })
   log.current = app.log
 
   try {
     await app.listen({ host: config.host, port: config.port })
     app.log.info(
-      { network: config.network, provider: provider.name },
+      {
+        network: config.network,
+        provider: provider.name,
+        // The subdomain, never the key. This line goes to a log that outlives the process.
+        media: config.nftcdn === undefined ? 'disabled' : `nftcdn:${config.nftcdn.subdomain}`,
+      },
       `cardano-wallet-backend listening on ${config.host}:${config.port}`,
     )
   } catch (err) {

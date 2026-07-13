@@ -1,10 +1,12 @@
 import Fastify, { type FastifyInstance, type FastifyBaseLogger } from 'fastify'
 import { isAppError } from '../domain/errors.js'
 import type { ChainProvider } from '../providers/provider.js'
-import { routeRegistrars } from './routes/index.js'
+import { routeRegistrars, type RouteDeps } from './routes/index.js'
 
 export interface BuildServerOptions {
   provider: ChainProvider
+  /** Optional upstreams beyond the chain provider. Absent ones degrade, they do not break. */
+  deps?: RouteDeps
   /** Fastify logger option. False (default) keeps tests quiet. */
   logger?: boolean | { level: string }
 }
@@ -32,8 +34,9 @@ export function buildServer(opts: BuildServerOptions): FastifyInstance {
     })
   })
 
+  const deps = opts.deps ?? {}
   for (const register of routeRegistrars) {
-    register(app, opts.provider)
+    register(app, opts.provider, deps)
   }
 
   return app

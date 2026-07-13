@@ -8,6 +8,7 @@ export type ErrorCode =
   | 'UPSTREAM_TIMEOUT'
   | 'UPSTREAM_MALFORMED'
   | 'BAD_REQUEST'
+  | 'FEATURE_UNAVAILABLE'
   | 'CONFIG_ERROR'
   | 'INTERNAL'
 
@@ -54,6 +55,20 @@ export class MalformedUpstreamError extends AppError {
 export class BadRequestError extends AppError {
   constructor(message: string, details?: unknown) {
     super('BAD_REQUEST', 400, message, details)
+  }
+}
+
+/**
+ * The endpoint is real, but this deployment is not configured to serve it.
+ *
+ * Distinct from a 404, which would tell a client the route does not exist and to stop calling it,
+ * and from a 500, which would tell it we are broken. Neither is true: the operator has simply not
+ * supplied a credential for an optional upstream, and a client should degrade (show a placeholder
+ * image) rather than retry or give up on the endpoint forever.
+ */
+export class FeatureUnavailableError extends AppError {
+  constructor(message: string) {
+    super('FEATURE_UNAVAILABLE', 503, message)
   }
 }
 

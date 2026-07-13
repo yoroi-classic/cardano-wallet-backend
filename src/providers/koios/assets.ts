@@ -386,10 +386,9 @@ export function createAssetMethods(koios: KoiosClient): AssetCapability {
 
       // Send bounded chunks to stay under the upstream body cap, then merge the rows.
       const perChunk = await Promise.all(
-        chunked(pairs, ASSET_INFO_CHUNK).map(async (chunk) => {
+        chunked(pairs, ASSET_INFO_CHUNK).map((chunk) => {
           const path = `/asset_info?select=${encodeURIComponent(ASSET_INFO_SELECT)}`
-          const data = await koios.postJson(path, { _asset_list: chunk })
-          return koios.parseWith(z.array(assetInfoRow), data, '/asset_info')
+          return koios.batch(z.array(assetInfoRow), path, { _asset_list: chunk })
         }),
       )
       const rows = perChunk.flat()

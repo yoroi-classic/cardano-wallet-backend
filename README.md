@@ -60,7 +60,21 @@ See `.env.example`. Key values:
 - `NETWORK` — `mainnet` | `preprod` | `preview` (default `preprod`)
 - `PROVIDER` — `koios` (others land soon)
 - `KOIOS_URL` — defaults per network; `KOIOS_TOKEN` optional for higher limits
+- `CACHE_ENABLED` — `true` (default) | `false`. Turn it off only to debug upstream: it exists
+  because chain-wide reads are identical for every caller, and serving them from upstream on
+  every request makes our load on the provider scale with our user count for no benefit.
 - `PORT`, `HOST`, `LOG_LEVEL`
+
+### What is cached
+
+Chain-wide reads only, and every account-scoped read is deliberately excluded. Account state,
+UTxOs, transaction history, and transaction status are per-user and always fresh: serving a
+stale balance or a stale UTxO set to a wallet that is about to build a transaction produces a
+failed submission or a double-spend. The whole policy lives in `src/providers/cached.ts`, and
+anything not listed there is not cached.
+
+Protocol parameters are keyed on the epoch number rather than on a duration, because that is
+what they are: fixed within an epoch, and changed at the boundary.
 
 ## Scripts
 

@@ -28,6 +28,17 @@ const PROVIDER_SCAN_BOUND = 20_000
 const MAX_LIMIT = 250
 const MAX_OFFSET = PROVIDER_SCAN_BOUND - MAX_LIMIT
 
+// A page of proposals hydrates each one with its vote tally, which is a call per proposal, so the
+// page is capped well below the DRep list's. There are a few hundred governance actions in total,
+// not thousands, so the offset ceiling is generous relative to the data rather than to the scan.
+const MAX_PROPOSAL_LIMIT = 50
+const MAX_PROPOSAL_OFFSET = 10_000
+
+const proposalQuery = z.object({
+  limit: boundedInt(1, MAX_PROPOSAL_LIMIT, 20),
+  offset: boundedInt(0, MAX_PROPOSAL_OFFSET, 0),
+})
+
 const listQuery = z.object({
   limit: boundedInt(1, MAX_LIMIT, 50),
   offset: boundedInt(0, MAX_OFFSET, 0),
@@ -54,5 +65,26 @@ export function registerGovernanceRoutes(app: FastifyInstance, provider: ChainPr
       )
     }
     return provider.getDrepInfo(parsed.data.drepIds)
+  })
+
+  /**
+   * Conway governance actions, newest first.
+   *
+   * With the vote tallies as they stand, because a proposal without them is not something a user
+   * can act on: "should I vote on this?" is answered by where the vote currently sits, not by the
+   * text alone.
+   *
+   * `status` is derived here rather than left to the client: upstream expresses a proposal's fate
+   * as four separate nullable epoch fields, and every client would otherwise reimplement the same
+   * precedence rules, subtly differently.
+   */
+  app.get('/v1/governance/proposals', async (request) => {
+    const parsed = proposalQuery.safeParse(request.query)
+    if (!parsed.success) {
+      throw new BadRequestError(
+        `query must be limit (1-${MAX_PROPOSAL_LIMIT}) and offset (0-${MAX_PROPOSAL_OFFSET})`,
+      )
+    }
+    return provider.getProposals(parsed.data)
   })
 }

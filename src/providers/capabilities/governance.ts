@@ -1,4 +1,9 @@
-import type { DrepInfo, DrepListParams } from '../../domain/types/governance.js'
+import type {
+  DrepInfo,
+  DrepListParams,
+  Proposal,
+  ProposalListParams,
+} from '../../domain/types/governance.js'
 
 /** Governance reads (delegate representatives). */
 export interface GovernanceCapability {
@@ -23,4 +28,13 @@ export interface GovernanceCapability {
    * can be shorter than `limit` when one deregisters mid-request.
    */
   getDrepList(params: DrepListParams): Promise<DrepInfo[]>
+
+  /**
+   * Conway governance actions, newest first.
+   *
+   * Includes the vote tallies as they stand, because a proposal without them is not something a
+   * user can act on: "should I vote?" is answered by where the vote currently sits, not by the
+   * text alone.
+   */
+  getProposals(params: ProposalListParams): Promise<Proposal[]>
 }

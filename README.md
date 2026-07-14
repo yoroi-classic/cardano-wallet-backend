@@ -53,8 +53,9 @@ The summary:
 
 | Method | Path                        | Returns                                                                      |
 | ------ | --------------------------- | ---------------------------------------------------------------------------- |
-| GET    | `/health`                   | liveness                                                                     |
-| GET    | `/v1/chain/tip`             | `{ block, slot, epoch, hash }`                                               |
+| GET    | `/health`                   | liveness, no upstream call                                                   |
+| GET    | `/v1/status`                | `{ version, network, provider, chain, behindSeconds, tip }`                  |
+| GET    | `/v1/chain/tip`             | `{ block, slot, epoch, hash, blockTime }`                                    |
 | GET    | `/v1/chain/protocol-params` | normalized protocol parameters incl. cost models                             |
 | GET    | `/v1/account/{stake}/state` | `{ registered, balance, rewardsAvailable, rewardsSum, withdrawalsSum, ... }` |
 | GET    | `/v1/account/{stake}/utxos` | array of UTxOs incl. assets and inline datums                                |
@@ -62,14 +63,31 @@ The summary:
 | POST   | `/v1/addresses/filter-used` | subset of `{ addresses: [...] }` seen on chain, in input order               |
 | POST   | `/v1/pools/info`            | stake-pool info for `{ poolIds: [...] }`, in input order                     |
 | POST   | `/v1/assets/info`           | token metadata for `{ subjects: [...] }` (registry + on-chain), input order  |
+| POST   | `/v1/assets/media`          | signed NFTCDN image/metadata URLs for `{ fingerprints: [...], size? }`       |
+| GET    | `/v1/assets/{fp}/image`     | 302 to a signed, resized NFTCDN image (`?size=`)                             |
 | POST   | `/v1/tx/submit`             | `{ txHash }` from `{ "cbor": "<hex tx>" }`                                   |
 | GET    | `/v1/governance/dreps`      | neutral page of registered DReps: `?limit=&offset=`                          |
 | POST   | `/v1/governance/dreps/info` | DRep info for `{ drepIds: [...] }`, in input order                           |
 | GET    | `/v1/tx/{hash}/status`      | `{ seen, confirmations }`                                                    |
 
 Errors come back as `{ "error": { "code", "message" } }` with a stable status code
-(`502` upstream error, `504` upstream timeout, `400` bad request, `404` unknown route,
-`500` otherwise).
+(`502` upstream error, `504` upstream timeout, `429` rate limited, `400` bad request,
+`404` unknown route, `500` otherwise).
+
+`/health` and `/v1/status` are not the same thing, and the difference matters. `/health` is
+liveness for the orchestrator: it makes no upstream call and answers instantly, because a load
+balancer asking "is this process alive" must not be told no merely because Koios is slow.
+`/v1/status` is for the wallet, whose question is "can I trust what you are about to tell me", so
+it does reach upstream and reports `chain: "ok" | "stale" | "down"`. It answers `200` even when
+the chain source is unreachable, so a client can tell "the backend is down" (a network error)
+apart from "the backend is up, its data source is not" (a maintenance notice).
+
+## Running it
+
+```bash
+docker compose up -d          # preprod on :3010
+curl localhost:3010/v1/status
+```
 
 ## Configuration
 
@@ -81,7 +99,58 @@ See `.env.example`. Key values:
 - `CACHE_ENABLED` — `true` (default) | `false`. Turn it off only to debug upstream: it exists
   because chain-wide reads are identical for every caller, and serving them from upstream on
   every request makes our load on the provider scale with our user count for no benefit.
+- `CORS_ORIGINS` — `*` (default) or a comma-separated list
+- `RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW_MS` — anonymous free tier, per client IP (default 120/min).
+  `0` disables the limiter, which is only correct on a private deployment.
+- `NFTCDN_SUBDOMAIN` / `NFTCDN_KEY` — optional, both or neither. Enables asset media (below).
 - `PORT`, `HOST`, `LOG_LEVEL`
+
+## Privacy
+
+**We do not log who asked what.** A wallet backend sees, on every call, the one thing a wallet
+most wants kept to itself: which addresses and which stake key belong to one person. So the
+request log carries the endpoint and nothing that identifies the caller. The stake key and the
+transaction hash are stripped out of the path, and the client IP is not written at all:
+
+```
+/v1/account/[redacted]/utxos
+```
+
+This is not the default behaviour of the framework, and it is not a detail. Fastify's stock
+request log writes the URL and the client IP on the same line, and our account routes carry the
+stake key _in the URL_, so the default is a durable record of who holds what, written on every
+balance refresh. The policy lives in `src/http/logging.ts` and there is a test that fails if it
+regresses.
+
+Be clear about the limit of it. We still _see_ the stake key in order to answer the request, and
+the IP in order to receive it. Not retaining that link is a real and worthwhile property; it is
+not the same as never having had it. If you want that guarantee, run your own node and point this
+at it. We would rather say so than imply this is more than it is.
+
+The rate limiter keeps a per-IP counter in memory. That is transient, never written down, and
+never joined to what was asked for.
+
+### Asset media
+
+`/v1/assets/info` returns a token's `image` as whatever URI the minter put on chain, which is
+usually `ipfs://`, sometimes `ar://`, and occasionally broken. None of that is renderable without
+a gateway and none of it is sized: a gallery of a hundred NFTs would pull a hundred
+full-resolution originals, some of them megabytes of animated GIF, onto a phone.
+
+With NFTCDN configured, `POST /v1/assets/media` returns signed, resized image URLs for up to 100
+assets in one call. **Call that, not the redirect, for a gallery.** `GET /v1/assets/{fp}/image` is
+a convenience 302 for a single asset; used per tile it would cost one request to us for every
+thumbnail on the screen, which at the default rate limit a single scroll would nearly exhaust.
+
+The signing key never leaves the backend. A key shipped inside an extension or an app would be
+extracted within the hour, and whoever pulled it could serve their own bandwidth on our account.
+
+NFTCDN serves powers of two (32 to 1024). The Yoroi apps ask for 720, which is not one, so a
+requested size is rounded **up** to a size that exists and the response says which size it
+actually served. Rounding down would hand the client a 512 to upscale into a blurry tile, and the
+user would conclude the wallet is broken.
+
+Without a key, media answers `503 FEATURE_UNAVAILABLE` and everything else works.
 
 ### What is cached
 

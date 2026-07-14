@@ -51,7 +51,7 @@ afterEach(async () => {
 
 describe('pools info route', () => {
   it('POST /v1/pools/info returns info for the requested pools', async () => {
-    app = buildServer({ provider: providerWith({}) })
+    app = await buildServer({ provider: providerWith({}) })
     const res = await app.inject({
       method: 'POST',
       url: '/v1/pools/info',
@@ -63,14 +63,14 @@ describe('pools info route', () => {
   })
 
   it('rejects a missing poolIds list with 400', async () => {
-    app = buildServer({ provider: providerWith({}) })
+    app = await buildServer({ provider: providerWith({}) })
     const res = await app.inject({ method: 'POST', url: '/v1/pools/info', payload: {} })
     expect(res.statusCode).toBe(400)
     expect(res.json()).toMatchObject({ error: { code: 'BAD_REQUEST' } })
   })
 
   it('rejects an empty poolIds list with 400', async () => {
-    app = buildServer({ provider: providerWith({}) })
+    app = await buildServer({ provider: providerWith({}) })
     const res = await app.inject({
       method: 'POST',
       url: '/v1/pools/info',
@@ -81,7 +81,7 @@ describe('pools info route', () => {
   })
 
   it('rejects a malformed pool id with 400 before hitting the provider', async () => {
-    app = buildServer({
+    app = await buildServer({
       provider: providerWith({
         getPoolInfo: async () => {
           throw new Error('provider should not be called for a malformed pool id')
@@ -101,7 +101,7 @@ describe('pools info route', () => {
   // `stake` prefix. It has to fail on the HRP check specifically, not on the decode, or
   // this stops covering the wrong-HRP path at all.
   it('rejects a valid bech32 value with the wrong hrp (not pool) with 400', async () => {
-    app = buildServer({
+    app = await buildServer({
       provider: providerWith({
         getPoolInfo: async () => {
           throw new Error('provider should not be called for a wrong-hrp value')
@@ -121,7 +121,7 @@ describe('pools info route', () => {
   // decodes and carries the `pool` prefix, but its trailing padding is non-zero, so the
   // throwing converter would blow up inside the handler and turn bad input into a 500.
   it('rejects a checksum-valid pool id with bad padding with 400, not 500', async () => {
-    app = buildServer({
+    app = await buildServer({
       provider: providerWith({
         getPoolInfo: async () => {
           throw new Error('provider should not be called for a malformed pool id')
@@ -138,7 +138,7 @@ describe('pools info route', () => {
   })
 
   it('rejects a well-formed pool id whose key hash is not 28 bytes with 400', async () => {
-    app = buildServer({
+    app = await buildServer({
       provider: providerWith({
         getPoolInfo: async () => {
           throw new Error('provider should not be called for a wrong-size pool id')
@@ -158,7 +158,7 @@ describe('pools info route', () => {
 describe('pools list route', () => {
   it('GET /v1/pools returns a page with default paging', async () => {
     let seen: unknown
-    app = buildServer({
+    app = await buildServer({
       provider: providerWith({
         getPoolList: async (params) => {
           seen = params
@@ -176,7 +176,7 @@ describe('pools list route', () => {
 
   it('forwards limit, offset, and ticker to the provider', async () => {
     let seen: unknown
-    app = buildServer({
+    app = await buildServer({
       provider: providerWith({
         getPoolList: async (params) => {
           seen = params
@@ -194,7 +194,7 @@ describe('pools list route', () => {
   })
 
   it('rejects out-of-range limit and offset with 400', async () => {
-    app = buildServer({ provider: providerWith({}) })
+    app = await buildServer({ provider: providerWith({}) })
 
     for (const q of ['limit=0', 'limit=251', 'limit=abc', 'offset=-1']) {
       const res = await app.inject({ method: 'GET', url: `/v1/pools?${q}` })
@@ -204,7 +204,7 @@ describe('pools list route', () => {
   })
 
   it('rejects a ticker with non-alphanumeric characters with 400', async () => {
-    app = buildServer({
+    app = await buildServer({
       provider: providerWith({
         getPoolList: async () => {
           throw new Error('provider should not be called for a malformed ticker')
@@ -229,7 +229,7 @@ describe('pools list route — paging is validated, not coerced', () => {
     ['a negative offset', '?offset=-1'],
     ['a fractional limit', '?limit=1.5'],
   ])('rejects %s with 400', async (_name, query) => {
-    app = buildServer({
+    app = await buildServer({
       provider: providerWith({
         getPoolList: async () => {
           throw new Error('provider must not be called for malformed paging')
@@ -245,7 +245,7 @@ describe('pools list route — paging is validated, not coerced', () => {
 
   it('still defaults an absent limit and offset to numbers', async () => {
     let seen: unknown
-    app = buildServer({
+    app = await buildServer({
       provider: providerWith({
         getPoolList: async (params) => {
           seen = params

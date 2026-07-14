@@ -20,6 +20,7 @@ function toTipResponse(tip: Tip): Tip {
     slot: tip.slot,
     epoch: tip.epoch,
     hash: tip.hash,
+    blockTime: tip.blockTime,
   }
 }
 

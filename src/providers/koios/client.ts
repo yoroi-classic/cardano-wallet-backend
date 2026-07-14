@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import type { ErrorCode } from '../../domain/errors.js'
 import { MalformedUpstreamError, ProviderError, ProviderTimeoutError } from '../../domain/errors.js'
+import { KOIOS_BODY_LIMIT_BYTES, packBySize } from './schema.js'
 
 /** A minimal fetch signature so tests can inject a fake without pulling in DOM types. */
 export type FetchLike = (
@@ -63,6 +64,12 @@ export interface KoiosConfig {
   delayImpl?: (ms: number) => Promise<void>
   /** Called before each retry. See RetryEvent. */
   onRetry?: (event: RetryEvent) => void
+  /**
+   * Request-body budget in bytes. Defaults to the limit Koios documents. Worth setting for a
+   * self-hosted or proxied instance with a different cap, though batchAll also adopts a smaller
+   * limit if upstream ever names one.
+   */
+  bodyLimitBytes?: number
 }
 
 interface RequestInit {
@@ -112,14 +119,52 @@ export interface KoiosClient {
    */
   batch<T>(schema: z.ZodType<T>, path: string, body: unknown): Promise<T>
 
+  /**
+   * A batch read over more items than fit in one request body: pack them into as few requests as
+   * the byte budget allows, run those, and concatenate the rows.
+   *
+   * This is where the body limit lives, so no caller has to know it exists. `toBody` turns a
+   * chunk into the real request body, which is also what gets measured, so a body carrying extra
+   * flags is accounted for rather than being a surprise on the wire.
+   *
+   * If upstream rejects a chunk with a 413 anyway and names a smaller limit, the limit is lowered
+   * for the life of this client, the items are repacked, and the batch is attempted once more. A
+   * proxy or a self-hosted Koios with a tighter cap therefore costs one failed request, once,
+   * rather than a redeploy.
+   */
+  batchAll<Row, Item>(
+    rowSchema: z.ZodType<Row>,
+    path: string,
+    items: Item[],
+    toBody: (chunk: Item[]) => unknown,
+  ): Promise<Row[]>
+
+  /** The current request-body budget in bytes. Lowered if upstream ever says it is smaller. */
+  readonly bodyLimit: number
+
   /** A write. Never retried. See the note on this interface. */
   submit<T>(schema: z.ZodType<T>, path: string, body: Uint8Array, contentType: string): Promise<T>
+}
+
+/**
+ * The limit Koios names in its own 413, if it named one.
+ *
+ * The message is "Payload too large, body length was 6022. Please ensure your request body size
+ * is below 5120 bytes", so upstream tells us the answer and we would otherwise ignore it.
+ */
+function limitFrom413(err: unknown): number | undefined {
+  if (!(err instanceof ProviderError) || err.upstreamStatus !== 413) return undefined
+  const said = /body size is below (\d+) bytes/.exec(String(err.details))
+  const limit = said?.[1] === undefined ? NaN : Number(said[1])
+  return Number.isSafeInteger(limit) && limit > 0 ? limit : undefined
 }
 
 export function createKoiosClient(config: KoiosConfig): KoiosClient {
   const baseUrl = config.baseUrl.replace(/\/+$/, '')
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const doFetch: FetchLike = config.fetchImpl ?? (globalThis.fetch as unknown as FetchLike)
+  // Not a constant, because upstream may tell us it is smaller. See batchAll.
+  let bodyLimit = config.bodyLimitBytes ?? KOIOS_BODY_LIMIT_BYTES
   const readAttempts = Math.max(1, config.readAttempts ?? DEFAULT_READ_ATTEMPTS)
   const backoffMs = config.retryBackoffMs ?? DEFAULT_BACKOFF_MS
   const delay =
@@ -225,6 +270,17 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
     }
   }
 
+  function batch<T>(schema: z.ZodType<T>, path: string, body: unknown): Promise<T> {
+    return read(path, async () => {
+      const data = await request(path, {
+        method: 'POST',
+        body: JSON.stringify(body),
+        contentType: 'application/json',
+      })
+      return parse(schema, data, path)
+    })
+  }
+
   return {
     get<T>(schema: z.ZodType<T>, path: string): Promise<T> {
       return read(path, async () => parse(schema, await request(path), path))
@@ -240,15 +296,41 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
       })
     },
 
-    batch<T>(schema: z.ZodType<T>, path: string, body: unknown): Promise<T> {
-      return read(path, async () => {
-        const data = await request(path, {
-          method: 'POST',
-          body: JSON.stringify(body),
-          contentType: 'application/json',
-        })
-        return parse(schema, data, path)
-      })
+    batch,
+
+    async batchAll<Row, Item>(
+      rowSchema: z.ZodType<Row>,
+      path: string,
+      items: Item[],
+      toBody: (chunk: Item[]) => unknown,
+    ): Promise<Row[]> {
+      if (items.length === 0) return []
+
+      const send = async (): Promise<Row[]> => {
+        const chunks = packBySize(items, toBody, bodyLimit)
+        const perChunk = await Promise.all(
+          chunks.map((chunk) => batch(z.array(rowSchema), path, toBody(chunk))),
+        )
+        return perChunk.flat()
+      }
+
+      try {
+        return await send()
+      } catch (err) {
+        // A 413 is not retried as a transient failure, and rightly so: the same body will be
+        // rejected by every instance. But if upstream named a *smaller* limit than we packed to,
+        // that is not a failure to retry, it is a fact to learn. Lower the budget, repack, and go
+        // once more. Only once: a second 413 after adopting upstream's own number means something
+        // is wrong that another attempt will not fix.
+        const said = limitFrom413(err)
+        if (said === undefined || said >= bodyLimit) throw err
+        bodyLimit = said
+        return send()
+      }
+    },
+
+    get bodyLimit(): number {
+      return bodyLimit
     },
 
     async submit<T>(

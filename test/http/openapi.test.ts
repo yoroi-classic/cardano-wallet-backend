@@ -4,6 +4,7 @@ import { bech32 } from '@scure/base'
 import { describe, expect, it } from 'vitest'
 import { openapi } from '../../src/http/openapi.js'
 import { buildServer } from '../../src/http/server.js'
+import { createNftcdnSigner } from '../../src/media/nftcdn.js'
 import type { ChainProvider } from '../../src/providers/provider.js'
 import { fakeProvider } from '../support/fake-provider.js'
 
@@ -130,7 +131,13 @@ describe('real responses validate against the schemas the spec publishes', () =>
   }
 
   it('GET /v1/chain/tip', async () => {
-    const tip = { block: 3_500_000, slot: 86_400_123, epoch: 199, hash: 'aa'.repeat(32) }
+    const tip = {
+      block: 3_500_000,
+      slot: 86_400_123,
+      epoch: 199,
+      hash: 'aa'.repeat(32),
+      blockTime: 1_700_000_000,
+    }
     const res = await get({ getTip: async () => tip }, '/v1/chain/tip')
 
     expect(res.statusCode).toBe(200)
@@ -305,6 +312,135 @@ describe('real responses validate against the schemas the spec publishes', () =>
 
     expect(res.statusCode).toBe(200)
     expect(res.body).toEqual({ txHash: TX_HASH })
+  })
+
+  it('GET /v1/status', async () => {
+    const res = await get(
+      {
+        getTip: async () => ({
+          block: 3_500_000,
+          slot: 86_400_123,
+          epoch: 199,
+          hash: 'aa'.repeat(32),
+          blockTime: Math.floor(Date.now() / 1000) - 20,
+        }),
+      },
+      '/v1/status',
+    )
+
+    expect(res.statusCode).toBe(200)
+    expect(validate('Status', res.body)).toEqual([])
+  })
+
+  // A `chain: "down"` still comes back as a 200, and the schema has to allow a null tip, or a
+  // client validating against the spec would reject the exact response it needs most.
+  it('GET /v1/status when the chain source is unreachable', async () => {
+    const res = await get(
+      {
+        getTip: async () => {
+          throw new Error('koios is unreachable')
+        },
+      },
+      '/v1/status',
+    )
+
+    expect(res.statusCode).toBe(200)
+    expect(validate('Status', res.body)).toEqual([])
+    expect((res.body as { chain: string }).chain).toBe('down')
+  })
+
+  it('GET /v1/account/{stake}/rewards', async () => {
+    const res = await get(
+      {
+        getRewardHistory: async () => [
+          {
+            earnedEpoch: 30,
+            spendableEpoch: 32,
+            amount: '390098844',
+            kind: 'member' as const,
+            poolId: POOL,
+          },
+          // A treasury payout has no pool, so poolId is absent rather than an empty string.
+          { earnedEpoch: 31, spendableEpoch: 33, amount: '1', kind: 'treasury' as const },
+        ],
+      },
+      `/v1/account/${STAKE}/rewards`,
+    )
+
+    expect(res.statusCode).toBe(200)
+    eachMatches('AccountReward', res.body)
+  })
+
+  it('POST /v1/tx/utxos', async () => {
+    const res = await post(
+      {
+        getUtxosByRef: async () => [
+          {
+            txHash: TX_HASH,
+            outputIndex: 0,
+            address: 'addr_test1x',
+            value: '9999999999999999999', // over 2^53 on purpose
+            assets: [{ policyId: POLICY, assetName: '', quantity: '1' }],
+            spent: true,
+          },
+        ],
+      },
+      '/v1/tx/utxos',
+      { refs: [`${TX_HASH}#0`] },
+    )
+
+    expect(res.statusCode).toBe(200)
+    eachMatches('ResolvedUtxo', res.body)
+    // The field the endpoint exists for, and the one the spec tells clients to check before
+    // using an output as collateral.
+    expect((res.body as { spent: boolean }[])[0]?.spent).toBe(true)
+  })
+
+  it('POST /v1/assets/media', async () => {
+    const app = await buildServer({
+      provider: fakeProvider(),
+      nftcdn: createNftcdnSigner({
+        subdomain: 'preprod',
+        secretKeyBase64: '7FoxfBgV2k+RSz6UUts3/fG1edG7oIGXxdtIVCdalaI=',
+      }),
+    })
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/assets/media',
+      payload: { fingerprints: ['asset1cpfcfxay6s73xez8srvhf0pydtd9yqs8hyfawv'], size: 720 },
+    })
+    await app.close()
+
+    expect(res.statusCode).toBe(200)
+    eachMatches('AssetMedia', res.json())
+    // The spec says the response reports the size *actually served*, and that 720 is not one the
+    // provider has. If that stopped being true, a client laying out against `size` would be wrong.
+    expect(res.json()[0].size).toBe(1024)
+  })
+
+  // The price surface has no 200 to validate, which is the point of it. What must hold is that its
+  // 501 is the same error envelope as everything else, so an adapter needs no special case.
+  it.each([
+    ['GET', '/v1/price/ada?currencies=USD', undefined],
+    ['POST', '/v1/price/tokens', { subjects: ['aa'] }],
+  ])('%s %s answers the documented 501 envelope', async (method, url, payload) => {
+    const res = await call({}, method as 'GET' | 'POST', url, payload)
+
+    expect(res.statusCode).toBe(501)
+    expect(validate('Error', res.body)).toEqual([])
+    expect((res.body as { error: { code: string } }).error.code).toBe('NOT_IMPLEMENTED')
+  })
+
+  // Distinct from the 501 above: this one is fixable by supplying a credential, and a client
+  // should degrade rather than abandon the endpoint. Same envelope, different code.
+  it('POST /v1/assets/media answers the documented 503 when unconfigured', async () => {
+    const res = await post({}, '/v1/assets/media', {
+      fingerprints: ['asset1cpfcfxay6s73xez8srvhf0pydtd9yqs8hyfawv'],
+    })
+
+    expect(res.statusCode).toBe(503)
+    expect(validate('Error', res.body)).toEqual([])
+    expect((res.body as { error: { code: string } }).error.code).toBe('FEATURE_UNAVAILABLE')
   })
 
   // The error envelope is the same everywhere, and the spec says so on every endpoint. If it were

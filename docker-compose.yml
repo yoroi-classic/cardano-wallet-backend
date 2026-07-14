@@ -1,0 +1,29 @@
+# A preprod deployment, close enough to production to be worth testing against.
+#
+# `docker compose up -d` and the API is on :3010. Point the extension and the mobile build at it
+# and see what breaks; that is the whole purpose of this file.
+services:
+  backend:
+    build: .
+    image: cardano-wallet-backend:local
+    restart: unless-stopped
+    ports:
+      - '${PORT:-3010}:3010'
+    environment:
+      NETWORK: ${NETWORK:-preprod}
+      PROVIDER: ${PROVIDER:-koios}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      # A Koios token raises the upstream rate limit. Free tier works without one.
+      KOIOS_TOKEN: ${KOIOS_TOKEN:-}
+      CACHE_ENABLED: ${CACHE_ENABLED:-true}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-120}
+      RATE_LIMIT_WINDOW_MS: ${RATE_LIMIT_WINDOW_MS:-60000}
+    # The image already declares a HEALTHCHECK; this only shortens the startup grace so a local
+    # `up` reports healthy quickly rather than waiting out the production start period.
+    healthcheck:
+      start_period: 5s
+    # SIGTERM, then time to drain. The app closes the server and lets in-flight requests finish
+    # (see stopGracefully in src/index.ts), so this needs to be longer than its grace period or
+    # Docker kills it mid-drain and we would have written that code for nothing.
+    stop_grace_period: 20s

@@ -59,6 +59,12 @@ const ERROR_RESPONSE = {
             'BAD_REQUEST',
             'RATE_LIMITED',
             'NOT_FOUND',
+            // Two different kinds of "not right now", and a client should act on them
+            // differently. NOT_IMPLEMENTED (501): the endpoint is reserved but unbuilt, and no
+            // configuration will change that. FEATURE_UNAVAILABLE (503): it is built, but this
+            // deployment was not given an optional credential for it (see /v1/assets/media).
+            'NOT_IMPLEMENTED',
+            'FEATURE_UNAVAILABLE',
             'CONFIG_ERROR',
             'INTERNAL',
           ],
@@ -76,6 +82,21 @@ const COMMON_ERRORS = {
   '502': { $ref: '#/components/responses/UpstreamError' },
   '504': { $ref: '#/components/responses/UpstreamTimeout' },
 } as const
+
+/**
+ * Every price endpoint carries this warning, because the shape below is a promise and the
+ * behaviour today is a 501, and a client author needs to know both.
+ */
+const PRICE_NOT_IMPLEMENTED =
+  '**NOT IMPLEMENTED YET. This endpoint answers `501`.** The path, the request and the response ' +
+  'shape are final, so an adapter can be written against them now and will start working the day ' +
+  'a market-data provider is wired behind them, with no client change.\n\n' +
+  '**It never returns a price of zero, null, or a placeholder, and it never will.** A wallet ' +
+  'handed a `0` renders a portfolio worth $0.00, and the user cannot tell "the market crashed" ' +
+  'from "the backend is unfinished". One of those is a reason to panic-sell. On a 501, render ' +
+  '"price unavailable".\n\n' +
+  'Price is the one domain here with no on-chain source: the chain does not know what ADA is ' +
+  'worth in dollars. It needs a market-data provider, and that choice is still open.'
 
 const jsonBody = (schema: object) => ({ content: { 'application/json': { schema } } })
 
@@ -108,7 +129,8 @@ export const openapi = {
     { name: 'assets', description: 'Native token and NFT metadata' },
     { name: 'pools', description: 'Stake pools' },
     { name: 'governance', description: 'DReps' },
-    { name: 'tx', description: 'Submit and status' },
+    { name: 'price', description: 'Price and market data. Reserved; every endpoint answers 501.' },
+    { name: 'tx', description: 'Submit, status, and output lookups' },
   ],
 
   paths: {
@@ -484,6 +506,285 @@ export const openapi = {
       },
     },
 
+    '/v1/status': {
+      get: {
+        tags: ['service'],
+        operationId: 'getStatus',
+        summary: 'Service status, and whether the chain data can be trusted',
+        description:
+          'For the wallet, where /health is for the orchestrator. This one *does* reach upstream.\n\n' +
+          'It answers `200` even when the chain source is unreachable, reporting `chain: "down"`. ' +
+          'That is deliberate: a client must be able to tell "the backend is unreachable" (show a ' +
+          'network error) apart from "the backend is up but its data source is not" (show a ' +
+          'maintenance notice), and a 5xx here would collapse those into one. The tip read is ' +
+          'cached, so polling this costs nothing upstream.',
+        responses: {
+          '200': jsonResponse('Status', { $ref: '#/components/schemas/Status' }),
+        },
+      },
+    },
+
+    '/v1/account/{stakeAddress}/rewards': {
+      get: {
+        tags: ['account'],
+        operationId: 'getRewardHistory',
+        summary: 'Every reward the account has earned, oldest first',
+        description:
+          'The rewards graph. The whole history rather than a total, because the total is already ' +
+          '`rewardsSum` on /v1/account/{stake}/state, and a total cannot reconstruct a shape.\n\n' +
+          '**`after` pages on `earnedEpoch`, not `spendableEpoch`.** Cardano pays rewards two ' +
+          'epochs in arrears, so the two differ by about ten days. Paging on the wrong one shifts ' +
+          'every point on the graph by that much and still looks entirely plausible.\n\n' +
+          'Never cached.',
+        parameters: [
+          { $ref: '#/components/parameters/StakeAddress' },
+          {
+            name: 'after',
+            in: 'query',
+            required: false,
+            schema: { type: 'integer', minimum: 0 },
+            description: 'Return rewards earned in epochs after this one.',
+          },
+        ],
+        responses: {
+          '200': jsonResponse('Rewards, oldest first', {
+            type: 'array',
+            items: { $ref: '#/components/schemas/AccountReward' },
+          }),
+          ...COMMON_ERRORS,
+        },
+      },
+    },
+
+    '/v1/tx/utxos': {
+      post: {
+        tags: ['tx'],
+        operationId: 'getUtxosByRef',
+        summary: 'Resolve transaction outputs by reference',
+        description:
+          'A different question from /v1/account/{stake}/utxos, which asks "what does this wallet ' +
+          'control" and so only ever answers with **unspent** outputs. This asks "what is at this ' +
+          'reference", and the answer says whether it is still there.\n\n' +
+          '**That `spent` flag is the point of the endpoint.** Collateral must be an unspent ' +
+          'output: a wallet that reuses one it set aside earlier, without re-checking, builds a ' +
+          'transaction the node rejects and the user sees an unexplained failure. A dApp connector ' +
+          "resolving a transaction's inputs needs to see them whether or not they survive.\n\n" +
+          'References that are not on chain are simply absent from the result, so it can be ' +
+          'shorter than the request. Order follows the input. Never cached.',
+        requestBody: jsonBody({
+          type: 'object',
+          required: ['refs'],
+          properties: {
+            refs: {
+              type: 'array',
+              items: {
+                type: 'string',
+                pattern: '^[0-9a-fA-F]{64}#\\d{1,5}$',
+                description: 'An output reference: `<txHash>#<outputIndex>`.',
+              },
+              minItems: 1,
+              maxItems: 100,
+            },
+          },
+        }),
+        responses: {
+          '200': jsonResponse('Resolved outputs, in input order, unknown refs omitted', {
+            type: 'array',
+            items: { $ref: '#/components/schemas/ResolvedUtxo' },
+          }),
+          ...COMMON_ERRORS,
+        },
+      },
+    },
+
+    '/v1/assets/media': {
+      post: {
+        tags: ['assets'],
+        operationId: 'getAssetMedia',
+        summary: 'Signed, resized media URLs for a batch of assets',
+        description:
+          '**Use this for a gallery, not the redirect below.** One call covers up to 100 assets. ' +
+          'A redirect per tile would mean one request to us for every thumbnail on the screen, ' +
+          'which at the default anonymous rate limit means a single scroll very nearly exhausts a ' +
+          "user's whole budget, and it puts us in the path of every image for no purpose.\n\n" +
+          'The signing key never leaves the backend: a key shipped inside an app or extension ' +
+          'would be extracted within the hour, and whoever pulled it could serve their own ' +
+          'bandwidth on our account.\n\n' +
+          'The provider serves **powers of two only** (32 to 1024). A requested `size` is rounded ' +
+          '**up** to one that exists (so 720, which the wallets ask for, becomes 1024), and the ' +
+          'response reports the size *actually served* so a client can lay out against real ' +
+          'dimensions. Rounding down would hand you an image to upscale, and the user would see a ' +
+          'blurry tile and conclude the wallet is broken.\n\n' +
+          'Answers `503 FEATURE_UNAVAILABLE` when the deployment has no media credential. The raw ' +
+          'on-chain image URI is still on /v1/assets/info, and a client may resolve it through a ' +
+          'gateway of its own.',
+        requestBody: jsonBody({
+          type: 'object',
+          required: ['fingerprints'],
+          properties: {
+            fingerprints: {
+              type: 'array',
+              items: { type: 'string', pattern: '^asset1[0-9a-z]+$' },
+              minItems: 1,
+              maxItems: 100,
+              description: 'CIP-14 asset fingerprints.',
+            },
+            size: {
+              type: 'integer',
+              minimum: 1,
+              maximum: 4096,
+              description: 'Omit for the original, which may be large, animated, or an SVG.',
+            },
+          },
+        }),
+        responses: {
+          '200': jsonResponse('Signed media URLs, in input order', {
+            type: 'array',
+            items: { $ref: '#/components/schemas/AssetMedia' },
+          }),
+          '503': { $ref: '#/components/responses/FeatureUnavailable' },
+          ...COMMON_ERRORS,
+        },
+      },
+    },
+
+    '/v1/assets/{fingerprint}/image': {
+      get: {
+        tags: ['assets'],
+        operationId: 'getAssetImage',
+        summary: 'Redirect to a signed, resized image',
+        description:
+          'A convenience for a **single** asset (a detail screen, a link preview), where being ' +
+          'able to drop a stable URL into an `<img src>` is worth one extra hop.\n\n' +
+          '**Do not use this for a gallery.** Use POST /v1/assets/media, which signs a hundred at ' +
+          'once. See the note there.\n\n' +
+          'A `302`, never a `301`: the signature is temporary and dies with the key, and a client ' +
+          'that cached a permanent redirect would show a broken image long after a key rotation.',
+        parameters: [
+          {
+            name: 'fingerprint',
+            in: 'path',
+            required: true,
+            schema: { type: 'string', pattern: '^asset1[0-9a-z]+$' },
+          },
+          {
+            name: 'size',
+            in: 'query',
+            required: false,
+            schema: { type: 'integer', minimum: 1, maximum: 4096 },
+            description: 'Rounded up to a size the provider serves. See POST /v1/assets/media.',
+          },
+        ],
+        responses: {
+          '302': { description: 'Redirect to the signed media URL' },
+          '503': { $ref: '#/components/responses/FeatureUnavailable' },
+          ...COMMON_ERRORS,
+        },
+      },
+    },
+
+    '/v1/price/ada': {
+      get: {
+        tags: ['price'],
+        operationId: 'getAdaPrice',
+        summary: 'ADA price, in each requested currency',
+        description: PRICE_NOT_IMPLEMENTED,
+        parameters: [
+          {
+            name: 'currencies',
+            in: 'query',
+            required: true,
+            schema: { type: 'string' },
+            description: 'Comma-separated currency codes, e.g. `USD,EUR,JPY`. 1 to 20.',
+          },
+        ],
+        responses: {
+          '200': jsonResponse('The quote', { $ref: '#/components/schemas/AdaPrice' }),
+          '501': { $ref: '#/components/responses/NotImplemented' },
+          ...COMMON_ERRORS,
+        },
+      },
+    },
+
+    '/v1/price/ada/history': {
+      get: {
+        tags: ['price'],
+        operationId: 'getAdaPriceHistory',
+        summary: 'ADA price history, as candles',
+        description: PRICE_NOT_IMPLEMENTED,
+        parameters: [
+          {
+            name: 'range',
+            in: 'query',
+            schema: { type: 'string', enum: ['1d', '1w', '1m', '6m', '1y', 'all'], default: '1m' },
+          },
+          { name: 'currency', in: 'query', schema: { type: 'string', default: 'USD' } },
+        ],
+        responses: {
+          '200': jsonResponse('Candles, oldest first', {
+            type: 'array',
+            items: { $ref: '#/components/schemas/Ohlc' },
+          }),
+          '501': { $ref: '#/components/responses/NotImplemented' },
+          ...COMMON_ERRORS,
+        },
+      },
+    },
+
+    '/v1/price/tokens': {
+      post: {
+        tags: ['price'],
+        operationId: 'getTokenActivity',
+        summary: 'Price and activity for a batch of native tokens',
+        description: PRICE_NOT_IMPLEMENTED,
+        requestBody: jsonBody({
+          type: 'object',
+          required: ['subjects'],
+          properties: {
+            subjects: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 100 },
+            window: { type: 'string', enum: ['24h', '7d', '30d'], default: '24h' },
+          },
+        }),
+        responses: {
+          '200': jsonResponse('Activity, in input order', {
+            type: 'array',
+            items: { $ref: '#/components/schemas/TokenActivity' },
+          }),
+          '501': { $ref: '#/components/responses/NotImplemented' },
+          ...COMMON_ERRORS,
+        },
+      },
+    },
+
+    '/v1/price/tokens/history': {
+      post: {
+        tags: ['price'],
+        operationId: 'getTokenPriceHistory',
+        summary: 'Price history for one native token, as candles',
+        description: PRICE_NOT_IMPLEMENTED,
+        requestBody: jsonBody({
+          type: 'object',
+          required: ['subject'],
+          properties: {
+            subject: { type: 'string', description: 'policyId + assetNameHex' },
+            range: {
+              type: 'string',
+              enum: ['1d', '1w', '1m', '6m', '1y', 'all'],
+              default: '1m',
+            },
+          },
+        }),
+        responses: {
+          '200': jsonResponse('Candles, oldest first', {
+            type: 'array',
+            items: { $ref: '#/components/schemas/Ohlc' },
+          }),
+          '501': { $ref: '#/components/responses/NotImplemented' },
+          ...COMMON_ERRORS,
+        },
+      },
+    },
+
     '/v1/openapi.json': {
       get: {
         tags: ['service'],
@@ -515,19 +816,187 @@ export const openapi = {
         ERROR_RESPONSE,
       ),
       UpstreamTimeout: jsonResponse('The chain data source did not answer in time', ERROR_RESPONSE),
+      NotImplemented: jsonResponse(
+        'Reserved but not built yet. Never a fake value: render the field as unavailable.',
+        ERROR_RESPONSE,
+      ),
+      FeatureUnavailable: jsonResponse(
+        'Built, but this deployment has no credential for the optional upstream it needs. ' +
+          'Degrade (a placeholder image) rather than retrying or abandoning the endpoint.',
+        ERROR_RESPONSE,
+      ),
     },
 
     schemas: {
       Error: ERROR_RESPONSE,
 
+      Status: {
+        type: 'object',
+        required: ['version', 'network', 'provider', 'chain'],
+        properties: {
+          version: { type: 'string', description: 'Which build you are talking to.' },
+          network: {
+            type: 'string',
+            enum: ['mainnet', 'preprod', 'preview', 'unknown'],
+            description: 'A wallet pointed at the wrong network must be able to find out.',
+          },
+          provider: { type: 'string', description: 'The upstream chain-data source.' },
+          chain: {
+            type: 'string',
+            enum: ['ok', 'stale', 'down'],
+            description:
+              '`ok`: fresh enough to build a transaction against. `stale`: reachable but lagging. ' +
+              '`down`: unreachable. A `down` still comes back as HTTP 200, so a client can tell ' +
+              'this apart from the backend itself being unreachable.',
+          },
+          behindSeconds: {
+            type: 'integer',
+            description: 'How far behind the tip is, from the block time. Absent when chain: down.',
+          },
+          tip: {
+            description: 'Null when the chain source is unreachable.',
+            oneOf: [{ $ref: '#/components/schemas/Tip' }, { type: 'null' }],
+          },
+        },
+      },
+
+      AccountReward: {
+        type: 'object',
+        required: ['earnedEpoch', 'spendableEpoch', 'amount', 'kind'],
+        properties: {
+          earnedEpoch: {
+            type: 'integer',
+            description:
+              'The epoch the reward was earned *for*. This is the axis to plot a graph against, ' +
+              'and the cursor `?after=` pages on.',
+          },
+          spendableEpoch: {
+            type: 'integer',
+            description:
+              'The epoch it became withdrawable: `earnedEpoch + 2` on the current protocol. ' +
+              'Both are here because a graph wants the first and a balance projection wants the ' +
+              'second, and they are ten days apart.',
+          },
+          amount: LOVELACE,
+          kind: {
+            type: 'string',
+            enum: ['member', 'leader', 'treasury', 'reserves', 'refund'],
+            description:
+              "`member` is a delegator share; `leader` is the pool operator's cut. An operator " +
+              'can receive both in the same epoch from the same pool, which is why this is a list ' +
+              'rather than a map keyed by epoch.',
+          },
+          poolId: {
+            type: 'string',
+            description:
+              'The pool that paid it. Absent for treasury, reserves and refunds, which no pool ' +
+              'paid.',
+          },
+        },
+      },
+
+      ResolvedUtxo: {
+        type: 'object',
+        required: ['txHash', 'outputIndex', 'address', 'value', 'assets', 'spent'],
+        properties: {
+          txHash: HEX(32, 'The transaction that created this output'),
+          outputIndex: { type: 'integer', minimum: 0 },
+          address: { type: 'string' },
+          value: LOVELACE,
+          assets: { type: 'array', items: { $ref: '#/components/schemas/Asset' } },
+          datumHash: { type: 'string' },
+          inlineDatum: { type: 'string', description: 'CBOR hex, when the output carries one.' },
+          referenceScriptHash: { type: 'string' },
+          spent: {
+            type: 'boolean',
+            description:
+              'Whether the output has since been consumed. **Check this before using an output as ' +
+              'collateral.** A spent one builds a transaction the node rejects, and the user sees ' +
+              'an unexplained failure.',
+          },
+        },
+      },
+
+      AssetMedia: {
+        type: 'object',
+        required: ['fingerprint', 'image', 'metadata'],
+        properties: {
+          fingerprint: { type: 'string', pattern: '^asset1[0-9a-z]+$' },
+          size: {
+            type: 'integer',
+            enum: [32, 64, 128, 256, 512, 1024],
+            description:
+              'The size **actually served**, which is not always the size asked for: the provider ' +
+              'serves powers of two, and a request is rounded up. Absent when no size was asked ' +
+              'for (the original). Lay out against this, not against what you requested.',
+          },
+          image: { type: 'string', description: 'A signed, time-limited URL. Do not cache it.' },
+          metadata: { type: 'string', description: 'A signed URL for the resolved metadata.' },
+        },
+      },
+
+      AdaPrice: {
+        type: 'object',
+        required: ['prices', 'changePercent24h', 'asOf'],
+        properties: {
+          prices: {
+            type: 'object',
+            additionalProperties: { type: 'number' },
+            description:
+              'Price per ADA, keyed by currency code. A JSON number, unlike every ledger amount ' +
+              'in this API: a price is not a lovelace quantity and does not need BigInt.',
+          },
+          changePercent24h: { type: 'object', additionalProperties: { type: 'number' } },
+          asOf: {
+            type: 'integer',
+            description: 'When the quote was taken, unix seconds. A stale price must look stale.',
+          },
+        },
+      },
+
+      Ohlc: {
+        type: 'object',
+        required: ['time', 'open', 'high', 'low', 'close'],
+        properties: {
+          time: { type: 'integer', description: 'Start of the candle, unix seconds.' },
+          open: { type: 'number' },
+          high: { type: 'number' },
+          low: { type: 'number' },
+          close: { type: 'number' },
+        },
+      },
+
+      TokenActivity: {
+        type: 'object',
+        required: ['subject', 'priceAda', 'changePercent', 'volumeAda'],
+        properties: {
+          subject: { type: 'string', description: 'policyId + assetNameHex.' },
+          priceAda: {
+            type: 'string',
+            description:
+              'Price in ADA, as a decimal **string** — unlike the fiat prices above. A long-tail ' +
+              'token trades at 1e-9 ADA, and a float would quietly round that away.',
+          },
+          changePercent: { type: 'number' },
+          volumeAda: { type: 'string', description: 'Volume over the window, in ADA.' },
+        },
+      },
+
       Tip: {
         type: 'object',
-        required: ['block', 'slot', 'epoch', 'hash'],
+        required: ['block', 'slot', 'epoch', 'hash', 'blockTime'],
         properties: {
           block: { type: 'integer', description: 'Block height' },
           slot: { type: 'integer', description: 'Absolute slot. NOT a unix timestamp.' },
           epoch: { type: 'integer' },
           hash: HEX(32, 'Block hash'),
+          blockTime: {
+            type: 'integer',
+            description:
+              'When the tip block was minted, unix seconds. Carried because an absolute slot is ' +
+              'NOT a timestamp: converting one needs the era boundaries of whichever network you ' +
+              'are on, and getting that wrong yields a plausible number rather than an error.',
+          },
         },
       },
 

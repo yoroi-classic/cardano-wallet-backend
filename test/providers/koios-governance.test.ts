@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { bech32 } from '@scure/base'
+import { KOIOS_BODY_LIMIT_BYTES } from '../../src/providers/koios/schema.js'
 import { createKoiosProvider, type FetchLike } from '../../src/providers/koios/index.js'
 import { MalformedUpstreamError, ProviderError } from '../../src/domain/errors.js'
 import { drepCredentialHex } from '../../src/domain/drep.js'
@@ -201,21 +202,31 @@ describe('koios getDrepInfo', () => {
 
   // Koios answers an oversized body with a 413, the same as /pool_info, so a full batch has
   // to go up in chunks.
-  it('hydrates a large batch in chunks of 50 ids', async () => {
+  it('packs a large batch against the body budget, sending each id exactly once', async () => {
     const ids = Array.from({ length: 120 }, (_, i) => syntheticDrepId(i))
     const { fetchImpl, calls } = fakeFetch(async () => [])
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
     await provider.getDrepInfo(ids)
 
-    // Both drep_info and its best-effort drep_metadata companion have to respect the cap.
+    // Both drep_info and its best-effort drep_metadata companion have to respect the cap, and
+    // drep_metadata packs itself (it keeps per-chunk failure isolation, so it cannot use
+    // batchAll). Asserting on both is what stops that second packer from drifting.
     for (const path of ['/drep_info', '/drep_metadata']) {
       const sent = calls.filter((c) => c.url.endsWith(path))
-      expect(sent, path).toHaveLength(3)
+      expect(sent.length, path).toBeGreaterThan(1)
+
+      const seen: string[] = []
       for (const call of sent) {
-        const body = (JSON.parse(String(call.body)) as { _drep_ids: string[] })._drep_ids
-        expect(body.length).toBeLessThanOrEqual(50)
+        expect(Buffer.byteLength(String(call.body)), path).toBeLessThanOrEqual(
+          KOIOS_BODY_LIMIT_BYTES,
+        )
+        seen.push(...(JSON.parse(String(call.body)) as { _drep_ids: string[] })._drep_ids)
       }
+
+      // Splitting a batch must not lose an id or send one twice: every DRep asked about is
+      // asked about exactly once, across the chunks.
+      expect(seen, path).toEqual(ids)
     }
   })
 })

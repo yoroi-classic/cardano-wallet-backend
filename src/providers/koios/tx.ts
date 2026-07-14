@@ -1,8 +1,9 @@
 import { z } from 'zod'
 import { BadRequestError, MalformedUpstreamError } from '../../domain/errors.js'
-import type { TxStatus } from '../../domain/types/transactions.js'
+import type { ResolvedUtxo, TxStatus } from '../../domain/types/transactions.js'
 import type { TxCapability } from '../capabilities/tx.js'
 import type { KoiosClient } from './client.js'
+import { assetItem, mapAssets, numeric } from './schema.js'
 
 const txStatusRow = z.object({
   tx_hash: z.string(),
@@ -11,6 +12,22 @@ const txStatusRow = z.object({
 })
 
 const txHashRow = z.string().regex(/^[0-9a-fA-F]{64}$/)
+
+const utxoRow = z.object({
+  tx_hash: z.string().regex(/^[0-9a-fA-F]{64}$/),
+  tx_index: z.number().int().nonnegative(),
+  address: z.string(),
+  value: numeric,
+  asset_list: z.array(assetItem).nullish(),
+  datum_hash: z.string().nullish(),
+  inline_datum: z.object({ bytes: z.string() }).nullish(),
+  reference_script: z.object({ hash: z.string() }).nullish(),
+  // Strict, and deliberately not defaulted. This is the field the whole endpoint exists for: a
+  // wallet that offers a *spent* output as collateral builds a transaction the node rejects, and
+  // the user sees a failure with no explanation. Reading a missing value as "unspent" would be
+  // guessing, in the direction that breaks things.
+  is_spent: z.boolean(),
+})
 
 export function createTxMethods(koios: KoiosClient): TxCapability {
   return {
@@ -36,7 +53,7 @@ export function createTxMethods(koios: KoiosClient): TxCapability {
       // Match the row to the hash we asked about rather than trusting rows[0]. A
       // mismatched response would otherwise report another transaction's confirmations as
       // this one's, which for a wallet means telling someone a payment landed when it did
-      // not. No rows at all is legitimate: the transaction simply isn't on chain yet.
+      // not. No rows at all is legitimate: the transaction isn't on chain yet.
       const row = rows.find((r) => r.tx_hash === hash)
       if (rows.length > 0 && row === undefined) {
         throw new MalformedUpstreamError('koios returned tx_status rows for a different tx')
@@ -44,6 +61,41 @@ export function createTxMethods(koios: KoiosClient): TxCapability {
 
       const confirmations = row?.num_confirmations ?? null
       return { seen: confirmations !== null, confirmations: confirmations ?? 0 }
+    },
+
+    async getUtxosByRef(refs: string[]): Promise<ResolvedUtxo[]> {
+      if (refs.length === 0) return []
+
+      // Packed against Koios's real body limit rather than a guessed count. `_extended` is what
+      // makes Koios return the asset list and the datum at all, and it is part of the body that
+      // batchAll measures: without it, a dApp connector resolving an input would see a bare
+      // lovelace value and none of the tokens actually sitting on the output.
+      const rows = await koios.batchAll(utxoRow, '/utxo_info', refs, (chunk) => ({
+        _utxo_refs: chunk,
+        _extended: true,
+      }))
+      const byRef = new Map(rows.map((row) => [`${row.tx_hash}#${row.tx_index}`, row]))
+
+      // The caller's order, and references that are not on chain are simply absent rather than
+      // being an error: asking about an output that never existed, or has been rolled back, is a
+      // legitimate question with the answer "nothing here".
+      return refs.flatMap((ref) => {
+        const row = byRef.get(ref.toLowerCase())
+        if (row === undefined) return []
+        return [
+          {
+            txHash: row.tx_hash,
+            outputIndex: row.tx_index,
+            address: row.address,
+            value: String(row.value),
+            assets: mapAssets(row.asset_list),
+            datumHash: row.datum_hash ?? undefined,
+            inlineDatum: row.inline_datum?.bytes ?? undefined,
+            referenceScriptHash: row.reference_script?.hash ?? undefined,
+            spent: row.is_spent,
+          },
+        ]
+      })
     },
   }
 }

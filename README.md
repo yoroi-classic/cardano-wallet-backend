@@ -55,6 +55,7 @@ The summary:
 | ------ | --------------------------- | ---------------------------------------------------------------------------- |
 | GET    | `/health`                   | liveness, no upstream call                                                   |
 | GET    | `/v1/status`                | `{ version, network, provider, chain, behindSeconds, tip }`                  |
+| GET    | `/v1/config`                | client remote config (feature flags, dApp list), served from our own fork    |
 | GET    | `/v1/chain/tip`             | `{ block, slot, epoch, hash, blockTime }`                                    |
 | GET    | `/v1/chain/protocol-params` | normalized protocol parameters incl. cost models                             |
 | GET    | `/v1/account/{stake}/state` | `{ registered, balance, rewardsAvailable, rewardsSum, withdrawalsSum, ... }` |
@@ -99,6 +100,8 @@ See `.env.example`. Key values:
 - `CACHE_ENABLED` — `true` (default) | `false`. Turn it off only to debug upstream: it exists
   because chain-wide reads are identical for every caller, and serving them from upstream on
   every request makes our load on the provider scale with our user count for no benefit.
+- `CONFIG_URL` — where client remote config is published. Defaults to **our** fork
+  (`yoroi-classic/yoroi-config`). Empty string disables `/v1/config`.
 - `CORS_ORIGINS` — `*` (default) or a comma-separated list
 - `RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW_MS` — anonymous free tier, per client IP (default 120/min).
   `0` disables the limiter, which is only correct on a private deployment.

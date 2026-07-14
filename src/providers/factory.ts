@@ -9,6 +9,12 @@ import type { ChainProvider } from './provider.js'
 export interface ProviderDeps {
   /** Called whenever an upstream read is retried, so the app can log it. */
   onRetry?: (event: RetryEvent) => void
+  /**
+   * The process cache. Passed in rather than built here so the *same* one is shared with
+   * everything else that caches (the remote config does), and so there is exactly one place that
+   * decides whether caching is on at all.
+   */
+  cache?: Cache
 }
 
 function createDriver(config: AppConfig, deps: ProviderDeps): ChainProvider {

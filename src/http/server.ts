@@ -4,6 +4,7 @@ import Fastify, { type FastifyInstance, type FastifyBaseLogger } from 'fastify'
 import { isAppError } from '../domain/errors.js'
 import type { ChainProvider } from '../providers/provider.js'
 import type { NftcdnSigner } from '../media/nftcdn.js'
+import type { RemoteConfig } from '../remote-config/index.js'
 import { serializeRequest } from './logging.js'
 import { routeRegistrars, type RouteDeps } from './routes/index.js'
 import type { StatusInfo } from './routes/status.js'
@@ -24,6 +25,8 @@ export interface BuildServerOptions {
    * the media routes answer 503 and every other endpoint works.
    */
   nftcdn?: NftcdnSigner
+  /** Remote config for the clients. Absent means /v1/config answers 503. */
+  remoteConfig?: RemoteConfig
   /** Fastify logger option. False (default) keeps tests quiet. */
   logger?: boolean | { level: string }
   /**
@@ -142,6 +145,7 @@ export async function buildServer(opts: BuildServerOptions): Promise<FastifyInst
   const deps: RouteDeps = {
     info: opts.info ?? DEFAULT_INFO,
     ...(opts.nftcdn === undefined ? {} : { nftcdn: opts.nftcdn }),
+    ...(opts.remoteConfig === undefined ? {} : { remoteConfig: opts.remoteConfig }),
   }
   for (const register of routeRegistrars) {
     register(app, opts.provider, deps)

@@ -3,8 +3,9 @@ import rateLimit from '@fastify/rate-limit'
 import Fastify, { type FastifyInstance, type FastifyBaseLogger } from 'fastify'
 import { isAppError } from '../domain/errors.js'
 import type { ChainProvider } from '../providers/provider.js'
+import type { NftcdnSigner } from '../media/nftcdn.js'
 import { serializeRequest } from './logging.js'
-import { routeRegistrars } from './routes/index.js'
+import { routeRegistrars, type RouteDeps } from './routes/index.js'
 import type { StatusInfo } from './routes/status.js'
 
 export interface RateLimitOptions {
@@ -18,6 +19,11 @@ export interface BuildServerOptions {
   provider: ChainProvider
   /** Version, network and provider, reported by `/v1/status`. */
   info?: StatusInfo
+  /**
+   * Signs NFTCDN media URLs. Absent when the deployment has no NFTCDN credential, in which case
+   * the media routes answer 503 and every other endpoint works.
+   */
+  nftcdn?: NftcdnSigner
   /** Fastify logger option. False (default) keeps tests quiet. */
   logger?: boolean | { level: string }
   /**
@@ -131,9 +137,14 @@ export async function buildServer(opts: BuildServerOptions): Promise<FastifyInst
     })
   })
 
-  const info = opts.info ?? DEFAULT_INFO
+  // One bag, so the next optional upstream is a new field rather than a fourth argument that two
+  // branches will independently add and then disagree about.
+  const deps: RouteDeps = {
+    info: opts.info ?? DEFAULT_INFO,
+    ...(opts.nftcdn === undefined ? {} : { nftcdn: opts.nftcdn }),
+  }
   for (const register of routeRegistrars) {
-    register(app, opts.provider, info)
+    register(app, opts.provider, deps)
   }
 
   return app

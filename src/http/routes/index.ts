@@ -9,6 +9,7 @@ import { registerGovernanceRoutes } from './governance.js'
 import { registerHealthRoutes } from './health.js'
 import { registerMediaRoutes } from './media.js'
 import { registerPoolRoutes } from './pools.js'
+import { registerPriceRoutes } from './price.js'
 import { registerStatusRoutes, type StatusInfo } from './status.js'
 import { registerTxRoutes } from './tx.js'
 
@@ -57,5 +58,6 @@ export const routeRegistrars: readonly RouteRegistrar[] = [
   registerAssetRoutes,
   (app, _provider, deps) => registerMediaRoutes(app, deps.nftcdn),
   registerGovernanceRoutes,
+  registerPriceRoutes,
   registerTxRoutes,
 ]

@@ -8,6 +8,10 @@ export type ErrorCode =
   | 'UPSTREAM_TIMEOUT'
   | 'UPSTREAM_MALFORMED'
   | 'BAD_REQUEST'
+  // Two different kinds of "not right now", and a client acts on them differently.
+  // NOT_IMPLEMENTED (501): we have not built it yet, and no configuration will change that.
+  // FEATURE_UNAVAILABLE (503): it is built, but this deployment lacks an optional credential.
+  | 'NOT_IMPLEMENTED'
   | 'FEATURE_UNAVAILABLE'
   | 'CONFIG_ERROR'
   | 'INTERNAL'
@@ -55,6 +59,23 @@ export class MalformedUpstreamError extends AppError {
 export class BadRequestError extends AppError {
   constructor(message: string, details?: unknown) {
     super('BAD_REQUEST', 400, message, details)
+  }
+}
+
+/**
+ * The endpoint exists in the contract but is not built yet.
+ *
+ * A distinct code, and not a 404, because the two mean opposite things to a client: a 404 says
+ * "you asked for something that does not exist, fix your call", and this says "you asked
+ * correctly, we owe you an answer". An adapter can be written against a route that answers this,
+ * and will start working the day the route does, with no client change.
+ *
+ * Not to be confused with FeatureUnavailableError below. This one no amount of configuration will
+ * fix; that one is fixed by supplying a credential.
+ */
+export class NotImplementedError extends AppError {
+  constructor(message: string) {
+    super('NOT_IMPLEMENTED', 501, message)
   }
 }
 

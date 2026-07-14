@@ -7,12 +7,12 @@ import { fakeProvider } from '../support/fake-provider.js'
 const STAKE = bech32.encode('stake_test', bech32.toWords(new Uint8Array(29)), 1023)
 const TX = 'a'.repeat(64)
 
-const serve = (overrides: Partial<ChainProvider>) =>
+const serve = async (overrides: Partial<ChainProvider>) =>
   buildServer({ provider: fakeProvider(overrides) })
 
 describe('GET /v1/account/{stake}/rewards', () => {
   it('returns the reward history', async () => {
-    const app = serve({
+    const app = await serve({
       getRewardHistory: async () => [
         { earnedEpoch: 30, spendableEpoch: 32, amount: '390098844', kind: 'member', poolId: 'p' },
       ],
@@ -29,7 +29,7 @@ describe('GET /v1/account/{stake}/rewards', () => {
 
   it('passes the after cursor through as an epoch', async () => {
     const seen: (number | undefined)[] = []
-    const app = serve({
+    const app = await serve({
       getRewardHistory: async (_stake: string, afterEpoch?: number) => {
         seen.push(afterEpoch)
         return []
@@ -48,7 +48,7 @@ describe('GET /v1/account/{stake}/rewards', () => {
     ['an empty cursor', 'after='],
     ['a negative cursor', 'after=-1'],
   ])('rejects %s', async (_case, query) => {
-    const app = serve({ getRewardHistory: async () => [] })
+    const app = await serve({ getRewardHistory: async () => [] })
 
     const res = await app.inject({ method: 'GET', url: `/v1/account/${STAKE}/rewards?${query}` })
 
@@ -57,7 +57,7 @@ describe('GET /v1/account/{stake}/rewards', () => {
   })
 
   it('rejects a stake address that is not one', async () => {
-    const app = serve({ getRewardHistory: async () => [] })
+    const app = await serve({ getRewardHistory: async () => [] })
 
     const res = await app.inject({ method: 'GET', url: '/v1/account/not-a-stake-key/rewards' })
 
@@ -77,7 +77,7 @@ describe('POST /v1/tx/utxos', () => {
   })
 
   it('resolves references and says whether each output is still there', async () => {
-    const app = serve({ getUtxosByRef: async () => [utxo(true)] })
+    const app = await serve({ getUtxosByRef: async () => [utxo(true)] })
 
     const res = await app.inject({
       method: 'POST',
@@ -94,7 +94,7 @@ describe('POST /v1/tx/utxos', () => {
 
   it('lowercases the hash before looking it up', async () => {
     const seen: string[][] = []
-    const app = serve({
+    const app = await serve({
       getUtxosByRef: async (refs: string[]) => {
         seen.push(refs)
         return []
@@ -118,7 +118,7 @@ describe('POST /v1/tx/utxos', () => {
     ['an index with no bound', `${TX}#999999`],
     ['a hash that is not hex', `${'z'.repeat(64)}#0`],
   ])('rejects %s', async (_case, ref) => {
-    const app = serve({ getUtxosByRef: async () => [] })
+    const app = await serve({ getUtxosByRef: async () => [] })
 
     const res = await app.inject({ method: 'POST', url: '/v1/tx/utxos', payload: { refs: [ref] } })
 
@@ -131,7 +131,7 @@ describe('POST /v1/tx/utxos', () => {
     ['an oversized batch', { refs: Array(101).fill(`${TX}#0`) }],
     ['a body that is not the right shape', { utxos: [`${TX}#0`] }],
   ])('rejects %s', async (_case, payload) => {
-    const app = serve({ getUtxosByRef: async () => [] })
+    const app = await serve({ getUtxosByRef: async () => [] })
 
     const res = await app.inject({ method: 'POST', url: '/v1/tx/utxos', payload })
 

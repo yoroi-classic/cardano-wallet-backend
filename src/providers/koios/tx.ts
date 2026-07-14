@@ -3,11 +3,7 @@ import { BadRequestError, MalformedUpstreamError } from '../../domain/errors.js'
 import type { ResolvedUtxo, TxStatus } from '../../domain/types/transactions.js'
 import type { TxCapability } from '../capabilities/tx.js'
 import type { KoiosClient } from './client.js'
-import { assetItem, chunked, mapAssets, numeric } from './schema.js'
-
-// Koios rejects an oversized request body with a 413. A UTxO reference is a 64-char hash plus an
-// index, so a little longer than a pool id; 50 stays well clear of the limit.
-const UTXO_REF_CHUNK = 50
+import { assetItem, mapAssets, numeric } from './schema.js'
 
 const txStatusRow = z.object({
   tx_hash: z.string(),
@@ -70,17 +66,15 @@ export function createTxMethods(koios: KoiosClient): TxCapability {
     async getUtxosByRef(refs: string[]): Promise<ResolvedUtxo[]> {
       if (refs.length === 0) return []
 
-      const byRef = new Map<string, z.infer<typeof utxoRow>>()
-      for (const chunk of chunked(refs, UTXO_REF_CHUNK)) {
-        // `_extended` is what makes Koios return the asset list and the datum, and without it a
-        // dApp connector resolving an input would see a bare lovelace value and none of the
-        // tokens actually sitting on the output.
-        const rows = await koios.batch(z.array(utxoRow), '/utxo_info', {
-          _utxo_refs: chunk,
-          _extended: true,
-        })
-        for (const row of rows) byRef.set(`${row.tx_hash}#${row.tx_index}`, row)
-      }
+      // Packed against Koios's real body limit rather than a guessed count. `_extended` is what
+      // makes Koios return the asset list and the datum at all, and it is part of the body that
+      // batchAll measures: without it, a dApp connector resolving an input would see a bare
+      // lovelace value and none of the tokens actually sitting on the output.
+      const rows = await koios.batchAll(utxoRow, '/utxo_info', refs, (chunk) => ({
+        _utxo_refs: chunk,
+        _extended: true,
+      }))
+      const byRef = new Map(rows.map((row) => [`${row.tx_hash}#${row.tx_index}`, row]))
 
       // The caller's order, and references that are not on chain are simply absent rather than
       // being an error: asking about an output that never existed, or has been rolled back, is a

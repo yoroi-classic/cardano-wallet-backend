@@ -48,4 +48,29 @@ export function registerAccountRoutes(app: FastifyInstance, provider: ChainProvi
     }
     return provider.getTxHistory(assertStakeAddress(stake), afterBlock)
   })
+
+  /**
+   * Every reward the account has earned, oldest first. This is the rewards graph.
+   *
+   * Replaces the extension's `POST /api/account/rewardHistory`.
+   *
+   * `after` pages forward on the epoch the reward was **earned for**, not the epoch it became
+   * spendable. Cardano pays two epochs in arrears, so the two differ by ten days, and paging on
+   * the wrong one shifts every point on the graph by that much while still looking plausible.
+   */
+  app.get('/v1/account/:stake/rewards', async (request) => {
+    const { stake } = request.params as { stake: string }
+    const { after } = request.query as { after?: string }
+
+    let afterEpoch: number | undefined
+    if (after !== undefined) {
+      const n = Number(after)
+      if (!/^\d+$/.test(after) || !Number.isSafeInteger(n)) {
+        throw new BadRequestError('after must be a non-negative epoch number')
+      }
+      afterEpoch = n
+    }
+
+    return provider.getRewardHistory(assertStakeAddress(stake), afterEpoch)
+  })
 }

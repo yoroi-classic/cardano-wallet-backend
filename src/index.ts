@@ -1,7 +1,60 @@
-import type { FastifyBaseLogger } from 'fastify'
+import type { FastifyBaseLogger, FastifyInstance } from 'fastify'
 import { loadConfig } from './config/index.js'
 import { createProvider } from './providers/factory.js'
 import { buildServer } from './http/server.js'
+import { version } from './version.js'
+
+/** Signals an orchestrator sends to ask a container to stop. */
+const STOP_SIGNALS = ['SIGTERM', 'SIGINT'] as const
+
+/** How long in-flight requests get to finish before the process leaves anyway. */
+const SHUTDOWN_GRACE_MS = 15_000
+
+/**
+ * Stop serving without dropping the requests already in flight.
+ *
+ * A rolling deploy sends SIGTERM and then removes the container. Without this, Node's default is
+ * to exit immediately, so every request being served at that moment dies on the wire: a wallet
+ * mid-balance-refresh gets a connection reset, and if it happened to be a submit, the caller has
+ * no idea whether the transaction went out. Closing the server first lets those finish and stops
+ * new connections being accepted.
+ *
+ * The timer is the backstop. If something is wedged, the deploy must still complete, so we leave
+ * anyway rather than hanging until the orchestrator SIGKILLs us at some less predictable moment.
+ */
+function stopGracefully(app: FastifyInstance): void {
+  let stopping = false
+
+  for (const signal of STOP_SIGNALS) {
+    process.on(signal, () => {
+      // A second signal during shutdown means someone is impatient. Honour that.
+      if (stopping) {
+        app.log.warn({ signal }, 'second stop signal, exiting now')
+        process.exit(1)
+      }
+      stopping = true
+      app.log.info({ signal }, 'stopping: draining in-flight requests')
+
+      const backstop = setTimeout(() => {
+        app.log.error({ graceMs: SHUTDOWN_GRACE_MS }, 'shutdown timed out, exiting anyway')
+        process.exit(1)
+      }, SHUTDOWN_GRACE_MS)
+      // Don't let the backstop itself hold the event loop open once we are done.
+      backstop.unref()
+
+      app
+        .close()
+        .then(() => {
+          app.log.info('stopped cleanly')
+          process.exit(0)
+        })
+        .catch((err: unknown) => {
+          app.log.error({ err }, 'error while stopping')
+          process.exit(1)
+        })
+    })
+  }
+}
 
 async function main(): Promise<void> {
   const config = loadConfig()
@@ -15,13 +68,28 @@ async function main(): Promise<void> {
   const provider = createProvider(config, {
     onRetry: (event) => log.current?.warn(event, 'retrying an upstream read'),
   })
-  const app = buildServer({ provider, logger: { level: config.logLevel } })
+
+  const app = await buildServer({
+    provider,
+    logger: { level: config.logLevel },
+    info: { version, network: config.network, provider: provider.name },
+    corsOrigins: config.corsOrigins,
+    rateLimit: config.rateLimit,
+  })
   log.current = app.log
+
+  stopGracefully(app)
 
   try {
     await app.listen({ host: config.host, port: config.port })
     app.log.info(
-      { network: config.network, provider: provider.name },
+      {
+        version,
+        network: config.network,
+        provider: provider.name,
+        cache: config.cacheEnabled,
+        rateLimit: config.rateLimit ?? 'disabled',
+      },
       `cardano-wallet-backend listening on ${config.host}:${config.port}`,
     )
   } catch (err) {

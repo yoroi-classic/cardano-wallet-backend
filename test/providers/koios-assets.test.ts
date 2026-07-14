@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createKoiosProvider, type FetchLike } from '../../src/providers/koios/index.js'
+import { KOIOS_BODY_LIMIT_BYTES } from '../../src/providers/koios/schema.js'
 import { MalformedUpstreamError } from '../../src/domain/errors.js'
 
 const BASE = 'https://preprod.koios.rest/api/v1'
@@ -492,33 +493,66 @@ describe('koios getTokenMetadata', () => {
     expect(token?.name).toBe('CIP25 Name')
   })
 
-  it('splits a large batch into multiple bounded upstream requests', async () => {
-    // 45 distinct subjects should span three chunks of 20.
-    const known: Record<string, unknown> = {}
-    const subjects: string[] = []
-    for (let i = 0; i < 45; i += 1) {
-      const policy = i.toString(16).padStart(56, '0')
-      known[policy] = {
-        policy_id: policy,
-        asset_name: '',
-        fingerprint: `asset1x${i}`,
-        total_supply: '1',
-        name: null,
-        ticker: null,
-        description: null,
-        url: null,
-        decimals: null,
-      }
-      subjects.push(policy)
+  // A subject is a 56-char policy id plus an asset name of 0 to 64 hex chars, so unlike a pool
+  // or DRep id it is *variable* length. Chunking it by a fixed count was safe only by luck: the
+  // old count of 20 happened to fit even at worst case, and nothing checked that. Packing by
+  // measured bytes is safe by construction, and these two tests are the construction: the small
+  // case fits in fewer requests than before, and the worst case still fits at all.
+  function subjectRows(subjects: string[]): Record<string, unknown> {
+    return Object.fromEntries(
+      subjects.map((subject, i) => [
+        subject,
+        {
+          policy_id: subject.slice(0, 56),
+          asset_name: subject.slice(56),
+          fingerprint: `asset1x${i}`,
+          total_supply: '1',
+          name: null,
+          ticker: null,
+          description: null,
+          url: null,
+          decimals: null,
+        },
+      ]),
+    )
+  }
+
+  function bodiesWithinBudget(calls: Call[]): void {
+    for (const call of calls) {
+      expect(Buffer.byteLength(String(call.body))).toBeLessThanOrEqual(KOIOS_BODY_LIMIT_BYTES)
     }
-    const { fetchImpl, calls } = assetFetch(known)
+  }
+
+  it('packs short subjects into far fewer requests than a fixed count did', async () => {
+    // 45 unnamed assets: policy id only. These used to span three chunks of 20; they fit in one
+    // request now, which is 3x fewer round trips for the same data.
+    const subjects = Array.from({ length: 45 }, (_, i) => i.toString(16).padStart(56, '0'))
+    const { fetchImpl, calls } = assetFetch(subjectRows(subjects))
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
     const tokens = await provider.getTokenMetadata(subjects)
 
-    expect(tokens).toHaveLength(45)
     expect(tokens.map((t) => t.subject)).toEqual(subjects)
-    expect(calls).toHaveLength(3)
+    bodiesWithinBudget(calls)
+    expect(calls).toHaveLength(1)
+  })
+
+  it('keeps worst-case subjects inside the budget and loses none of them', async () => {
+    // The case a fixed count cannot reason about: every subject carries the longest asset name
+    // the ledger allows (32 bytes, so 64 hex chars), which is more than double the short form.
+    const subjects = Array.from(
+      { length: 120 },
+      (_, i) => i.toString(16).padStart(56, '0') + i.toString(16).padStart(64, 'f'),
+    )
+    const { fetchImpl, calls } = assetFetch(subjectRows(subjects))
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const tokens = await provider.getTokenMetadata(subjects)
+
+    bodiesWithinBudget(calls)
+    expect(calls.length).toBeGreaterThan(1)
+    // Every subject asked about, exactly once, and returned in the caller's order.
+    expect(tokens.map((t) => t.subject)).toEqual(subjects)
   })
 })
 

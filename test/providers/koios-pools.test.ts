@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createKoiosProvider, type FetchLike } from '../../src/providers/koios/index.js'
+import { KOIOS_BODY_LIMIT_BYTES } from '../../src/providers/koios/schema.js'
 import { MalformedUpstreamError, ProviderError } from '../../src/domain/errors.js'
 
 const BASE = 'https://preprod.koios.rest/api/v1'
@@ -163,8 +164,12 @@ describe('koios getPoolInfo', () => {
 const ROW_B = { ...ROW_A, pool_id_bech32: POOL_B, pool_id_hex: 'b'.repeat(56), meta_json: null }
 
 // A pool id is only ever compared for equality here, so a synthetic one is enough.
+// A real bech32 pool id is 56 characters. That length is not cosmetic here: the batch packer
+// measures bytes, so a stand-in five times shorter than the real thing would make the packing
+// tests measure something that does not exist. Zero padding keeps them sorted the same way the
+// numbers are, which the keyset walk relies on.
 function poolId(n: number): string {
-  return `pool1${String(n).padStart(6, '0')}`
+  return `pool1${String(n).padStart(51, '0')}`
 }
 
 function poolRow(n: number, activeStake: string | null): Record<string, unknown> {
@@ -332,7 +337,7 @@ describe('koios getPoolList', () => {
 
   // Koios answers a /pool_info body carrying 100 ids with a 413, so a full page has to be
   // hydrated in chunks rather than one oversized request.
-  it('hydrates a large page in chunks of 50 ids', async () => {
+  it('packs a large page against the body budget rather than a fixed id count', async () => {
     const rows = Array.from({ length: 120 }, (_, i) => ({
       pool_id_bech32: poolId(i),
       active_stake: String(1000 - i),
@@ -344,11 +349,18 @@ describe('koios getPoolList', () => {
     const pools = await provider.getPoolList({ limit: 120, offset: 0 })
 
     const infoCalls = calls.filter((c) => c.url.includes('/pool_info'))
-    expect(infoCalls).toHaveLength(3)
+
+    // Every body sent is inside the limit Koios documents. This is the assertion that matters,
+    // and it is on the actual serialized bytes rather than on a count standing in for them.
     for (const call of infoCalls) {
-      const ids = (JSON.parse(String(call.body)) as { _pool_bech32_ids: string[] })._pool_bech32_ids
-      expect(ids.length).toBeLessThanOrEqual(50)
+      expect(Buffer.byteLength(String(call.body))).toBeLessThanOrEqual(KOIOS_BODY_LIMIT_BYTES)
     }
+
+    // And the budget is *used*. A pool id is fixed length, so the packing is exactly computable:
+    // 120 ids fit in two requests, where chunking by a fixed 50 needed three. That 1.5x here is
+    // the same waste that costs 1.7x on a full page.
+    expect(infoCalls).toHaveLength(2)
+
     // Every pool still comes back, in stake order, stitched across the chunks.
     expect(pools).toHaveLength(120)
     expect(pools.map((p) => p.poolId)).toEqual(rows.map((r) => r.pool_id_bech32))

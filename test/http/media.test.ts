@@ -11,7 +11,7 @@ const FP_2 = 'asset17q7r59zlc3dgw0venc80pdv566q6yguw03f0d9'
 const withMedia = () =>
   buildServer({
     provider: fakeProvider(),
-    deps: { nftcdn: createNftcdnSigner({ subdomain: 'preprod', secretKeyBase64: KEY }) },
+    nftcdn: createNftcdnSigner({ subdomain: 'preprod', secretKeyBase64: KEY }),
   })
 
 const withoutMedia = () => buildServer({ provider: fakeProvider() })
@@ -21,7 +21,7 @@ describe('POST /v1/assets/media', () => {
   // tile) would mean 100 requests to us for one screen, which at the default anonymous limit of
   // 120/min means a single scroll nearly exhausts the user's whole budget.
   it('signs a whole gallery in one call', async () => {
-    const app = withMedia()
+    const app = await withMedia()
 
     const res = await app.inject({
       method: 'POST',
@@ -45,7 +45,7 @@ describe('POST /v1/assets/media', () => {
   // powers of two and has no such size. Reporting the size actually served lets a client lay out
   // against the real dimensions rather than the ones it asked for.
   it('snaps the 720 the apps ask for, and says what it served', async () => {
-    const app = withMedia()
+    const app = await withMedia()
 
     const res = await app.inject({
       method: 'POST',
@@ -60,7 +60,7 @@ describe('POST /v1/assets/media', () => {
   })
 
   it('serves the original when no size is asked for', async () => {
-    const app = withMedia()
+    const app = await withMedia()
 
     const res = await app.inject({
       method: 'POST',
@@ -77,7 +77,7 @@ describe('POST /v1/assets/media', () => {
   // The whole reason the signing lives on the server. A client that could see the key could be
   // decompiled, and whoever pulled it would serve their own bandwidth on our account.
   it('never leaks the signing key', async () => {
-    const app = withMedia()
+    const app = await withMedia()
 
     const res = await app.inject({
       method: 'POST',
@@ -99,7 +99,7 @@ describe('POST /v1/assets/media', () => {
     ['a broken checksum', 'asset1cpfcfxay6s73xez8srvhf0pydtd9yqs8hyfaww'],
     ['the wrong prefix', 'addr1qxy8p07'],
   ])('rejects %s with a 400', async (_case, fingerprint) => {
-    const app = withMedia()
+    const app = await withMedia()
 
     const res = await app.inject({
       method: 'POST',
@@ -112,7 +112,7 @@ describe('POST /v1/assets/media', () => {
   })
 
   it('rejects a bad fingerprint even when it is hidden among good ones', async () => {
-    const app = withMedia()
+    const app = await withMedia()
 
     const res = await app.inject({
       method: 'POST',
@@ -127,7 +127,7 @@ describe('POST /v1/assets/media', () => {
   })
 
   it('bounds the batch', async () => {
-    const app = withMedia()
+    const app = await withMedia()
 
     const res = await app.inject({
       method: 'POST',
@@ -142,7 +142,7 @@ describe('POST /v1/assets/media', () => {
 
 describe('GET /v1/assets/{fingerprint}/image', () => {
   it('redirects to the signed url', async () => {
-    const app = withMedia()
+    const app = await withMedia()
 
     const res = await app.inject({ method: 'GET', url: `/v1/assets/${FP}/image?size=256` })
 
@@ -156,7 +156,7 @@ describe('GET /v1/assets/{fingerprint}/image', () => {
   // 302, not 301. A signed URL is not permanent: the token dies with the key, and a client that
   // cached a 301 would keep a dead URL forever and show a broken image long after a key rotation.
   it('is a temporary redirect, because the signature is temporary', async () => {
-    const app = withMedia()
+    const app = await withMedia()
 
     const res = await app.inject({ method: 'GET', url: `/v1/assets/${FP}/image` })
 
@@ -166,7 +166,7 @@ describe('GET /v1/assets/{fingerprint}/image', () => {
   })
 
   it('rejects a fingerprint that is not one', async () => {
-    const app = withMedia()
+    const app = await withMedia()
 
     const res = await app.inject({ method: 'GET', url: '/v1/assets/not-a-fingerprint/image' })
 
@@ -179,7 +179,7 @@ describe('GET /v1/assets/{fingerprint}/image', () => {
 // it degrades to something a client can act on rather than to a 500 or a 404.
 describe('when the deployment has no media credential', () => {
   it('answers 503 and explains the fallback', async () => {
-    const app = withoutMedia()
+    const app = await withoutMedia()
 
     const res = await app.inject({
       method: 'POST',
@@ -195,9 +195,9 @@ describe('when the deployment has no media credential', () => {
   })
 
   it('leaves every other endpoint working', async () => {
-    const app = buildServer({
+    const app = await buildServer({
       provider: fakeProvider({
-        getTip: async () => ({ block: 1, slot: 2, epoch: 3, hash: 'aa' }),
+        getTip: async () => ({ block: 1, slot: 2, epoch: 3, hash: 'aa', blockTime: 1_700_000_000 }),
       }),
     })
 

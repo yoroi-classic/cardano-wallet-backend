@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createKoiosProvider, type FetchLike } from '../../src/providers/koios/index.js'
+import { KOIOS_BODY_LIMIT_BYTES } from '../../src/providers/koios/schema.js'
 import { BadRequestError, MalformedUpstreamError, ProviderError } from '../../src/domain/errors.js'
 
 const BASE = 'https://preprod.koios.rest/api/v1'
@@ -471,11 +472,15 @@ function txInfoRowFor(hash: string, block: number) {
 }
 
 describe('koios getTxHistory — upstream boundary', () => {
-  it('chunks /tx_info when the boundary block pushes the page past the batch size', async () => {
-    // 60 transactions all in the same block. The page can't be cut mid-block, so the
-    // boundary extension carries all 60 past the 50-tx page size, and a single body of 60
-    // hashes is what Koios answers with a 413.
-    const hashes = Array.from({ length: 60 }, (_, i) => String(i).padStart(2, '0'))
+  it('packs /tx_info against the body budget when the boundary block enlarges the page', async () => {
+    // 150 transactions all in the same block. The page can't be cut mid-block, so the boundary
+    // extension carries all 150 past the 50-tx page size, and a single body holding all of them
+    // is what Koios answers with a 413.
+    //
+    // Real 32-byte tx hashes, not the two-character stand-ins this test used to carry: the whole
+    // point is that the body is packed by measured bytes, so a fixture whose items are 30x
+    // smaller than the real thing would measure nothing worth measuring.
+    const hashes = Array.from({ length: 150 }, (_, i) => i.toString(16).padStart(64, 'a'))
     const accountTxs = hashes.map((h) => ({
       tx_hash: h,
       block_height: 7,
@@ -497,13 +502,21 @@ describe('koios getTxHistory — upstream boundary', () => {
 
     const txs = await provider.getTxHistory(STAKE)
 
-    expect(txs).toHaveLength(60)
+    expect(txs).toHaveLength(150)
+
     const txInfoCalls = calls.filter((c) => c.url.includes('/tx_info'))
-    expect(txInfoCalls).toHaveLength(2)
-    const batches = txInfoCalls.map(
-      (c) => (JSON.parse(String(c.body)) as { _tx_hashes: string[] })._tx_hashes.length,
-    )
-    expect(batches).toEqual([50, 10])
+    expect(txInfoCalls.length).toBeGreaterThan(1)
+
+    const sent: string[] = []
+    for (const call of txInfoCalls) {
+      // The body carries the hashes *and* the five hydration flags, and the packer measures the
+      // whole thing, so the flags cannot quietly push a chunk over the line.
+      expect(Buffer.byteLength(String(call.body))).toBeLessThanOrEqual(KOIOS_BODY_LIMIT_BYTES)
+      sent.push(...(JSON.parse(String(call.body)) as { _tx_hashes: string[] })._tx_hashes)
+    }
+
+    // A transaction dropped or duplicated by the chunking would be a hole in someone's history.
+    expect(sent).toEqual(hashes)
   })
 
   it('raises malformed upstream when /tx_info omits a requested transaction', async () => {

@@ -91,7 +91,13 @@ function drepRow(overrides: Record<string, unknown> = {}): Record<string, unknow
 }
 
 /** A tip row, for the simplest possible GET read. */
-const TIP_ROW = { hash: 'aa11', epoch_no: 199, abs_slot: 86_400_123, block_no: 3_500_000 }
+const TIP_ROW = {
+  hash: 'aa11',
+  epoch_no: 199,
+  abs_slot: 86_400_123,
+  block_no: 3_500_000,
+  block_time: 1_700_000_000,
+}
 
 // The delays are collected rather than awaited, so the backoff is asserted without a test
 // actually sleeping through it.

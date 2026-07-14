@@ -6,7 +6,13 @@ import type { ProtocolParams, Tip } from '../../src/domain/types/chain.js'
 import { ProviderError, ProviderTimeoutError } from '../../src/domain/errors.js'
 import { fakeProvider } from '../support/fake-provider.js'
 
-const TIP: Tip = { block: 3_500_000, slot: 86_400_123, epoch: 199, hash: 'aa11bb22' }
+const TIP: Tip = {
+  block: 3_500_000,
+  slot: 86_400_123,
+  epoch: 199,
+  hash: 'aa11bb22',
+  blockTime: 1_700_000_000,
+}
 
 const PARAMS: ProtocolParams = {
   epoch: 199,
@@ -49,7 +55,7 @@ afterEach(async () => {
 
 describe('chain routes — happy path', () => {
   it('GET /v1/chain/tip returns the normalized tip', async () => {
-    app = buildServer({ provider: providerWith({}) })
+    app = await buildServer({ provider: providerWith({}) })
     const res = await app.inject({ method: 'GET', url: '/v1/chain/tip' })
 
     expect(res.statusCode).toBe(200)
@@ -57,7 +63,7 @@ describe('chain routes — happy path', () => {
   })
 
   it('GET /v1/chain/protocol-params returns the normalized params (regression)', async () => {
-    app = buildServer({ provider: providerWith({}) })
+    app = await buildServer({ provider: providerWith({}) })
     const res = await app.inject({ method: 'GET', url: '/v1/chain/protocol-params' })
 
     expect(res.statusCode).toBe(200)
@@ -67,7 +73,7 @@ describe('chain routes — happy path', () => {
 
 describe('chain routes — unhappy path', () => {
   it('maps a ProviderError to 502 with a stable body', async () => {
-    app = buildServer({
+    app = await buildServer({
       provider: providerWith({
         getTip: async () => {
           throw new ProviderError('koios returned 500 for /tip', { upstreamStatus: 500 })
@@ -83,7 +89,7 @@ describe('chain routes — unhappy path', () => {
   })
 
   it('maps a ProviderTimeoutError to 504', async () => {
-    app = buildServer({
+    app = await buildServer({
       provider: providerWith({
         getTip: async () => {
           throw new ProviderTimeoutError('koios request timed out: /tip')
@@ -97,7 +103,7 @@ describe('chain routes — unhappy path', () => {
   })
 
   it('never leaks internal error detail on an unexpected throw', async () => {
-    app = buildServer({
+    app = await buildServer({
       provider: providerWith({
         getTip: async () => {
           throw new Error('secret internal detail')

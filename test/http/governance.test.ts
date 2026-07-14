@@ -42,7 +42,7 @@ afterEach(async () => {
 describe('governance drep routes', () => {
   it('GET /v1/governance/dreps returns a page with default paging', async () => {
     let seen: unknown
-    app = buildServer({
+    app = await buildServer({
       provider: providerWith({
         getDrepList: async (params) => {
           seen = params
@@ -58,7 +58,7 @@ describe('governance drep routes', () => {
   })
 
   it('rejects out-of-range paging with 400', async () => {
-    app = buildServer({ provider: providerWith({}) })
+    app = await buildServer({ provider: providerWith({}) })
     for (const q of ['limit=0', 'limit=251', 'offset=-1']) {
       const res = await app.inject({ method: 'GET', url: `/v1/governance/dreps?${q}` })
       expect(res.statusCode, q).toBe(400)
@@ -66,7 +66,7 @@ describe('governance drep routes', () => {
   })
 
   it('POST /v1/governance/dreps/info returns info for the requested dreps', async () => {
-    app = buildServer({ provider: providerWith({}) })
+    app = await buildServer({ provider: providerWith({}) })
     const res = await app.inject({
       method: 'POST',
       url: '/v1/governance/dreps/info',
@@ -78,7 +78,7 @@ describe('governance drep routes', () => {
   })
 
   it('rejects a missing or empty drepIds list with 400', async () => {
-    app = buildServer({ provider: providerWith({}) })
+    app = await buildServer({ provider: providerWith({}) })
 
     const missing = await app.inject({
       method: 'POST',
@@ -96,7 +96,7 @@ describe('governance drep routes', () => {
   })
 
   it('rejects a malformed drep id (wrong hrp) with 400 before hitting the provider', async () => {
-    app = buildServer({
+    app = await buildServer({
       provider: providerWith({
         getDrepInfo: async () => {
           throw new Error('provider should not be called for a malformed drep id')
@@ -128,7 +128,7 @@ describe('governance drep routes', () => {
     ],
     ['bad 5-bit padding', bech32.encode('drep', [...bech32.toWords(new Uint8Array(28)), 31], 1023)],
   ])('rejects a checksum-valid drep id with %s with 400', async (_case, badId) => {
-    app = buildServer({
+    app = await buildServer({
       provider: providerWith({
         getDrepInfo: async () => {
           throw new Error('provider should not be called for a malformed drep id')
@@ -152,7 +152,7 @@ describe('governance drep routes', () => {
     ['deprecated CIP-105', bech32.encode('drep', bech32.toWords(new Uint8Array(28)), 1023)],
   ])('accepts a %s drep id', async (_form, id) => {
     let seen: string[] = []
-    app = buildServer({
+    app = await buildServer({
       provider: providerWith({
         getDrepInfo: async (ids) => {
           seen = ids
@@ -181,7 +181,7 @@ describe('governance list route — paging is validated, not coerced', () => {
     ['a negative offset', '?offset=-1'],
     ['a fractional limit', '?limit=1.5'],
   ])('rejects %s with 400', async (_name, query) => {
-    app = buildServer({
+    app = await buildServer({
       provider: providerWith({
         getDrepList: async () => {
           throw new Error('provider must not be called for malformed paging')
@@ -197,7 +197,7 @@ describe('governance list route — paging is validated, not coerced', () => {
 
   it('still defaults an absent limit and offset to numbers', async () => {
     let seen: unknown
-    app = buildServer({
+    app = await buildServer({
       provider: providerWith({
         getDrepList: async (params) => {
           seen = params

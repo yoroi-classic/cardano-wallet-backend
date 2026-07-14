@@ -9,16 +9,25 @@ import { registerGovernanceRoutes } from './governance.js'
 import { registerHealthRoutes } from './health.js'
 import { registerMediaRoutes } from './media.js'
 import { registerPoolRoutes } from './pools.js'
+import { registerStatusRoutes, type StatusInfo } from './status.js'
 import { registerTxRoutes } from './tx.js'
 
 /**
  * Everything a route module might need beyond the chain provider.
  *
- * Optional, because these are optional upstreams: a deployment with no NFTCDN credential still
- * serves every chain read, and only the media routes degrade (to a 503 that says why).
+ * One bag rather than a growing list of positional parameters, and that is not a style
+ * preference. Two branches independently added a *third* argument to the registrar signature (one
+ * passed the service info for `/v1/status`, the other an NFTCDN signer for the media routes), and
+ * they collided in a way git could not resolve, because each was correct and they disagreed. A
+ * bag makes the next such addition a new optional field that nothing else has to notice.
  */
 export interface RouteDeps {
-  /** Signs NFTCDN media URLs. Absent when the deployment has no NFTCDN credential. */
+  /** Version, network and provider, for `/v1/status`. */
+  info: StatusInfo
+  /**
+   * Signs NFTCDN media URLs. Absent when the deployment has no NFTCDN credential, in which case
+   * every chain read still works and only the media routes degrade, to a 503 that says why.
+   */
   nftcdn?: NftcdnSigner
 }
 
@@ -40,6 +49,7 @@ export type RouteRegistrar = (
  */
 export const routeRegistrars: readonly RouteRegistrar[] = [
   registerHealthRoutes,
+  (app, provider, deps) => registerStatusRoutes(app, provider, deps.info),
   registerChainRoutes,
   registerAccountRoutes,
   registerAddressRoutes,

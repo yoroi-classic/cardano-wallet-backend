@@ -97,3 +97,22 @@ export interface TxStatus {
   /** Number of confirmations (blocks on top), 0 if seen but not yet confirmed. */
   confirmations: number
 }
+
+/**
+ * A UTxO resolved by its output reference, rather than by who controls it.
+ *
+ * The extra field over `Utxo` is `spent`, and it is the whole reason this type exists. The UTxOs
+ * on `/v1/account/{stake}/utxos` are unspent by construction: that endpoint answers "what does
+ * this wallet control", and a spent output is not controlled by anyone. A lookup *by reference*
+ * is a different question, asked by a dApp connector resolving a transaction's inputs or by a
+ * wallet checking a collateral input it set aside earlier, and for those the answer "this exists
+ * but is gone" is the important one.
+ *
+ * Omitting it would be worse than useless. Collateral has to be an unspent, pure-ADA output; a
+ * wallet that offered a spent one would build a transaction the node rejects, and the user would
+ * see a failure with no explanation.
+ */
+export interface ResolvedUtxo extends Utxo {
+  /** Whether the output has since been consumed. An unspent output is the usable one. */
+  spent: boolean
+}

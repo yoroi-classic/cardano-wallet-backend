@@ -22,7 +22,7 @@ afterEach(async () => {
 
 describe('tx submit', () => {
   it('POST /v1/tx/submit returns the tx hash', async () => {
-    app = buildServer({ provider: providerWith({}) })
+    app = await buildServer({ provider: providerWith({}) })
     const res = await app.inject({
       method: 'POST',
       url: '/v1/tx/submit',
@@ -34,7 +34,7 @@ describe('tx submit', () => {
   })
 
   it('rejects a missing or non-hex cbor with 400', async () => {
-    app = buildServer({ provider: providerWith({}) })
+    app = await buildServer({ provider: providerWith({}) })
 
     const missing = await app.inject({ method: 'POST', url: '/v1/tx/submit', payload: {} })
     expect(missing.statusCode).toBe(400)
@@ -56,7 +56,7 @@ describe('tx submit', () => {
   })
 
   it('maps a provider rejection to 502', async () => {
-    app = buildServer({
+    app = await buildServer({
       provider: providerWith({
         submitTx: async () => {
           throw new ProviderError('rejected by node', { upstreamStatus: 400 })
@@ -75,7 +75,7 @@ describe('tx submit', () => {
 
 describe('tx status', () => {
   it('GET /v1/tx/:hash/status returns confirmation status', async () => {
-    app = buildServer({ provider: providerWith({}) })
+    app = await buildServer({ provider: providerWith({}) })
     const res = await app.inject({ method: 'GET', url: `/v1/tx/${TX_HASH}/status` })
 
     expect(res.statusCode).toBe(200)
@@ -83,7 +83,7 @@ describe('tx status', () => {
   })
 
   it('rejects a malformed tx hash with 400', async () => {
-    app = buildServer({ provider: providerWith({}) })
+    app = await buildServer({ provider: providerWith({}) })
     const res = await app.inject({ method: 'GET', url: '/v1/tx/nothash/status' })
 
     expect(res.statusCode).toBe(400)

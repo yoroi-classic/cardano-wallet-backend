@@ -40,7 +40,7 @@ afterEach(async () => {
 
 describe('account routes', () => {
   it('GET /v1/account/:stake/state returns account state', async () => {
-    app = buildServer({ provider: providerWith({}) })
+    app = await buildServer({ provider: providerWith({}) })
     const res = await app.inject({ method: 'GET', url: `/v1/account/${STAKE}/state` })
 
     expect(res.statusCode).toBe(200)
@@ -48,7 +48,7 @@ describe('account routes', () => {
   })
 
   it('GET /v1/account/:stake/utxos returns utxos', async () => {
-    app = buildServer({ provider: providerWith({}) })
+    app = await buildServer({ provider: providerWith({}) })
     const res = await app.inject({ method: 'GET', url: `/v1/account/${STAKE}/utxos` })
 
     expect(res.statusCode).toBe(200)
@@ -57,7 +57,7 @@ describe('account routes', () => {
 
   it('rejects an invalid stake address with 400 and never calls the provider', async () => {
     let called = false
-    app = buildServer({
+    app = await buildServer({
       provider: providerWith({
         getAccountState: async () => {
           called = true
@@ -73,7 +73,7 @@ describe('account routes', () => {
   })
 
   it('rejects a stake address with a bad checksum', async () => {
-    app = buildServer({ provider: providerWith({}) })
+    app = await buildServer({ provider: providerWith({}) })
     // Flip the last character to break the bech32 checksum.
     const broken = STAKE.slice(0, -1) + (STAKE.endsWith('q') ? 'p' : 'q')
     const res = await app.inject({ method: 'GET', url: `/v1/account/${broken}/state` })
@@ -82,7 +82,7 @@ describe('account routes', () => {
   })
 
   it('maps a provider error to 502', async () => {
-    app = buildServer({
+    app = await buildServer({
       provider: providerWith({
         getAccountUtxos: async () => {
           throw new ProviderError('koios down', { upstreamStatus: 503 })
@@ -111,7 +111,7 @@ describe('account routes', () => {
         certificates: [],
       },
     ]
-    app = buildServer({ provider: providerWith({ getTxHistory: async () => TXS }) })
+    app = await buildServer({ provider: providerWith({ getTxHistory: async () => TXS }) })
     const res = await app.inject({ method: 'GET', url: `/v1/account/${STAKE}/txs` })
 
     expect(res.statusCode).toBe(200)
@@ -119,7 +119,7 @@ describe('account routes', () => {
   })
 
   it('rejects a non-numeric or empty after with 400', async () => {
-    app = buildServer({ provider: providerWith({}) })
+    app = await buildServer({ provider: providerWith({}) })
 
     const nonNumeric = await app.inject({
       method: 'GET',

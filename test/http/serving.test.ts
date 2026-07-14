@@ -1,0 +1,189 @@
+import { describe, expect, it } from 'vitest'
+import { buildServer } from '../../src/http/server.js'
+import { fakeProvider } from '../support/fake-provider.js'
+
+const TIP = { block: 3_500_000, slot: 86_400_123, epoch: 199, hash: 'aa11', blockTime: 0 }
+const INFO = { version: '1.2.3', network: 'preprod', provider: 'koios' }
+
+/** Seconds since the epoch, as the status route reads the clock. */
+const now = (): number => Math.floor(Date.now() / 1000)
+
+describe('cors', () => {
+  // The extension calls from an opaque `chrome-extension://<id>` origin that changes per build,
+  // which is why the default is a wildcard rather than an allowlist we would have to keep chasing.
+  it('lets a browser extension call the api', async () => {
+    const app = await buildServer({ provider: fakeProvider({ getTip: async () => TIP }) })
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/v1/chain/tip',
+      headers: { origin: 'chrome-extension://abcdefghijklmnop' },
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.headers['access-control-allow-origin']).toBe('*')
+    await app.close()
+  })
+
+  it('answers the preflight a browser sends before a POST', async () => {
+    const app = await buildServer({ provider: fakeProvider() })
+
+    const res = await app.inject({
+      method: 'OPTIONS',
+      url: '/v1/addresses/filter-used',
+      headers: {
+        origin: 'https://wallet.example',
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'content-type',
+      },
+    })
+
+    expect(res.statusCode).toBeLessThan(300)
+    expect(res.headers['access-control-allow-methods']).toContain('POST')
+    await app.close()
+  })
+
+  it('honours an explicit origin allowlist', async () => {
+    const app = await buildServer({
+      provider: fakeProvider({ getTip: async () => TIP }),
+      corsOrigins: ['https://allowed.example'],
+    })
+
+    const allowed = await app.inject({
+      method: 'GET',
+      url: '/v1/chain/tip',
+      headers: { origin: 'https://allowed.example' },
+    })
+    const denied = await app.inject({
+      method: 'GET',
+      url: '/v1/chain/tip',
+      headers: { origin: 'https://elsewhere.example' },
+    })
+
+    expect(allowed.headers['access-control-allow-origin']).toBe('https://allowed.example')
+    expect(denied.headers['access-control-allow-origin']).toBeUndefined()
+    await app.close()
+  })
+})
+
+describe('rate limit', () => {
+  it('serves up to the limit and then refuses, saying how long to wait', async () => {
+    const app = await buildServer({
+      provider: fakeProvider({ getTip: async () => TIP }),
+      rateLimit: { max: 3, windowMs: 60_000 },
+    })
+
+    const codes: number[] = []
+    for (let i = 0; i < 4; i += 1) {
+      const res = await app.inject({ method: 'GET', url: '/v1/chain/tip' })
+      codes.push(res.statusCode)
+    }
+
+    expect(codes).toEqual([200, 200, 200, 429])
+
+    // The refusal comes back in the same error envelope as everything else, and says how long to
+    // wait rather than leaving a client to guess and hammer.
+    const refused = await app.inject({ method: 'GET', url: '/v1/chain/tip' })
+    expect(refused.json()).toEqual({
+      error: { code: 'RATE_LIMITED', message: expect.stringContaining('retry in') },
+    })
+    await app.close()
+  })
+
+  // An instance that rate-limits its own orchestrator's liveness probe gets declared dead, which
+  // turns a traffic spike into an outage. /health is exempt for that reason and must stay so.
+  it('never rate-limits the liveness probe', async () => {
+    const app = await buildServer({
+      provider: fakeProvider(),
+      rateLimit: { max: 1, windowMs: 60_000 },
+    })
+
+    for (let i = 0; i < 5; i += 1) {
+      const res = await app.inject({ method: 'GET', url: '/health' })
+      expect(res.statusCode).toBe(200)
+    }
+    await app.close()
+  })
+
+  it('is off when no limit is configured', async () => {
+    const app = await buildServer({ provider: fakeProvider({ getTip: async () => TIP }) })
+
+    for (let i = 0; i < 10; i += 1) {
+      const res = await app.inject({ method: 'GET', url: '/v1/chain/tip' })
+      expect(res.statusCode).toBe(200)
+    }
+    await app.close()
+  })
+})
+
+describe('GET /v1/status', () => {
+  it('reports the build, the network, and a fresh chain', async () => {
+    const app = await buildServer({
+      provider: fakeProvider({ getTip: async () => ({ ...TIP, blockTime: now() - 20 }) }),
+      info: INFO,
+    })
+
+    const res = await app.inject({ method: 'GET', url: '/v1/status' })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({
+      version: '1.2.3',
+      network: 'preprod',
+      provider: 'koios',
+      chain: 'ok',
+      tip: { block: 3_500_000, epoch: 199 },
+    })
+    await app.close()
+  })
+
+  it('calls the chain stale when the tip is lagging', async () => {
+    const app = await buildServer({
+      provider: fakeProvider({ getTip: async () => ({ ...TIP, blockTime: now() - 3_600 }) }),
+      info: INFO,
+    })
+
+    const res = await app.inject({ method: 'GET', url: '/v1/status' })
+
+    expect(res.json()).toMatchObject({ chain: 'stale' })
+    expect(res.json().behindSeconds).toBeGreaterThan(3_000)
+    await app.close()
+  })
+
+  // A client has to tell "the backend is unreachable" apart from "the backend is up but its chain
+  // source is not": the first is a network error, the second is a maintenance notice. A 5xx here
+  // would collapse them into one.
+  it('answers 200 with chain: down when upstream is unreachable, not a 502', async () => {
+    const app = await buildServer({
+      provider: fakeProvider({
+        getTip: async () => {
+          throw new Error('koios is unreachable')
+        },
+      }),
+      info: INFO,
+    })
+
+    const res = await app.inject({ method: 'GET', url: '/v1/status' })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ network: 'preprod', chain: 'down', tip: null })
+    await app.close()
+  })
+
+  // /health is liveness for the orchestrator, so it must answer instantly and must not depend on
+  // upstream. Tying them together is how a slow provider gets a healthy fleet restarted.
+  it('leaves /health independent of upstream', async () => {
+    const app = await buildServer({
+      provider: fakeProvider({
+        getTip: async () => {
+          throw new Error('koios is unreachable')
+        },
+      }),
+    })
+
+    const res = await app.inject({ method: 'GET', url: '/health' })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ status: 'ok' })
+    await app.close()
+  })
+})

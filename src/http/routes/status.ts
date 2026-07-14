@@ -51,7 +51,11 @@ export function registerStatusRoutes(
         // should be told about rather than left to infer from a suspiciously old block.
         chain: behindSeconds <= STALE_TIP_SECONDS ? 'ok' : 'stale',
         behindSeconds,
-        tip: { block: tip.block, slot: tip.slot, epoch: tip.epoch, hash: tip.hash },
+        // The whole Tip, identical to what /v1/chain/tip returns. It used to be a hand-picked
+        // subset, which meant this API had two different objects both called "tip", one of them
+        // quietly missing `blockTime`. A client would have needed two types for one concept, and
+        // would have found out which was which by having a field come back undefined.
+        tip,
       }
     } catch {
       // Deliberately swallowed. The upstream error is already logged by the provider; what the

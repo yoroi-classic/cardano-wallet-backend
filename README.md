@@ -33,6 +33,24 @@ curl localhost:3010/v1/chain/protocol-params
 
 ## API
 
+The full contract is an OpenAPI 3.1 document, served by the instance itself:
+
+```bash
+curl localhost:3010/v1/openapi.json
+```
+
+Fetching it from the running server rather than the repository means the contract you read is, by
+construction, the one that instance implements. It is also checked against the code: a test fails
+if a route is added without being documented, if the spec documents a route that does not exist,
+or if a response stops matching the schema it publishes. `src/http/openapi.ts` is the source.
+
+**Every lovelace amount and token quantity is a decimal string, not a JSON number.** These values
+can exceed 2^53, where `JSON.parse` silently rounds: `7682048683977123456` becomes
+`7682048683977124000`, and the user is shown a wrong-but-plausible balance. Parse them with
+`BigInt`.
+
+The summary:
+
 | Method | Path                        | Returns                                                                      |
 | ------ | --------------------------- | ---------------------------------------------------------------------------- |
 | GET    | `/health`                   | liveness, no upstream call                                                   |

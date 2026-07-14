@@ -8,6 +8,7 @@ import { registerChainRoutes } from './chain.js'
 import { registerGovernanceRoutes } from './governance.js'
 import { registerHealthRoutes } from './health.js'
 import { registerMediaRoutes } from './media.js'
+import { registerOpenapiRoutes } from './openapi.js'
 import { registerPoolRoutes } from './pools.js'
 import { registerPriceRoutes } from './price.js'
 import { registerStatusRoutes, type StatusInfo } from './status.js'
@@ -50,6 +51,7 @@ export type RouteRegistrar = (
  */
 export const routeRegistrars: readonly RouteRegistrar[] = [
   registerHealthRoutes,
+  registerOpenapiRoutes,
   (app, provider, deps) => registerStatusRoutes(app, provider, deps.info),
   registerChainRoutes,
   registerAccountRoutes,

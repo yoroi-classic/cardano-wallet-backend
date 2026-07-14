@@ -26,7 +26,8 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "audit:prod": "npm audit --omit=dev --audit-level=high",
     "docker:build": "docker build -t cardano-wallet-backend:ci .",
-    "check:ci": "npm run lint && npm run format:check && npm run typecheck && npm run build && npm run test:coverage && npm run audit:prod && npm run docker:build",
+    "docker:scan": "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v \"$HOME/.cache/trivy:/root/.cache/trivy\" aquasec/trivy:latest image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 cardano-wallet-backend:ci",
+    "check:ci": "npm run lint && npm run format:check && npm run typecheck && npm run build && npm run test:coverage && npm run audit:prod && npm run docker:build && npm run docker:scan",
     "check:version": "node scripts/check-version-bump.mjs",
     "changelog:assemble": "node scripts/assemble-changelog.mjs",
     "changelog:check": "node scripts/assemble-changelog.mjs --check"

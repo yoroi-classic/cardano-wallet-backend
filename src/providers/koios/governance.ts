@@ -4,10 +4,8 @@ import { drepCredentialHex } from '../../domain/drep.js'
 import type { DrepInfo, DrepListParams } from '../../domain/types/governance.js'
 import type { GovernanceCapability } from '../capabilities/governance.js'
 import type { KoiosClient } from './client.js'
-import { chunked, numeric } from './schema.js'
+import { numeric, packBySize } from './schema.js'
 
-// A DRep id is about the same size as a pool id, and /drep_info has the same body cap.
-const DREP_INFO_CHUNK = 50
 // Koios caps a response at 1000 rows; ~1.7k DReps on mainnet today.
 const DREP_LIST_PAGE_SIZE = 1000
 const DREP_LIST_MAX_PAGES = 20
@@ -164,15 +162,19 @@ export function createGovernanceMethods(koios: KoiosClient): GovernanceCapabilit
   // That includes a 200 whose body does not match the schema, which is why the parse is
   // guarded too. An unguarded parse would make the "best effort" claim false for the one
   // case most likely to happen: Koios changing the shape of a field we do not even need.
+  // Packed by hand rather than through batchAll, and the difference is the point: this is the one
+  // batch whose chunks are allowed to fail independently. batchAll fails the whole batch if any
+  // chunk does, which is right everywhere else and wrong here, because it would turn one bad
+  // /drep_metadata response into every DRep losing its name rather than one chunk of them.
   async function drepMetadataByHex(
     drepIds: string[],
   ): Promise<Map<string, { name?: string; image?: string }>> {
     const byHex = new Map<string, { name?: string; image?: string }>()
-    for (const chunk of chunked(drepIds, DREP_INFO_CHUNK)) {
+    const toBody = (chunk: string[]): unknown => ({ _drep_ids: chunk })
+
+    for (const chunk of packBySize(drepIds, toBody, koios.bodyLimit)) {
       try {
-        const rows = await koios.batch(z.array(drepMetadataRow), '/drep_metadata', {
-          _drep_ids: chunk,
-        })
+        const rows = await koios.batch(z.array(drepMetadataRow), '/drep_metadata', toBody(chunk))
         for (const row of rows) {
           const hex = drepCredentialHex(row.drep_id)
           if (hex !== undefined) byHex.set(hex, drepMetaFields(row.meta_json))
@@ -189,7 +191,8 @@ export function createGovernanceMethods(koios: KoiosClient): GovernanceCapabilit
   // Preserves the input order; unknown ids are absent, so the result is never longer than
   // the input.
   //
-  // Chunked for the same reason as pool_info: Koios rejects an oversized body with a 413.
+  // Batched against Koios's body limit, for the same reason as pool_info: an oversized body is a
+  // 413.
   //
   // Responses are indexed by credential hex, not by the bech32 id, because the two are not
   // necessarily the same string the caller sent. A DRep has both a CIP-129 id and a
@@ -201,12 +204,10 @@ export function createGovernanceMethods(koios: KoiosClient): GovernanceCapabilit
 
     const [infoByHex, metaByHex] = await Promise.all([
       (async () => {
-        const byHex = new Map<string, z.infer<typeof drepInfoRow>>()
-        for (const chunk of chunked(drepIds, DREP_INFO_CHUNK)) {
-          const rows = await koios.batch(z.array(drepInfoRow), '/drep_info', { _drep_ids: chunk })
-          for (const row of rows) byHex.set(row.hex.toLowerCase(), row)
-        }
-        return byHex
+        const rows = await koios.batchAll(drepInfoRow, '/drep_info', drepIds, (chunk) => ({
+          _drep_ids: chunk,
+        }))
+        return new Map(rows.map((row) => [row.hex.toLowerCase(), row]))
       })(),
       drepMetadataByHex(drepIds),
     ])

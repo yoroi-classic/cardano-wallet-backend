@@ -11,13 +11,10 @@ import type {
 } from '../../domain/types/transactions.js'
 import type { AccountCapability } from '../capabilities/account.js'
 import type { KoiosClient } from './client.js'
-import { assetItem, chunked, mapAssets, numeric } from './schema.js'
+import { assetItem, mapAssets, numeric } from './schema.js'
 
 // How many transactions we detail per page. Matches the extension's request size.
 const HISTORY_PAGE_SIZE = 50
-// Koios 413s on an oversized request body, and the boundary extension below can push a
-// page well past HISTORY_PAGE_SIZE, so /tx_info is asked in batches this size.
-const TX_INFO_CHUNK = 50
 
 const accountInfoRow = z.object({
   stake_address: z.string(),
@@ -198,21 +195,18 @@ export function createAccountMethods(koios: KoiosClient): AccountCapability {
       while (end < sorted.length && sorted[end]?.block_height === boundaryBlock) end += 1
       const hashes = sorted.slice(0, end).map((r) => r.tx_hash)
 
-      // Hydrate in batches. A block holding many of this account's transactions can push
-      // the page past HISTORY_PAGE_SIZE via the boundary extension above, and a single
-      // oversized _tx_hashes body is what Koios answers with a 413.
-      const rows: z.infer<typeof txInfoRow>[] = []
-      for (const chunk of chunked(hashes, TX_INFO_CHUNK)) {
-        const batch = await koios.batch(z.array(txInfoRow), '/tx_info', {
-          _tx_hashes: chunk,
-          _inputs: true,
-          _metadata: true,
-          _assets: true,
-          _withdrawals: true,
-          _certs: true,
-        })
-        rows.push(...batch)
-      }
+      // Hydrate in batches. A block holding many of this account's transactions can push the
+      // page past HISTORY_PAGE_SIZE via the boundary extension above, and a single oversized
+      // _tx_hashes body is what Koios answers with a 413. batchAll packs against the real byte
+      // budget, and the flags below are part of the body it measures.
+      const rows = await koios.batchAll(txInfoRow, '/tx_info', hashes, (chunk) => ({
+        _tx_hashes: chunk,
+        _inputs: true,
+        _metadata: true,
+        _assets: true,
+        _withdrawals: true,
+        _certs: true,
+      }))
 
       // What comes back must be exactly what we asked for, no more and no less.
       //

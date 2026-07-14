@@ -3,10 +3,7 @@ import { POLICY_ID_HEX_LEN } from '../../domain/constants.js'
 import type { TokenMetadata } from '../../domain/types/assets.js'
 import type { AssetCapability } from '../capabilities/assets.js'
 import type { KoiosClient } from './client.js'
-import { assetName, chunked, numeric, policyId } from './schema.js'
-
-// Koios caps the asset_info request body at ~5 KB, so send subjects in bounded chunks.
-const ASSET_INFO_CHUNK = 20
+import { assetName, numeric, policyId } from './schema.js'
 
 // Registry `decimals` is a count of decimal places, so it can only be a non-negative
 // integer. Constraining it here keeps an impossible upstream value (negative, fractional)
@@ -419,14 +416,14 @@ export function createAssetMethods(koios: KoiosClient): AssetCapability {
         s.slice(POLICY_ID_HEX_LEN),
       ])
 
-      // Send bounded chunks to stay under the upstream body cap, then merge the rows.
-      const perChunk = await Promise.all(
-        chunked(pairs, ASSET_INFO_CHUNK).map((chunk) => {
-          const path = `/asset_info?select=${encodeURIComponent(ASSET_INFO_SELECT)}`
-          return koios.batch(z.array(assetInfoRow), path, { _asset_list: chunk })
-        }),
-      )
-      const rows = perChunk.flat()
+      // Packed against the upstream body limit, which matters more here than anywhere else: a
+      // subject is a 56-char policy id plus an asset name of 0 to 64 hex chars, so unlike a pool
+      // or DRep id it is *variable* length. The old fixed count of 20 was safe by luck rather
+      // than by construction, since nothing checked that 20 worst-case subjects still fit.
+      const path = `/asset_info?select=${encodeURIComponent(ASSET_INFO_SELECT)}`
+      const rows = await koios.batchAll(assetInfoRow, path, pairs, (chunk) => ({
+        _asset_list: chunk,
+      }))
       const bySubject = new Map(rows.map((r) => [r.policy_id + r.asset_name, r]))
       // Return in the caller's order; unknown subjects are simply absent from Koios.
       return normalized.flatMap((subject) => {

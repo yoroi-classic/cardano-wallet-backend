@@ -3,11 +3,8 @@ import { ProviderError } from '../../domain/errors.js'
 import type { PoolInfo, PoolListParams, PoolMetadata } from '../../domain/types/pools.js'
 import type { PoolCapability } from '../capabilities/pools.js'
 import type { KoiosClient } from './client.js'
-import { chunked, numeric } from './schema.js'
+import { numeric } from './schema.js'
 
-// Koios rejects a /pool_info body carrying 100 ids with a 413, so hydrate in smaller
-// batches. 50 leaves room for the id set to grow without brushing the limit again.
-const POOL_INFO_CHUNK = 50
 // Koios caps a single response at 1000 rows.
 const POOL_LIST_PAGE_SIZE = 1000
 // ~3k registered pools on mainnet today. 20 pages is far above that and keeps the walk
@@ -119,17 +116,17 @@ export function createPoolMethods(koios: KoiosClient): PoolCapability {
   // Hydrate a set of pool ids with full pool_info, preserving the input order. Unknown ids
   // are simply absent from Koios, so the result is never longer than the input.
   //
-  // Koios rejects an oversized request body with a 413, and a single batch of 100 ids is
-  // already over that limit, so the ids are hydrated in chunks and stitched back together.
+  // batchAll packs the ids into as few requests as Koios's body limit allows. It used to be a
+  // fixed 50 per request, a number reached by bisecting against a 413 until it stopped
+  // happening. A pool id is fixed length, so the real answer is exactly computable: 84 fit,
+  // once the safety margin is held back. We were sending 1.7x more requests than the data
+  // needed, every time.
   async function poolInfoByIds(poolIds: string[]): Promise<PoolInfo[]> {
     if (poolIds.length === 0) return []
-    const byId = new Map<string, z.infer<typeof poolInfoRow>>()
-    for (const chunk of chunked(poolIds, POOL_INFO_CHUNK)) {
-      const rows = await koios.batch(z.array(poolInfoRow), '/pool_info', {
-        _pool_bech32_ids: chunk,
-      })
-      for (const row of rows) byId.set(row.pool_id_bech32, row)
-    }
+    const rows = await koios.batchAll(poolInfoRow, '/pool_info', poolIds, (chunk) => ({
+      _pool_bech32_ids: chunk,
+    }))
+    const byId = new Map(rows.map((row) => [row.pool_id_bech32, row]))
     return poolIds.flatMap((id) => {
       const row = byId.get(id)
       return row ? [mapPoolInfo(row)] : []

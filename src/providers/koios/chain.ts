@@ -9,6 +9,8 @@ const tipRow = z.object({
   epoch_no: z.number(),
   abs_slot: z.number(),
   block_no: z.number(),
+  // Unix seconds. See Tip.blockTime: a slot is not a timestamp.
+  block_time: z.number().int().nonnegative(),
 })
 
 // Counts, sizes, and the fee coefficients are all whole and non-negative. min_fee_a and
@@ -48,7 +50,13 @@ export function createChainMethods(koios: KoiosClient): ChainCapability {
   return {
     async getTip(): Promise<Tip> {
       const row = await koios.getFirst(tipRow, '/tip')
-      return { block: row.block_no, slot: row.abs_slot, epoch: row.epoch_no, hash: row.hash }
+      return {
+        block: row.block_no,
+        slot: row.abs_slot,
+        epoch: row.epoch_no,
+        hash: row.hash,
+        blockTime: row.block_time,
+      }
     },
 
     async getProtocolParams(): Promise<ProtocolParams> {

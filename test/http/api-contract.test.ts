@@ -15,6 +15,7 @@ const TIP: Tip = {
   slot: 86_400_123,
   epoch: 199,
   hash: 'aa11bb22',
+  blockTime: 1_700_000_000,
 }
 
 const PROTOCOL_PARAMS: ProtocolParams = {
@@ -74,7 +75,7 @@ afterEach(async () => {
 describe('backend API contract', () => {
   it('GET /health returns a stable JSON envelope without touching providers', async () => {
     const calls = { tip: 0, protocolParams: 0 }
-    app = buildServer({ provider: providerWith({}, calls) })
+    app = await buildServer({ provider: providerWith({}, calls) })
 
     const res = await app.inject({ method: 'GET', url: '/health' })
 
@@ -89,7 +90,7 @@ describe('backend API contract', () => {
       ...TIP,
       providerDebug: { source: 'koios', requestId: 'internal' },
     } as Tip
-    app = buildServer({ provider: providerWith({ getTip: async () => providerTip }) })
+    app = await buildServer({ provider: providerWith({ getTip: async () => providerTip }) })
 
     const res = await app.inject({ method: 'GET', url: '/v1/chain/tip' })
 
@@ -104,7 +105,7 @@ describe('backend API contract', () => {
       protocolVersion: { major: 9, minor: 0, providerEra: 'conway' },
       providerDebug: { source: 'koios', requestId: 'internal' },
     } as unknown as ProtocolParams
-    app = buildServer({
+    app = await buildServer({
       provider: providerWith({ getProtocolParams: async () => providerParams }),
     })
 
@@ -120,7 +121,7 @@ describe('backend API contract', () => {
       ...PROTOCOL_PARAMS,
       costModels: undefined,
     } as unknown as ProtocolParams
-    app = buildServer({
+    app = await buildServer({
       provider: providerWith({ getProtocolParams: async () => providerParams }),
     })
 
@@ -133,7 +134,7 @@ describe('backend API contract', () => {
 
   it('rejects unsupported methods before provider code runs', async () => {
     const calls = { tip: 0, protocolParams: 0 }
-    app = buildServer({ provider: providerWith({}, calls) })
+    app = await buildServer({ provider: providerWith({}, calls) })
 
     const res = await app.inject({ method: 'POST', url: '/v1/chain/tip', payload: {} })
 
@@ -167,7 +168,7 @@ describe('backend API provider failure contract', () => {
       { error: { code: 'UPSTREAM_TIMEOUT', message: 'provider request timed out' } },
     ],
   ])('maps %s to the stable error envelope', async (_name, error, statusCode, body) => {
-    app = buildServer({
+    app = await buildServer({
       provider: providerWith({
         getTip: async () => {
           throw error

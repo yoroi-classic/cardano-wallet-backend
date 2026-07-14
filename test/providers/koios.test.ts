@@ -74,7 +74,15 @@ describe('koios provider — happy path', () => {
 
     const tip = await provider.getTip()
 
-    expect(tip).toEqual({ block: 3_500_000, slot: 86_400_123, epoch: 199, hash: 'aa11bb22' })
+    expect(tip).toEqual({
+      block: 3_500_000,
+      slot: 86_400_123,
+      epoch: 199,
+      hash: 'aa11bb22',
+      // Carried through from block_time. A slot is not a timestamp, so a client (and /v1/status)
+      // has no way to tell how far behind the chain is without it.
+      blockTime: 1_700_000_000,
+    })
     expect(urls[0]).toBe(`${BASE}/tip`)
   })
 

@@ -34,7 +34,7 @@ afterEach(async () => {
 
 describe('assets info route', () => {
   it('POST /v1/assets/info returns metadata for the requested subjects', async () => {
-    app = buildServer({ provider: providerWith({}) })
+    app = await buildServer({ provider: providerWith({}) })
     const res = await app.inject({
       method: 'POST',
       url: '/v1/assets/info',
@@ -46,7 +46,7 @@ describe('assets info route', () => {
   })
 
   it('rejects a missing or empty subjects list with 400', async () => {
-    app = buildServer({ provider: providerWith({}) })
+    app = await buildServer({ provider: providerWith({}) })
 
     const missing = await app.inject({ method: 'POST', url: '/v1/assets/info', payload: {} })
     expect(missing.statusCode).toBe(400)
@@ -61,7 +61,7 @@ describe('assets info route', () => {
   })
 
   it('rejects malformed subjects with 400 before hitting the provider', async () => {
-    app = buildServer({
+    app = await buildServer({
       provider: providerWith({
         getTokenMetadata: async () => {
           throw new Error('provider should not be called for a malformed subject')
@@ -82,7 +82,7 @@ describe('assets info route', () => {
   })
 
   it('accepts a policy-id-only subject (no asset name)', async () => {
-    app = buildServer({ provider: providerWith({}) })
+    app = await buildServer({ provider: providerWith({}) })
     const res = await app.inject({
       method: 'POST',
       url: '/v1/assets/info',

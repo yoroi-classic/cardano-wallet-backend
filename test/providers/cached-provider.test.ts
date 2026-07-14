@@ -4,7 +4,13 @@ import { withCache } from '../../src/providers/cached.js'
 import type { ChainProvider } from '../../src/providers/provider.js'
 import { fakeProvider } from '../support/fake-provider.js'
 
-const TIP = { block: 3_500_000, slot: 86_400_123, epoch: 199, hash: 'aa11' }
+const TIP = {
+  block: 3_500_000,
+  slot: 86_400_123,
+  epoch: 199,
+  hash: 'aa11',
+  blockTime: 1_700_000_000,
+}
 
 function clock(start = 1_000) {
   let t = start

@@ -254,6 +254,54 @@ interface Cip25Fields {
   name?: string
   description?: string
   image?: string
+  traits?: Record<string, string>
+}
+
+/**
+ * The field names CIP-25 reserves. Everything else in an asset's metadata map is a **trait**.
+ *
+ * That inversion is the whole trick, and it is forced by the spec rather than chosen: CIP-25
+ * defines these names and says nothing at all about the rest of the map, so a minter's traits are
+ * simply whatever they put there. `background`, `accessories`, `hats and hair` — there is no list
+ * to match against, and any allowlist we invented would silently drop the traits of the next
+ * collection to mint.
+ *
+ * So we subtract instead. `files` and `mediaType` are structural rather than descriptive, and
+ * `Project` is excluded because it is a collection-level label rather than a property of the piece
+ * (every Clay Nation NFT carries the same one, so surfacing it as a trait would put a 100%-common
+ * "trait" at the top of every card).
+ */
+const CIP25_RESERVED = new Set([
+  'name',
+  'image',
+  'description',
+  'mediaType',
+  'files',
+  'Project',
+  'project',
+])
+
+/**
+ * Traits: every metadata field the spec did not reserve, as long as it reads as a label.
+ *
+ * Values are flattened to strings because that is what a trait *is*: a short human-readable label
+ * shown next to the picture. A nested object or a list of files is structure, not a trait, and
+ * putting `[object Object]` on someone's NFT card is worse than leaving the field out.
+ *
+ * Chunked strings are joined, because CIP-25 splits any value over 64 bytes across an array, and a
+ * long trait value would otherwise arrive as fragments.
+ */
+function extractTraits(entry: Record<string, unknown>): Record<string, string> | undefined {
+  const traits: Record<string, string> = {}
+
+  for (const [key, raw] of Object.entries(entry)) {
+    if (CIP25_RESERVED.has(key)) continue
+    const value = cip25String(raw)
+    if (value === undefined || value.length === 0) continue
+    traits[key] = value
+  }
+
+  return Object.keys(traits).length > 0 ? traits : undefined
 }
 
 /**
@@ -333,8 +381,9 @@ function extractCip25(
       name: cip25String(entryRaw.name),
       description: cip25String(entryRaw.description),
       image: cip25String(entryRaw.image),
+      traits: extractTraits(entryRaw),
     }
-    if (fields.name || fields.description || fields.image) return fields
+    if (fields.name || fields.description || fields.image || fields.traits) return fields
   }
   return undefined
 }
@@ -385,6 +434,9 @@ function mapTokenMetadata(row: z.infer<typeof assetInfoRow>): TokenMetadata {
       name: cip25.name,
       description: cip25.description,
       image: cip25.image,
+      // Absent, never an empty object: a token with no traits has none, rather than having zero
+      // of them, and a client rendering `{}` would draw an empty traits panel.
+      ...(cip25.traits === undefined ? {} : { traits: cip25.traits }),
     }
   }
 

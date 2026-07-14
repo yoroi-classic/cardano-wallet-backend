@@ -1252,6 +1252,19 @@ export const openapi = {
             type: 'string',
             description: 'A URI, often ipfs://. Never image bytes.',
           },
+          traits: {
+            type: 'object',
+            additionalProperties: { type: 'string' },
+            description:
+              'NFT traits: the collection-specific attributes the minter attached, e.g. ' +
+              '`{"background": "Seafoam Green", "accessories": "Spider"}`.\n\n' +
+              'An open map, because there is no standard for these. CIP-25 reserves a handful of ' +
+              'field names and says nothing about the rest, so the traits *are* whatever is left ' +
+              'over. Any schema we invented would be one the minters never agreed to.\n\n' +
+              '**No rarity.** "2% of the collection has Spider" cannot be computed from one asset; ' +
+              'it needs every asset in the policy, which is an indexing job rather than a request. ' +
+              'Absent for a token with no traits, which is most of them.',
+          },
         },
       },
 

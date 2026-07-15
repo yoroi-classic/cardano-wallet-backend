@@ -49,3 +49,88 @@ export interface DrepListParams {
   /** How many DReps to skip, for paging. */
   offset: number
 }
+
+/**
+ * The seven kinds of governance action Conway defines. Koios's own vocabulary, constrained rather
+ * than passed through, so an unexpected value is malformed upstream data and not a new action type
+ * silently leaking into our contract.
+ */
+export const PROPOSAL_TYPES = [
+  'ParameterChange',
+  'HardForkInitiation',
+  'TreasuryWithdrawals',
+  'NoConfidence',
+  'NewCommittee',
+  'NewConstitution',
+  'InfoAction',
+] as const
+export type ProposalType = (typeof PROPOSAL_TYPES)[number]
+
+/**
+ * Where a proposal has got to.
+ *
+ * Derived here rather than left to the client, because the raw data expresses it as four separate
+ * nullable epoch fields (`ratified`, `enacted`, `dropped`, `expired`) and every client would
+ * otherwise reimplement the same precedence rules, subtly differently. `enacted` beats `ratified`,
+ * because a proposal is ratified first and enacted after.
+ */
+export type ProposalStatus = 'open' | 'ratified' | 'enacted' | 'dropped' | 'expired'
+
+/** How a body of voters split on a proposal. Voting power is lovelace, as a string. */
+export interface VoteTally {
+  /** Votes cast, by count. */
+  yes: number
+  no: number
+  abstain: number
+  /** Voting power behind each, in lovelace. This, not the count, is what decides the outcome. */
+  yesPower: string
+  noPower: string
+  abstainPower: string
+}
+
+/** A Conway governance action. */
+export interface Proposal {
+  /** Bech32 governance action id (`gov_action1...`). */
+  proposalId: string
+  /** The transaction that submitted it, and the action's index within it. */
+  txHash: string
+  index: number
+  type: ProposalType
+  status: ProposalStatus
+  /** The epoch it was proposed in, and the one it expires in if nothing happens. */
+  proposedEpoch: number
+  expiryEpoch?: number
+  /** Whichever of ratified/enacted/dropped/expired actually happened, if any. */
+  decidedEpoch?: number
+  /** Registration deposit, in lovelace. */
+  deposit: string
+  /** Where the deposit is returned to. */
+  returnAddress: string
+
+  /** CIP-108 off-chain metadata, resolved best-effort. */
+  title?: string
+  abstract?: string
+  metadataUrl?: string
+  metadataHash?: string
+  /**
+   * Whether the off-chain metadata's hash matched what was anchored on chain.
+   *
+   * A proposal's title and abstract are attacker-supplied text that a user reads before voting, so
+   * a client must be able to tell a verified document from an unverified one. Absent means the
+   * data source did not say.
+   */
+  metadataValid?: boolean
+
+  /** How the DReps have voted so far. */
+  drepVotes?: VoteTally
+  /** How the stake pool operators have voted so far. */
+  poolVotes?: VoteTally
+  /** How the constitutional committee has voted so far. */
+  committeeVotes?: VoteTally
+}
+
+/** Query for a page of the proposal list. */
+export interface ProposalListParams {
+  limit: number
+  offset: number
+}

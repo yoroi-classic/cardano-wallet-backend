@@ -212,3 +212,48 @@ describe('governance list route — paging is validated, not coerced', () => {
     expect(seen).toEqual({ limit: 50, offset: 0 })
   })
 })
+
+describe('GET /v1/governance/proposals', () => {
+  const PROPOSAL = {
+    proposalId: 'gov_action1jr0g04rwvdz3rrqpm30vwqd5mnjky8l68v0e3g74t6e5apw6wwfqq37hpcl',
+    txHash: 'a'.repeat(64),
+    index: 0,
+    type: 'InfoAction' as const,
+    status: 'open' as const,
+    proposedEpoch: 297,
+    deposit: '100000000000',
+    returnAddress: 'stake_test1x',
+  }
+
+  it('returns proposals and defaults the page', async () => {
+    const seen: unknown[] = []
+    app = await buildServer({
+      provider: providerWith({
+        getProposals: async (params: unknown) => {
+          seen.push(params)
+          return [PROPOSAL]
+        },
+      }),
+    })
+
+    const res = await app.inject({ method: 'GET', url: '/v1/governance/proposals' })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual([PROPOSAL])
+    expect(seen[0]).toEqual({ limit: 20, offset: 0 })
+  })
+
+  it.each([
+    ['a limit past the cap', 'limit=500'],
+    ['a limit of zero', 'limit=0'],
+    ['a non-numeric limit', 'limit=all'],
+    ['a negative offset', 'offset=-1'],
+    ['an offset past the ceiling', 'offset=999999'],
+  ])('rejects %s', async (_case, query) => {
+    app = await buildServer({ provider: providerWith({ getProposals: async () => [] }) })
+
+    const res = await app.inject({ method: 'GET', url: `/v1/governance/proposals?${query}` })
+
+    expect(res.statusCode).toBe(400)
+  })
+})

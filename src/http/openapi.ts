@@ -128,7 +128,7 @@ export const openapi = {
     { name: 'addresses', description: 'Address discovery' },
     { name: 'assets', description: 'Native token and NFT metadata' },
     { name: 'pools', description: 'Stake pools' },
-    { name: 'governance', description: 'DReps' },
+    { name: 'governance', description: 'DReps and governance actions' },
     { name: 'price', description: 'Price and market data. Reserved; every endpoint answers 501.' },
     { name: 'tx', description: 'Submit, status, and output lookups' },
   ],
@@ -785,6 +785,46 @@ export const openapi = {
       },
     },
 
+    '/v1/governance/proposals': {
+      get: {
+        tags: ['governance'],
+        operationId: 'getProposals',
+        summary: 'Conway governance actions, newest first',
+        description:
+          'With the vote tallies as they stand, because a proposal without them is not something ' +
+          'a user can act on: "should I vote on this?" is answered by where the vote currently ' +
+          'sits, not by the text alone.\n\n' +
+          "`status` is **derived for you**. Upstream expresses a proposal's fate as four separate " +
+          'nullable epoch fields, and every client reimplementing the same precedence rules is ' +
+          'every client getting them subtly differently. Note that `enacted` outranks `ratified`: ' +
+          'a proposal is ratified first and enacted afterwards.\n\n' +
+          '**Check `metadataValid` before showing `title` or `abstract` to a user.** Those are ' +
+          'attacker-supplied text that someone reads immediately before voting. `false` means the ' +
+          'off-chain document did not match the hash anchored on chain; **absent means we do not ' +
+          'know**, which is not the same as `false`.\n\n' +
+          'A proposal whose tally could not be fetched still appears, without one. A missing ' +
+          'progress bar is a nuisance; a governance screen that will not load is not.',
+        parameters: [
+          {
+            name: 'limit',
+            in: 'query',
+            schema: { type: 'integer', minimum: 1, maximum: 50, default: 20 },
+          },
+          {
+            name: 'offset',
+            in: 'query',
+            schema: { type: 'integer', minimum: 0, maximum: 10000, default: 0 },
+          },
+        ],
+        responses: {
+          '200': jsonResponse('Proposals, newest first', {
+            type: 'array',
+            items: { $ref: '#/components/schemas/Proposal' },
+          }),
+          ...COMMON_ERRORS,
+        },
+      },
+    },
     '/v1/config': {
       get: {
         tags: ['service'],
@@ -1350,6 +1390,91 @@ export const openapi = {
           liveDelegators: { type: 'integer', minimum: 0 },
           blocksMinted: { type: 'integer', minimum: 0 },
           metadata: { $ref: '#/components/schemas/PoolMetadata' },
+        },
+      },
+
+      VoteTally: {
+        type: 'object',
+        required: ['yes', 'no', 'abstain', 'yesPower', 'noPower', 'abstainPower'],
+        properties: {
+          yes: { type: 'integer', description: 'Votes cast, by count.' },
+          no: { type: 'integer' },
+          abstain: { type: 'integer' },
+          yesPower: {
+            ...LOVELACE,
+            description:
+              'Voting power behind the yes votes, in lovelace. **This, not the count, is what ' +
+              'decides the outcome.** Parse with BigInt.',
+          },
+          noPower: LOVELACE,
+          abstainPower: LOVELACE,
+        },
+      },
+
+      Proposal: {
+        type: 'object',
+        required: [
+          'proposalId',
+          'txHash',
+          'index',
+          'type',
+          'status',
+          'proposedEpoch',
+          'deposit',
+          'returnAddress',
+        ],
+        properties: {
+          proposalId: { type: 'string', pattern: '^gov_action1[0-9a-z]+$' },
+          txHash: HEX(32, 'The transaction that submitted the action'),
+          index: { type: 'integer', description: "The action's index within that transaction." },
+          type: {
+            type: 'string',
+            enum: [
+              'ParameterChange',
+              'HardForkInitiation',
+              'TreasuryWithdrawals',
+              'NoConfidence',
+              'NewCommittee',
+              'NewConstitution',
+              'InfoAction',
+            ],
+          },
+          status: {
+            type: 'string',
+            enum: ['open', 'ratified', 'enacted', 'dropped', 'expired'],
+            description:
+              'Derived from the on-chain epoch fields so that every client does not re-derive it ' +
+              'differently. `enacted` outranks `ratified`, because a proposal is ratified first ' +
+              'and enacted afterwards.',
+          },
+          proposedEpoch: { type: 'integer' },
+          expiryEpoch: {
+            type: 'integer',
+            description: 'When it lapses if nothing happens.',
+          },
+          decidedEpoch: {
+            type: 'integer',
+            description: 'The epoch of whatever actually happened. Absent while `open`.',
+          },
+          deposit: LOVELACE,
+          returnAddress: { type: 'string', description: 'Where the deposit is returned to.' },
+          title: { type: 'string', description: 'CIP-108. See metadataValid before showing it.' },
+          abstract: {
+            type: 'string',
+            description: 'CIP-108. See metadataValid before showing it.',
+          },
+          metadataUrl: { type: 'string' },
+          metadataHash: { type: 'string' },
+          metadataValid: {
+            type: 'boolean',
+            description:
+              'Whether the off-chain document matched the hash anchored on chain. **Absent means ' +
+              'unknown, which is not the same as false.** Check it before showing `title` or ' +
+              '`abstract`: those are attacker-supplied text a user reads right before voting.',
+          },
+          drepVotes: { $ref: '#/components/schemas/VoteTally' },
+          poolVotes: { $ref: '#/components/schemas/VoteTally' },
+          committeeVotes: { $ref: '#/components/schemas/VoteTally' },
         },
       },
 

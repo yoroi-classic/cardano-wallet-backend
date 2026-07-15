@@ -396,6 +396,44 @@ describe('real responses validate against the schemas the spec publishes', () =>
     expect((res.body as { spent: boolean }[])[0]?.spent).toBe(true)
   })
 
+  it('GET /v1/governance/proposals', async () => {
+    const res = await get(
+      {
+        getProposals: async () => [
+          {
+            proposalId: 'gov_action1jr0g04rwvdz3rrqpm30vwqd5mnjky8l68v0e3g74t6e5apw6wwfqq37hpcl',
+            txHash: TX_HASH,
+            index: 0,
+            type: 'TreasuryWithdrawals' as const,
+            status: 'open' as const,
+            proposedEpoch: 297,
+            expiryEpoch: 304,
+            deposit: '100000000000',
+            returnAddress: STAKE,
+            title: 'A proposal',
+            metadataValid: true,
+            drepVotes: {
+              yes: 1,
+              no: 0,
+              abstain: 0,
+              // Voting power is lovelace and exceeds 2^53: it must survive as digits.
+              yesPower: '9999999999999999999',
+              noPower: '0',
+              abstainPower: '0',
+            },
+          },
+        ],
+      },
+      '/v1/governance/proposals',
+    )
+
+    expect(res.statusCode).toBe(200)
+    eachMatches('Proposal', res.body)
+    expect((res.body as { drepVotes: { yesPower: string } }[])[0]?.drepVotes.yesPower).toBe(
+      '9999999999999999999',
+    )
+  })
+
   it('POST /v1/assets/media', async () => {
     const app = await buildServer({
       provider: fakeProvider(),

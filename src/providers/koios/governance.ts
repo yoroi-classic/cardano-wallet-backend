@@ -2,7 +2,15 @@ import { z } from 'zod'
 import { noCache, type Cache } from '../../cache/index.js'
 import { ProviderError } from '../../domain/errors.js'
 import { drepCredentialHex } from '../../domain/drep.js'
-import type { DrepInfo, DrepListParams } from '../../domain/types/governance.js'
+import {
+  PROPOSAL_TYPES,
+  type DrepInfo,
+  type DrepListParams,
+  type Proposal,
+  type ProposalListParams,
+  type ProposalStatus,
+  type VoteTally,
+} from '../../domain/types/governance.js'
 import type { GovernanceCapability } from '../capabilities/governance.js'
 import type { KoiosClient } from './client.js'
 import { numeric, packBySize } from './schema.js'
@@ -120,6 +128,98 @@ function drepMetaFields(metaJson: unknown): { name?: string; image?: string } {
   const image = body && isRecord(body.image) ? str(body.image.contentUrl) : undefined
   return { ...(name ? { name } : {}), ...(image ? { image } : {}) }
 }
+
+// Koios reports a proposal's fate as four separate nullable epoch fields. Constrained to the
+// documented action types, so an unexpected one is malformed upstream data rather than a new kind
+// of governance action quietly appearing in our contract.
+const proposalRow = z.object({
+  proposal_id: z.string().regex(/^gov_action1[0-9a-z]+$/),
+  proposal_tx_hash: z.string().regex(/^[0-9a-fA-F]{64}$/),
+  proposal_index: z.number().int().nonnegative(),
+  proposal_type: z.enum(PROPOSAL_TYPES),
+  deposit: numeric,
+  return_address: z.string(),
+  proposed_epoch: z.number().int().nonnegative(),
+  expiration: z.number().int().nonnegative().nullish(),
+  ratified_epoch: z.number().int().nonnegative().nullish(),
+  enacted_epoch: z.number().int().nonnegative().nullish(),
+  dropped_epoch: z.number().int().nonnegative().nullish(),
+  expired_epoch: z.number().int().nonnegative().nullish(),
+  meta_url: z.string().nullish(),
+  meta_hash: z.string().nullish(),
+  // CIP-108 off-chain JSON, resolved by Koios. Attacker-influenced, so walked defensively.
+  meta_json: z.unknown().nullish(),
+  meta_is_valid: z.boolean().nullish(),
+})
+
+// Vote power is lovelace and can exceed 2^53, so it stays a string all the way through. The vote
+// *counts* are counts, and are numbers.
+const voteCount = z.number().int().nonnegative()
+
+const votingSummaryRow = z.object({
+  drep_yes_votes_cast: voteCount.nullish(),
+  drep_no_votes_cast: voteCount.nullish(),
+  drep_abstain_votes_cast: voteCount.nullish(),
+  drep_yes_vote_power: numeric.nullish(),
+  drep_no_vote_power: numeric.nullish(),
+  drep_always_abstain_vote_power: numeric.nullish(),
+  pool_yes_votes_cast: voteCount.nullish(),
+  pool_no_votes_cast: voteCount.nullish(),
+  pool_abstain_votes_cast: voteCount.nullish(),
+  pool_yes_vote_power: numeric.nullish(),
+  pool_no_vote_power: numeric.nullish(),
+  pool_passive_always_abstain_vote_power: numeric.nullish(),
+  committee_yes_votes_cast: voteCount.nullish(),
+  committee_no_votes_cast: voteCount.nullish(),
+  committee_abstain_votes_cast: voteCount.nullish(),
+})
+
+/**
+ * Where a proposal has got to.
+ *
+ * Derived here so that every client does not reimplement the same precedence rules, subtly
+ * differently, from four nullable epoch fields. `enacted` outranks `ratified` because a proposal
+ * is ratified first and enacted afterwards, so a proposal that reached both is *enacted*: reading
+ * it the other way would report the older state and tell a user a decision had not yet taken
+ * effect when it had.
+ */
+function proposalStatus(row: z.infer<typeof proposalRow>): {
+  status: ProposalStatus
+  decidedEpoch?: number
+} {
+  if (row.enacted_epoch != null) return { status: 'enacted', decidedEpoch: row.enacted_epoch }
+  if (row.ratified_epoch != null) return { status: 'ratified', decidedEpoch: row.ratified_epoch }
+  if (row.dropped_epoch != null) return { status: 'dropped', decidedEpoch: row.dropped_epoch }
+  if (row.expired_epoch != null) return { status: 'expired', decidedEpoch: row.expired_epoch }
+  return { status: 'open' }
+}
+
+/** CIP-108 puts the human-readable parts under `body`. */
+function proposalMeta(metaJson: unknown): { title?: string; abstract?: string } {
+  if (!isRecord(metaJson)) return {}
+  const body = isRecord(metaJson.body) ? metaJson.body : metaJson
+  const str = (v: unknown): string | undefined =>
+    typeof v === 'string' && v.length > 0 ? v : undefined
+  const title = str(body.title)
+  const summary = str(body.abstract)
+  return { ...(title ? { title } : {}), ...(summary ? { abstract: summary } : {}) }
+}
+
+const tally = (
+  yes: number | null | undefined,
+  no: number | null | undefined,
+  abstain: number | null | undefined,
+  yesPower: unknown,
+  noPower: unknown,
+  abstainPower: unknown,
+): VoteTally => ({
+  yes: yes ?? 0,
+  no: no ?? 0,
+  abstain: abstain ?? 0,
+  yesPower: String(yesPower ?? 0),
+  noPower: String(noPower ?? 0),
+  abstainPower: String(abstainPower ?? 0),
+})
 
 export interface GovernanceMethodDeps {
   /** Cache for the DRep membership list and the off-chain names. Defaults to none. */
@@ -333,6 +433,92 @@ export function createGovernanceMethods(
       // no longer true.
       const hydrated = await drepInfoByIds(page)
       return hydrated.filter((drep) => drep.status === 'registered')
+    },
+    async getProposals({ limit, offset }: ProposalListParams): Promise<Proposal[]> {
+      // Newest first: a governance browser opens on what is happening now, not on what happened in
+      // the first week of Conway. Ordered upstream on the proposal's own block time, which is a
+      // numeric column, so unlike the pool ranking this sort *can* be pushed down.
+      const query = new URLSearchParams({
+        order: 'block_time.desc',
+        limit: String(limit),
+        offset: String(offset),
+      })
+      const rows = await koios.get(z.array(proposalRow), `/proposal_list?${query.toString()}`)
+      if (rows.length === 0) return []
+
+      // The tallies, fetched per proposal and concurrently. A proposal without its votes is not
+      // something a user can act on: "should I vote?" is answered by where the vote currently
+      // sits, not by the text alone.
+      //
+      // Best-effort, and deliberately so. A missing tally costs a client a progress bar; a failed
+      // tally lookup taking down the whole proposal list would cost it the governance screen.
+      const tallies = await Promise.all(
+        rows.map(async (row) => {
+          try {
+            const summary = await koios.get(
+              z.array(votingSummaryRow),
+              `/proposal_voting_summary?_proposal_id=${encodeURIComponent(row.proposal_id)}`,
+            )
+            return summary[0]
+          } catch {
+            return undefined
+          }
+        }),
+      )
+
+      return rows.map((row, i) => {
+        const { status, decidedEpoch } = proposalStatus(row)
+        const votes = tallies[i]
+        const meta = proposalMeta(row.meta_json)
+
+        return {
+          proposalId: row.proposal_id,
+          txHash: row.proposal_tx_hash,
+          index: row.proposal_index,
+          type: row.proposal_type,
+          status,
+          proposedEpoch: row.proposed_epoch,
+          ...(row.expiration == null ? {} : { expiryEpoch: row.expiration }),
+          ...(decidedEpoch === undefined ? {} : { decidedEpoch }),
+          deposit: String(row.deposit),
+          returnAddress: row.return_address,
+          ...meta,
+          ...(row.meta_url == null ? {} : { metadataUrl: row.meta_url }),
+          ...(row.meta_hash == null ? {} : { metadataHash: row.meta_hash }),
+          // A proposal's title and abstract are attacker-supplied text that someone reads before
+          // voting, so a client has to be able to tell a hash-verified document from an
+          // unverified one. Passed through rather than defaulted: "we do not know" is not "no".
+          ...(row.meta_is_valid == null ? {} : { metadataValid: row.meta_is_valid }),
+          ...(votes === undefined
+            ? {}
+            : {
+                drepVotes: tally(
+                  votes.drep_yes_votes_cast,
+                  votes.drep_no_votes_cast,
+                  votes.drep_abstain_votes_cast,
+                  votes.drep_yes_vote_power,
+                  votes.drep_no_vote_power,
+                  votes.drep_always_abstain_vote_power,
+                ),
+                poolVotes: tally(
+                  votes.pool_yes_votes_cast,
+                  votes.pool_no_votes_cast,
+                  votes.pool_abstain_votes_cast,
+                  votes.pool_yes_vote_power,
+                  votes.pool_no_vote_power,
+                  votes.pool_passive_always_abstain_vote_power,
+                ),
+                committeeVotes: tally(
+                  votes.committee_yes_votes_cast,
+                  votes.committee_no_votes_cast,
+                  votes.committee_abstain_votes_cast,
+                  0,
+                  0,
+                  0,
+                ),
+              }),
+        }
+      })
     },
   }
 }

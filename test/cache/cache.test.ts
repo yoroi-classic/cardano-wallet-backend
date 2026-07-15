@@ -257,3 +257,54 @@ describe('stale-if-error', () => {
     await expect(cache.read('account', 1000, upstream.load)).rejects.toThrow()
   })
 })
+
+describe('peek and set (for batch loads)', () => {
+  it('peek returns undefined for a key never set, and the value after set', () => {
+    const cache = createMemoryCache()
+
+    expect(cache.peek('k')).toBeUndefined()
+    cache.set('k', 'value', 1000)
+    expect(cache.peek('k')).toBe('value')
+  })
+
+  it('peek stops returning a value once its TTL passes', () => {
+    const time = clock()
+    const cache = createMemoryCache({ now: time.now })
+    cache.set('k', 'value', 1000)
+
+    time.advance(999)
+    expect(cache.peek('k')).toBe('value')
+    time.advance(1)
+    expect(cache.peek('k')).toBeUndefined()
+  })
+
+  // The batch-load shape this exists for: peek the hits, one upstream call for the misses, set
+  // each. peek must never touch upstream, which is what lets the caller decide how to fetch.
+  it('peek never loads, so a caller can batch the misses itself', async () => {
+    const cache = createMemoryCache()
+    cache.set('a', 1, 60_000)
+
+    const keys = ['a', 'b', 'c']
+    const misses = keys.filter((k) => cache.peek(k) === undefined)
+
+    expect(misses).toEqual(['b', 'c'])
+    // Simulate one batch fetch for the misses.
+    for (const k of misses) cache.set(k, 99, 60_000)
+    expect(keys.map((k) => cache.peek(k))).toEqual([1, 99, 99])
+  })
+
+  it('set counts toward the entry bound like any other entry', () => {
+    const cache = createMemoryCache({ maxEntries: 2 })
+
+    cache.set('a', 1, 60_000)
+    cache.set('b', 2, 60_000)
+    cache.set('c', 3, 60_000)
+
+    expect(cache.size).toBe(2)
+  })
+
+  it('noCache never remembers a set', () => {
+    noCache.set('k', 'value', 60_000)
+    expect(noCache.peek('k')).toBeUndefined()
+  })
+})

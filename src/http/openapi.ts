@@ -785,6 +785,33 @@ export const openapi = {
       },
     },
 
+    '/v1/config': {
+      get: {
+        tags: ['service'],
+        operationId: 'getConfig',
+        summary: 'Client remote configuration',
+        description:
+          'Feature flags, the dApp list, and whatever else the clients read at launch. Replaces ' +
+          'the clients fetching a JSON file straight from a git host.\n\n' +
+          'The document is served **as published**, with no transformation, so its shape is the ' +
+          "config repository's business and not this API's. Treat it as opaque JSON.\n\n" +
+          'Two things this endpoint is actually for. It means the config comes from **our** fork ' +
+          'rather than a repository we do not control, where whoever owns the file owns what your ' +
+          'users see. And it means a wallet does not hand its IP to a third-party git host on ' +
+          'every single launch.\n\n' +
+          'Cached hard, and served stale for up to a day if a refresh fails: a wallet that cannot ' +
+          'finish starting because a CDN is having a bad morning is a bad wallet.',
+        responses: {
+          '200': jsonResponse('The published config document, verbatim', {
+            type: 'object',
+            additionalProperties: true,
+          }),
+          '503': { $ref: '#/components/responses/FeatureUnavailable' },
+          ...COMMON_ERRORS,
+        },
+      },
+    },
+
     '/v1/openapi.json': {
       get: {
         tags: ['service'],

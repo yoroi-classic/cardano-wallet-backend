@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { ConfigError } from '../domain/errors.js'
+import { DEFAULT_CONFIG_URL } from '../remote-config/index.js'
 
 export const NETWORKS = ['mainnet', 'preprod', 'preview'] as const
 export type Network = (typeof NETWORKS)[number]
@@ -27,6 +28,14 @@ export interface AppConfig {
     subdomain: string
     secretKeyBase64: string
   }
+  /**
+   * Where the client remote config is published. Defaults to our own fork.
+   *
+   * Set it to an empty string to turn the endpoint off, which is the only way to turn it off: the
+   * default is on, because a wallet that cannot read its config is a wallet that will not finish
+   * starting, and defaulting an availability feature to "off" is how outages happen quietly.
+   */
+  configUrl?: string
   koios: {
     url: string
     token?: string
@@ -66,6 +75,8 @@ const schema = z.object({
   // configuration is a typo, and it should fail at startup rather than 500 on the first image.
   NFTCDN_SUBDOMAIN: z.string().min(1).optional(),
   NFTCDN_KEY: z.string().min(1).optional(),
+  // Client remote config. Defaults to our fork; set to "" to disable the endpoint entirely.
+  CONFIG_URL: z.string().default(DEFAULT_CONFIG_URL),
 })
 
 function parseCorsOrigins(raw: string): string[] | '*' {
@@ -119,6 +130,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         ? { max: e.RATE_LIMIT_MAX, windowMs: e.RATE_LIMIT_WINDOW_MS }
         : undefined,
     ...(nftcdn === undefined ? {} : { nftcdn }),
+    ...(e.CONFIG_URL.trim() === '' ? {} : { configUrl: e.CONFIG_URL.trim() }),
     koios: {
       url: e.KOIOS_URL ?? DEFAULT_KOIOS_URL[e.NETWORK],
       token,

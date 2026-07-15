@@ -1,10 +1,12 @@
 import type { FastifyInstance } from 'fastify'
 import type { NftcdnSigner } from '../../media/nftcdn.js'
+import type { RemoteConfig } from '../../remote-config/index.js'
 import type { ChainProvider } from '../../providers/provider.js'
 import { registerAccountRoutes } from './account.js'
 import { registerAddressRoutes } from './addresses.js'
 import { registerAssetRoutes } from './assets.js'
 import { registerChainRoutes } from './chain.js'
+import { registerConfigRoutes } from './config.js'
 import { registerGovernanceRoutes } from './governance.js'
 import { registerHealthRoutes } from './health.js'
 import { registerMediaRoutes } from './media.js'
@@ -31,6 +33,11 @@ export interface RouteDeps {
    * every chain read still works and only the media routes degrade, to a 503 that says why.
    */
   nftcdn?: NftcdnSigner
+  /**
+   * Remote config for the clients. Absent when the deployment does not serve it, in which case
+   * /v1/config answers 503 and everything else works.
+   */
+  remoteConfig?: RemoteConfig
 }
 
 /**
@@ -59,6 +66,7 @@ export const routeRegistrars: readonly RouteRegistrar[] = [
   registerPoolRoutes,
   registerAssetRoutes,
   (app, _provider, deps) => registerMediaRoutes(app, deps.nftcdn),
+  (app, _provider, deps) => registerConfigRoutes(app, deps.remoteConfig),
   registerGovernanceRoutes,
   registerPriceRoutes,
   registerTxRoutes,

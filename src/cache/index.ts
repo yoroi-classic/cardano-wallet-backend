@@ -34,6 +34,30 @@
  * an API one. The interface is what the rest of the code depends on, so swapping the
  * implementation later does not reach beyond this directory.
  */
+export interface CachePolicy {
+  /** How long the value is served without going back upstream. */
+  ttlMs: number
+  /**
+   * How long past expiry a value may still be served **if a refresh fails**. 0 (the default)
+   * means a failed refresh fails the request.
+   *
+   * This is not a longer TTL, and the difference is the whole point. Inside `ttlMs` the value is
+   * served without asking upstream at all. Past it, upstream *is* asked, and only if that ask
+   * *fails* does the old value get served rather than the error.
+   *
+   * It is what turns an upstream wobble into slightly-old data instead of a 504. Koios on mainnet
+   * answers `/pool_info` in about 7 seconds most of the time and in 20 to 50 seconds the rest of
+   * the time, which means a quarter of pool-list requests currently fail outright. A stake-pool
+   * saturation figure that is two minutes old is worth immeasurably more to the person choosing a
+   * pool than an error page is.
+   *
+   * **Never set this on an account-scoped read.** A stale balance or a stale UTxO set handed to a
+   * wallet that is about to build a transaction is how you produce a failed submission or a
+   * double-spend, and "upstream was down" is not a licence to guess at someone's money.
+   */
+  staleIfErrorMs?: number
+}
+
 export interface Cache {
   /**
    * The cached value for `key`, or the result of `load()` if there isn't a live one.
@@ -45,8 +69,13 @@ export interface Cache {
    * A failing `load()` is never cached. A 502 from a wobbling provider must not be served to
    * everyone for the next five minutes. Callers already waiting on that same load do all see the
    * failure (they are the same attempt), but the next caller gets a fresh one.
+   *
+   * The exception is `staleIfErrorMs`: see CachePolicy. A failed refresh still is not *cached*,
+   * it just does not destroy the value we already had.
+   *
+   * `policy` may be a plain TTL in milliseconds, which is the common case.
    */
-  read<T>(key: string, ttlMs: number, load: () => Promise<T>): Promise<T>
+  read<T>(key: string, policy: number | CachePolicy, load: () => Promise<T>): Promise<T>
 
   /** Live entries. For tests and diagnostics. */
   readonly size: number
@@ -68,9 +97,14 @@ export interface MemoryCacheOptions {
 interface Entry {
   value: unknown
   expiresAt: number
+  /** Past this, the value is not even good enough to serve when a refresh fails. */
+  usableUntil: number
 }
 
 const DEFAULT_MAX_ENTRIES = 5_000
+
+const asPolicy = (policy: number | CachePolicy): CachePolicy =>
+  typeof policy === 'number' ? { ttlMs: policy } : policy
 
 export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
   const now = options.now ?? Date.now
@@ -82,10 +116,10 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
   function evict(): void {
     if (entries.size <= maxEntries) return
 
-    // Expired entries are free to drop, so take those first.
+    // Entries nobody could use even as a fallback are free to drop, so take those first.
     const cutoff = now()
     for (const [key, entry] of entries) {
-      if (entry.expiresAt <= cutoff) entries.delete(key)
+      if (entry.usableUntil <= cutoff) entries.delete(key)
     }
 
     // Still over: drop the oldest inserted. A Map iterates in insertion order, so the first key
@@ -99,7 +133,9 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
   }
 
   return {
-    read<T>(key: string, ttlMs: number, load: () => Promise<T>): Promise<T> {
+    read<T>(key: string, policy: number | CachePolicy, load: () => Promise<T>): Promise<T> {
+      const { ttlMs, staleIfErrorMs = 0 } = asPolicy(policy)
+
       const hit = entries.get(key)
       if (hit !== undefined && hit.expiresAt > now()) return Promise.resolve(hit.value as T)
 
@@ -111,12 +147,28 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
       const attempt = (async (): Promise<T> => {
         try {
           const value = await load()
-          entries.set(key, { value, expiresAt: now() + ttlMs })
+          entries.set(key, {
+            value,
+            expiresAt: now() + ttlMs,
+            usableUntil: now() + ttlMs + staleIfErrorMs,
+          })
           evict()
           return value
+        } catch (err) {
+          // The refresh failed. If we still hold a value that is old but not *too* old, serve it
+          // rather than the error. See CachePolicy.staleIfErrorMs: for chain-wide data a
+          // two-minute-old answer beats a 504, and for account data there is no such thing as an
+          // acceptable guess, which is why staleIfErrorMs defaults to 0 and account reads never
+          // set it.
+          //
+          // Note what is *not* happening: the failure is not cached, and the entry's deadlines are
+          // not extended. The next caller tries upstream again, and once the value ages past
+          // usableUntil it stops being served at all, so a long outage surfaces as an error rather
+          // than as data from last week.
+          const stale = entries.get(key)
+          if (stale !== undefined && stale.usableUntil > now()) return stale.value as T
+          throw err
         } finally {
-          // On success the value is now in `entries`; on failure nothing was stored, so the next
-          // caller retries rather than inheriting the error. Either way this attempt is over.
           inFlight.delete(key)
         }
       })()
@@ -144,7 +196,7 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
  * the provider factory.
  */
 export const noCache: Cache = {
-  read<T>(_key: string, _ttlMs: number, load: () => Promise<T>): Promise<T> {
+  read<T>(_key: string, _policy: number | CachePolicy, load: () => Promise<T>): Promise<T> {
     return load()
   },
   size: 0,

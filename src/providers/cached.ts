@@ -12,6 +12,17 @@ import type { ChainProvider } from './provider.js'
 export const TIP_TTL_MS = 10_000
 
 /**
+ * The one key the tip is cached under, exported so nothing else invents a second one.
+ *
+ * The pool module needs the current epoch to key its ranking on, and it must get it from the
+ * *same* cache entry this decorator uses. Two keys for one tip would mean two upstream reads and,
+ * worse, two answers: at an epoch boundary the decorator and the pool ranking could briefly
+ * disagree about which epoch it is, and the ranking would be keyed on an epoch nobody else
+ * believed in.
+ */
+export const TIP_CACHE_KEY = 'chain:tip'
+
+/**
  * Protocol parameters are keyed on the epoch, so this TTL is a memory bound rather than a
  * freshness policy: it only has to outlive an epoch (5 days) so the entry survives as long as
  * its key is current.
@@ -57,7 +68,7 @@ export const PROTOCOL_PARAMS_TTL_MS = 6 * 24 * 60 * 60 * 1000
  */
 export function withCache(provider: ChainProvider, cache: Cache): ChainProvider {
   const getTip: ChainProvider['getTip'] = () =>
-    cache.read('chain:tip', TIP_TTL_MS, () => provider.getTip())
+    cache.read(TIP_CACHE_KEY, TIP_TTL_MS, () => provider.getTip())
 
   return {
     ...provider,

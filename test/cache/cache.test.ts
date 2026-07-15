@@ -156,3 +156,104 @@ describe('noCache', () => {
     expect(noCache.size).toBe(0)
   })
 })
+
+describe('stale-if-error', () => {
+  /** A loader that succeeds, then fails on demand. */
+  function flaky(value: string) {
+    let failing = false
+    const load = async (): Promise<string> => {
+      if (failing) throw new Error('upstream is having a moment')
+      return value
+    }
+    return { load, breakIt: () => void (failing = true) }
+  }
+
+  // The property that turns an upstream wobble into slightly-old data instead of a 504. Measured
+  // on live mainnet, a quarter of pool-list requests fail today; a saturation figure two minutes
+  // old is worth immeasurably more to the person choosing a pool than an error page.
+  it('serves the last good value when a refresh fails', async () => {
+    const time = clock()
+    const cache = createMemoryCache({ now: time.now })
+    const upstream = flaky('pools')
+
+    expect(await cache.read('k', { ttlMs: 1000, staleIfErrorMs: 60_000 }, upstream.load)).toBe(
+      'pools',
+    )
+
+    time.advance(2000) // past the TTL, inside the stale window
+    upstream.breakIt()
+
+    expect(await cache.read('k', { ttlMs: 1000, staleIfErrorMs: 60_000 }, upstream.load)).toBe(
+      'pools',
+    )
+  })
+
+  // Not a longer TTL, and the difference is the whole point: inside the TTL we never ask upstream,
+  // past it we do, and this only changes what happens when that ask *fails*.
+  it('still refreshes when upstream is healthy', async () => {
+    const time = clock()
+    const cache = createMemoryCache({ now: time.now })
+    const load = vi.fn(async () => 'v')
+
+    await cache.read('k', { ttlMs: 1000, staleIfErrorMs: 60_000 }, load)
+    time.advance(2000)
+    await cache.read('k', { ttlMs: 1000, staleIfErrorMs: 60_000 }, load)
+
+    expect(load).toHaveBeenCalledTimes(2)
+  })
+
+  // An outage has to surface eventually. Data this old is not "slightly stale", it is wrong, and a
+  // wallet showing it would be lying to someone about the state of the chain.
+  it('gives up once the value is older than the stale window', async () => {
+    const time = clock()
+    const cache = createMemoryCache({ now: time.now })
+    const upstream = flaky('pools')
+
+    await cache.read('k', { ttlMs: 1000, staleIfErrorMs: 60_000 }, upstream.load)
+
+    time.advance(120_000) // past TTL *and* past the stale window
+    upstream.breakIt()
+
+    await expect(
+      cache.read('k', { ttlMs: 1000, staleIfErrorMs: 60_000 }, upstream.load),
+    ).rejects.toThrow('upstream is having a moment')
+  })
+
+  it('does not extend the window each time a refresh fails', async () => {
+    const time = clock()
+    const cache = createMemoryCache({ now: time.now })
+    const upstream = flaky('pools')
+
+    await cache.read('k', { ttlMs: 1000, staleIfErrorMs: 10_000 }, upstream.load)
+    upstream.breakIt()
+
+    // Repeated failed refreshes inside the window keep serving the value...
+    time.advance(5000)
+    expect(await cache.read('k', { ttlMs: 1000, staleIfErrorMs: 10_000 }, upstream.load)).toBe(
+      'pools',
+    )
+
+    // ...but they do not reset the clock. A long outage still ends in an error rather than in a
+    // value that gets quietly renewed forever on the strength of it never succeeding.
+    time.advance(10_000)
+    await expect(
+      cache.read('k', { ttlMs: 1000, staleIfErrorMs: 10_000 }, upstream.load),
+    ).rejects.toThrow()
+  })
+
+  // The rule that must not be broken. Account-scoped data has no acceptable stale value: a stale
+  // balance or UTxO set handed to a wallet about to build a transaction produces a failed
+  // submission or a double-spend. "Upstream was down" is not a licence to guess at someone's money.
+  it('is off by default, so a plain TTL never serves stale data', async () => {
+    const time = clock()
+    const cache = createMemoryCache({ now: time.now })
+    const upstream = flaky('balance')
+
+    await cache.read('account', 1000, upstream.load)
+
+    time.advance(2000)
+    upstream.breakIt()
+
+    await expect(cache.read('account', 1000, upstream.load)).rejects.toThrow()
+  })
+})

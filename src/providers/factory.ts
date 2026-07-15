@@ -11,13 +11,14 @@ export interface ProviderDeps {
   onRetry?: (event: RetryEvent) => void
 }
 
-function createDriver(config: AppConfig, deps: ProviderDeps): ChainProvider {
+function createDriver(config: AppConfig, deps: ProviderDeps, cache: Cache): ChainProvider {
   switch (config.provider) {
     case 'koios':
       return createKoiosProvider({
         baseUrl: config.koios.url,
         token: config.koios.token,
         onRetry: deps.onRetry,
+        cache,
       })
     case 'blockfrost':
     case 'dingo':
@@ -35,11 +36,15 @@ function createDriver(config: AppConfig, deps: ProviderDeps): ChainProvider {
  * wired today; the Blockfrost and Dingo drivers slot in here as they land, behind the same
  * interface, and they inherit the caching because it wraps the interface rather than the driver.
  *
- * The cache is created here rather than inside a driver so there is exactly one of it, and so a
- * unit test that builds a driver directly gets no caching and its upstream call counts mean what
- * they look like.
+ * The cache is created here so there is exactly **one** of it, and so a unit test that builds a
+ * driver directly gets no caching and its upstream call counts mean what they look like.
+ *
+ * The same instance goes to both the decorator and the driver, and it matters that it is the same
+ * one. The decorator caches the tip; the pool module needs the current epoch to key its ranking
+ * on, and reads it through the same key. Two caches would mean two tips, two upstream reads, and
+ * at an epoch boundary two different opinions about which epoch it is.
  */
 export function createProvider(config: AppConfig, deps: ProviderDeps = {}): ChainProvider {
   const cache: Cache = config.cacheEnabled ? createMemoryCache() : noCache
-  return withCache(createDriver(config, deps), cache)
+  return withCache(createDriver(config, deps, cache), cache)
 }

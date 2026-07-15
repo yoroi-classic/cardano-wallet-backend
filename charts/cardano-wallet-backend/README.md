@@ -50,7 +50,7 @@ By default the chart does not render `CONFIG_URL`, so the app uses its built-in
 
 ```bash
 helm upgrade --install cardano-wallet-backend charts/cardano-wallet-backend \
-  --set config.remoteConfig.url=https://yoroi-config.blinklabs.cloud/prod.json
+  --set config.remoteConfig.url=https://raw.githubusercontent.com/yoroi-classic/yoroi-config/refs/heads/main/prod.json
 ```
 
 To disable `/v1/config` explicitly:

@@ -1,0 +1,52 @@
+name: helm-chart
+
+on:
+  push:
+    branches: [development, preview, preprod, main]
+    paths:
+      - 'charts/**'
+      - '.github/workflows/helm-chart.yml'
+  pull_request:
+    branches: [development, preview, preprod, main]
+    paths:
+      - 'charts/**'
+      - '.github/workflows/helm-chart.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: helm-chart-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cardano-wallet-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: 3.21.3
+
+      - name: Lint chart
+        run: helm lint charts/cardano-wallet-backend
+
+      - name: Render default chart
+        run: helm template cardano-wallet-backend charts/cardano-wallet-backend
+
+      - name: Render ingress chart
+        run: |
+          helm template cardano-wallet-backend charts/cardano-wallet-backend \
+            --set ingress.enabled=true \
+            --set 'ingress.hosts[0].host=cardano-wallet-backend.example.com'
+
+      - name: Render secret-backed chart
+        run: |
+          helm template cardano-wallet-backend charts/cardano-wallet-backend \
+            --set secrets.existingSecret=cardano-wallet-backend-secrets
+
+      - name: Render remote config override
+        run: |
+          helm template cardano-wallet-backend charts/cardano-wallet-backend \
+            --set config.remoteConfig.url=https://raw.githubusercontent.com/yoroi-classic/yoroi-config/refs/heads/main/prod.json

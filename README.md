@@ -90,6 +90,17 @@ docker compose up -d          # preprod on :3010
 curl localhost:3010/v1/status
 ```
 
+## Kubernetes
+
+An initial Helm chart lives in `charts/cardano-wallet-backend`.
+
+```bash
+helm lint charts/cardano-wallet-backend
+helm template cardano-wallet-backend charts/cardano-wallet-backend
+```
+
+See `charts/cardano-wallet-backend/README.md` for local install and secret configuration.
+
 ## Configuration
 
 See `.env.example`. Key values:

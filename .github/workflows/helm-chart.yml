@@ -1,0 +1,73 @@
+name: helm-chart
+
+on:
+  push:
+    branches: [development, preview, preprod, main]
+    paths:
+      - 'charts/**'
+      - '.github/workflows/helm-chart.yml'
+  pull_request:
+    branches: [development, preview, preprod, main]
+    paths:
+      - 'charts/**'
+      - '.github/workflows/helm-chart.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: helm-chart-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cardano-wallet-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: 3.21.3
+      - name: Set up Kubernetes API
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+        with:
+          version: v0.31.0
+          kubectl_version: v1.35.0
+
+      - name: Lint chart
+        run: helm lint charts/cardano-wallet-backend
+
+      - name: Validate default chart
+        run: helm template cardano-wallet-backend charts/cardano-wallet-backend | kubectl apply --dry-run=server -f -
+
+      - name: Validate ingress chart
+        run: |
+          helm template cardano-wallet-backend charts/cardano-wallet-backend \
+            --set ingress.enabled=true \
+            --set 'ingress.hosts[0].host=cardano-wallet-backend.example.com' \
+          | kubectl apply --dry-run=server -f -
+
+      - name: Validate secret-backed chart
+        run: |
+          helm template cardano-wallet-backend charts/cardano-wallet-backend \
+            --set secrets.existingSecret=cardano-wallet-backend-secrets \
+          | kubectl apply --dry-run=server -f -
+
+      - name: Validate remote config override
+        run: |
+          helm template cardano-wallet-backend charts/cardano-wallet-backend \
+            --set config.remoteConfig.url=https://raw.githubusercontent.com/yoroi-classic/yoroi-config/0000000000000000000000000000000000000000/prod.json \
+          | kubectl apply --dry-run=server -f -
+
+      - name: Validate defensive string overrides
+        run: |
+          helm template cardano-wallet-backend charts/cardano-wallet-backend \
+            --set nameOverride=123 \
+            --set serviceAccount.name=123 \
+            --set ingress.enabled=true \
+            --set ingress.className=123 \
+            --set 'ingress.tls[0].hosts[0]=cardano-wallet-backend.example.com' \
+            --set 'ingress.tls[0].secretName=123' \
+            --set 'podLabels.app\.kubernetes\.io/name=ignored' \
+            --set 'podLabels.app\.kubernetes\.io/instance=ignored' \
+          | kubectl apply --dry-run=server -f -

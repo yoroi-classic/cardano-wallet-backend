@@ -50,7 +50,7 @@ By default the chart does not render `CONFIG_URL`, so the app uses its built-in
 `yoroi-classic/yoroi-config` default. To serve a pinned config URL:
 
 ```bash
-CONFIG_COMMIT=<yoroi-config-commit-sha>
+CONFIG_COMMIT=YOUR_COMMIT_SHA
 
 helm upgrade --install cardano-wallet-backend charts/cardano-wallet-backend \
   --set config.remoteConfig.url=https://raw.githubusercontent.com/yoroi-classic/yoroi-config/${CONFIG_COMMIT}/prod.json

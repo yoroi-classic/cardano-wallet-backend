@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { noCache, type Cache } from '../../cache/index.js'
 import { POLICY_ID_HEX_LEN } from '../../domain/constants.js'
 import type { TokenMetadata } from '../../domain/types/assets.js'
 import type { AssetCapability } from '../capabilities/assets.js'
@@ -457,30 +458,76 @@ function mapTokenMetadata(row: z.infer<typeof assetInfoRow>): TokenMetadata {
   return { ...base, source: 'none' }
 }
 
-export function createAssetMethods(koios: KoiosClient): AssetCapability {
+/**
+ * How long a token's metadata is cached.
+ *
+ * Almost every field is fixed at mint: the name, ticker, decimals, image, fingerprint, and the
+ * traits do not change, and a CIP-26 registry edit is a pull request that lands rarely. The one
+ * field that drifts is `supply`, as the token is minted or burned. Ten minutes bounds how stale
+ * that can get, which for a supply figure on a token screen is imperceptible, while the classifi-
+ * cation a wallet actually acts on (`supply === 1` means an NFT) never flips: an NFT does not
+ * start minting more of itself.
+ *
+ * The win is cross-user. The tokens a wallet holds are mostly the popular ones every other wallet
+ * holds too, so the second request for HOSKY costs nothing.
+ */
+const TOKEN_METADATA_TTL_MS = 10 * 60_000
+
+export interface AssetMethodDeps {
+  /** Cache for per-subject token metadata. Defaults to none. */
+  cache?: Cache
+}
+
+export function createAssetMethods(
+  koios: KoiosClient,
+  deps: AssetMethodDeps = {},
+): AssetCapability {
+  const cache = deps.cache ?? noCache
+
   return {
     async getTokenMetadata(subjects: string[]): Promise<TokenMetadata[]> {
       if (subjects.length === 0) return []
       // Koios keys assets by lowercase hex; normalize so lookups match its response.
       const normalized = subjects.map((s) => s.toLowerCase())
-      const pairs = normalized.map((s) => [
-        s.slice(0, POLICY_ID_HEX_LEN),
-        s.slice(POLICY_ID_HEX_LEN),
-      ])
 
-      // Packed against the upstream body limit, which matters more here than anywhere else: a
-      // subject is a 56-char policy id plus an asset name of 0 to 64 hex chars, so unlike a pool
-      // or DRep id it is *variable* length. The old fixed count of 20 was safe by luck rather
-      // than by construction, since nothing checked that 20 worst-case subjects still fit.
-      const path = `/asset_info?select=${encodeURIComponent(ASSET_INFO_SELECT)}`
-      const rows = await koios.batchAll(assetInfoRow, path, pairs, (chunk) => ({
-        _asset_list: chunk,
-      }))
-      const bySubject = new Map(rows.map((r) => [r.policy_id + r.asset_name, r]))
+      // Serve from cache what we can, batch-fetch the rest. This is a batch load, so it cannot go
+      // through cache.read (one key, one loader); it is peek-the-hits, fetch-the-misses, set-each,
+      // the same shape as the DRep name cache. A wallet re-asking about tokens it holds, or a
+      // second wallet asking about the same popular ones, pays nothing.
+      const found = new Map<string, TokenMetadata>()
+      const missing: string[] = []
+      for (const subject of normalized) {
+        const hit = cache.peek<TokenMetadata>(`asset:meta:${subject}`)
+        if (hit !== undefined) found.set(subject, hit)
+        else missing.push(subject)
+      }
+
+      if (missing.length > 0) {
+        const pairs = missing.map((s) => [
+          s.slice(0, POLICY_ID_HEX_LEN),
+          s.slice(POLICY_ID_HEX_LEN),
+        ])
+
+        // Packed against the upstream body limit, which matters more here than anywhere else: a
+        // subject is a 56-char policy id plus an asset name of 0 to 64 hex chars, so unlike a pool
+        // or DRep id it is *variable* length. The old fixed count of 20 was safe by luck rather
+        // than by construction, since nothing checked that 20 worst-case subjects still fit.
+        const path = `/asset_info?select=${encodeURIComponent(ASSET_INFO_SELECT)}`
+        const rows = await koios.batchAll(assetInfoRow, path, pairs, (chunk) => ({
+          _asset_list: chunk,
+        }))
+        for (const row of rows) {
+          const meta = mapTokenMetadata(row)
+          const subject = row.policy_id + row.asset_name
+          found.set(subject, meta)
+          cache.set(`asset:meta:${subject}`, meta, TOKEN_METADATA_TTL_MS)
+        }
+      }
+
       // Return in the caller's order; unknown subjects are simply absent from Koios.
       return normalized.flatMap((subject) => {
-        const row = bySubject.get(subject)
-        return row ? [mapTokenMetadata(row)] : []
+        const meta = found.get(subject)
+        return meta ? [meta] : []
       })
     },
   }

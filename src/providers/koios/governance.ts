@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { noCache, type Cache } from '../../cache/index.js'
 import { ProviderError } from '../../domain/errors.js'
 import { drepCredentialHex } from '../../domain/drep.js'
 import type { DrepInfo, DrepListParams } from '../../domain/types/governance.js'
@@ -9,6 +10,32 @@ import { numeric, packBySize } from './schema.js'
 // Koios caps a response at 1000 rows; ~1.7k DReps on mainnet today.
 const DREP_LIST_PAGE_SIZE = 1000
 const DREP_LIST_MAX_PAGES = 20
+
+/**
+ * How long the DRep *membership* list is cached.
+ *
+ * Membership, not the numbers. DReps register and deregister continuously, but not fast enough
+ * that a couple of minutes of staleness in *who is on the list* misleads anyone. What is emphati-
+ * cally not cached for two minutes is a DRep's `votingPower` or `active` flag: those are the
+ * figures someone reads while deciding who to delegate their vote to, and they are hydrated fresh
+ * on every request. See getDrepList.
+ *
+ * The read this replaces is the reason it matters: the registered filter cannot be pushed upstream
+ * (Koios fails `registered=eq.true` about half the time on mainnet), so every request scans the
+ * whole list and filters here. Caching the membership turns that from once-per-request into
+ * once-per-two-minutes.
+ */
+const DREP_MEMBERSHIP_TTL_MS = 2 * 60_000
+
+/** Held a little past expiry if a refresh fails: a slightly stale *membership* list beats a 502. */
+const DREP_MEMBERSHIP_STALE_MS = 10 * 60_000
+
+/**
+ * Off-chain names and images change only when a DRep updates their metadata, which is rare, so
+ * they get a long TTL. This is a separate cache from the membership because it answers a separate
+ * question, and resolving it is a separate upstream call we would rather not repeat.
+ */
+const DREP_METADATA_TTL_MS = 60 * 60_000
 
 const drepListRow = z.object({
   drep_id: z.string(),
@@ -94,7 +121,32 @@ function drepMetaFields(metaJson: unknown): { name?: string; image?: string } {
   return { ...(name ? { name } : {}), ...(image ? { image } : {}) }
 }
 
-export function createGovernanceMethods(koios: KoiosClient): GovernanceCapability {
+export interface GovernanceMethodDeps {
+  /** Cache for the DRep membership list and the off-chain names. Defaults to none. */
+  cache?: Cache
+}
+
+export function createGovernanceMethods(
+  koios: KoiosClient,
+  deps: GovernanceMethodDeps = {},
+): GovernanceCapability {
+  const cache = deps.cache ?? noCache
+  // Whether we have a *real* cache. It changes the strategy, not just the speed: with a cache we
+  // read the *whole* membership once and slice every page from it; without one, we keep the
+  // early-exit that stops the walk as soon as the requested page is in hand, because reading the
+  // whole list on every uncached request would be strictly worse than the bounded read it
+  // replaced. Compared against the noCache singleton rather than `undefined`, because the provider
+  // always passes a cache down and it is noCache that means "not caching".
+  const caching = cache !== noCache
+
+  /** A namespaced view of the shared cache, so a DRep hex cannot collide with any other key. */
+  const metadataCache = {
+    peek: (hex: string): { name?: string; image?: string } | undefined =>
+      cache.peek(`gov:drep-meta:${hex}`),
+    set: (hex: string, fields: { name?: string; image?: string }): void =>
+      cache.set(`gov:drep-meta:${hex}`, fields, DREP_METADATA_TTL_MS),
+  }
+
   // Read DRep ids in upstream order, keeping the registered ones, until `needed` of them are
   // in hand or the list runs out.
   //
@@ -170,17 +222,39 @@ export function createGovernanceMethods(koios: KoiosClient): GovernanceCapabilit
     drepIds: string[],
   ): Promise<Map<string, { name?: string; image?: string }>> {
     const byHex = new Map<string, { name?: string; image?: string }>()
-    const toBody = (chunk: string[]): unknown => ({ _drep_ids: chunk })
 
-    for (const chunk of packBySize(drepIds, toBody, koios.bodyLimit)) {
+    // Serve from cache what we can, and ask upstream only for the rest. Off-chain metadata changes
+    // only when a DRep updates it, which is rare, so a name resolved once is good for an hour. On
+    // a full page of a list whose names were fetched moments ago, this drops the /drep_metadata
+    // round trip entirely.
+    //
+    // The cache is read directly rather than through `cache.read(load)`, because the load here is
+    // a *batch*: one upstream call resolves many DReps at once, so the fetch cannot be expressed
+    // as one loader per key. So this is a plain get, and a plain set once the batch returns.
+    const missing: string[] = []
+    for (const id of drepIds) {
+      const hex = drepCredentialHex(id)
+      if (hex === undefined) continue
+      const cached = metadataCache.peek(hex)
+      if (cached !== undefined) byHex.set(hex, cached)
+      else missing.push(id)
+    }
+    if (missing.length === 0) return byHex
+
+    const toBody = (chunk: string[]): unknown => ({ _drep_ids: chunk })
+    for (const chunk of packBySize(missing, toBody, koios.bodyLimit)) {
       try {
         const rows = await koios.batch(z.array(drepMetadataRow), '/drep_metadata', toBody(chunk))
         for (const row of rows) {
           const hex = drepCredentialHex(row.drep_id)
-          if (hex !== undefined) byHex.set(hex, drepMetaFields(row.meta_json))
+          if (hex === undefined) continue
+          const fields = drepMetaFields(row.meta_json)
+          byHex.set(hex, fields)
+          metadataCache.set(hex, fields)
         }
       } catch {
-        // Names for this chunk are simply unavailable. The DReps still resolve.
+        // Names for this chunk are simply unavailable. The DReps still resolve, and nothing is
+        // cached for them, so the next request tries again rather than caching the gap.
         continue
       }
     }
@@ -235,7 +309,22 @@ export function createGovernanceMethods(koios: KoiosClient): GovernanceCapabilit
       // on some of the instances behind the endpoint). The field itself is reliably present
       // in the rows, so the whole list is read and filtered here. That is also what makes
       // paging honest: filtering after an upstream limit/offset would hand back short pages.
-      const registered = await registeredDreps(offset + limit)
+      //
+      // With a cache: read the whole membership once and slice from it, because page one of a
+      // cached list must already contain the ids page two will need. Caching per (offset, limit)
+      // would cache each page and rescan for every cold one, which is exactly the trap the pool
+      // list fell into.
+      //
+      // Without a cache: keep the early-exit, reading only far enough to serve this page. Reading
+      // the whole list on every request, with nowhere to keep it, would be strictly worse than
+      // the bounded walk it replaced.
+      const registered = caching
+        ? await cache.read(
+            'gov:drep-membership',
+            { ttlMs: DREP_MEMBERSHIP_TTL_MS, staleIfErrorMs: DREP_MEMBERSHIP_STALE_MS },
+            () => registeredDreps(Number.POSITIVE_INFINITY),
+          )
+        : await registeredDreps(offset + limit)
       const page = registered.slice(offset, offset + limit)
 
       // /drep_list said these were registered, but /drep_info is a second round trip and a

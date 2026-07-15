@@ -52,8 +52,8 @@ export function createKoiosProvider(options: KoiosProviderOptions): ChainProvide
     ...chain,
     ...createAccountMethods(koios),
     ...createAddressMethods(koios),
-    ...createAssetMethods(koios),
-    ...createGovernanceMethods(koios),
+    ...createAssetMethods(koios, { cache }),
+    ...createGovernanceMethods(koios, { cache }),
     ...createPoolMethods(koios, { cache, currentEpoch }),
     ...createTxMethods(koios),
   }

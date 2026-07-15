@@ -77,6 +77,20 @@ export interface Cache {
    */
   read<T>(key: string, policy: number | CachePolicy, load: () => Promise<T>): Promise<T>
 
+  /**
+   * The cached value for `key` if it is live, or `undefined`. Never calls upstream.
+   *
+   * `read` is the right tool when one key maps to one loader. `peek`/`set` are for the case it
+   * cannot express: a **batch** load, where a single upstream call resolves many keys at once (the
+   * DRep name lookup fetches a page of names in one request). There, the get and the store cannot
+   * be wrapped around one loader, so they are split: peek each key, batch-fetch the misses, set
+   * each result.
+   */
+  peek<T>(key: string): T | undefined
+
+  /** Store a value under `key` with a TTL. The counterpart to `peek` for batch loads. */
+  set<T>(key: string, value: T, ttlMs: number): void
+
   /** Live entries. For tests and diagnostics. */
   readonly size: number
 
@@ -177,6 +191,18 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
       return attempt
     },
 
+    peek<T>(key: string): T | undefined {
+      const hit = entries.get(key)
+      return hit !== undefined && hit.expiresAt > now() ? (hit.value as T) : undefined
+    },
+
+    set<T>(key: string, value: T, ttlMs: number): void {
+      // No stale window on this path: peek/set is for batch loads where the caller decides what to
+      // do on a miss, and a plain TTL is all a per-key entry needs.
+      entries.set(key, { value, expiresAt: now() + ttlMs, usableUntil: now() + ttlMs })
+      evict()
+    },
+
     get size(): number {
       return entries.size
     },
@@ -199,6 +225,10 @@ export const noCache: Cache = {
   read<T>(_key: string, _policy: number | CachePolicy, load: () => Promise<T>): Promise<T> {
     return load()
   },
+  peek<T>(_key: string): T | undefined {
+    return undefined
+  },
+  set<T>(_key: string, _value: T, _ttlMs: number): void {},
   size: 0,
   clear(): void {},
 }

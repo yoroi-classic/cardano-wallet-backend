@@ -1,6 +1,8 @@
 import type { FastifyBaseLogger, FastifyInstance } from 'fastify'
+import { createMemoryCache, noCache, type Cache } from './cache/index.js'
 import { loadConfig } from './config/index.js'
 import { createNftcdnSigner } from './media/nftcdn.js'
+import { createRemoteConfig } from './remote-config/index.js'
 import { createProvider } from './providers/factory.js'
 import { buildServer } from './http/server.js'
 import { version } from './version.js'
@@ -66,18 +68,32 @@ async function main(): Promise<void> {
   // log to put in it. Nothing can retry before then: a retry only happens inside a request, and
   // no request arrives before there is a server to receive it.
   const log: { current?: FastifyBaseLogger } = {}
+
+  // One cache for the process, shared by the chain provider and the remote config. Built here so
+  // there is a single place that decides whether caching is on, and a single place that owns it.
+  const cache: Cache = config.cacheEnabled ? createMemoryCache() : noCache
+
   const provider = createProvider(config, {
     onRetry: (event) => log.current?.warn(event, 'retrying an upstream read'),
+    cache,
   })
 
   // Optional upstream: without it, the media routes answer 503 and everything else works.
   const nftcdn = config.nftcdn === undefined ? undefined : createNftcdnSigner(config.nftcdn)
+
+  // Shares the provider's cache, so a config fetch is one request every five minutes rather than
+  // one per wallet launch, and survives a GitHub outage for a day. See src/remote-config.
+  const remoteConfig =
+    config.configUrl === undefined
+      ? undefined
+      : createRemoteConfig({ url: config.configUrl, cache })
 
   const app = await buildServer({
     provider,
     logger: { level: config.logLevel },
     info: { version, network: config.network, provider: provider.name },
     ...(nftcdn === undefined ? {} : { nftcdn }),
+    ...(remoteConfig === undefined ? {} : { remoteConfig }),
     corsOrigins: config.corsOrigins,
     rateLimit: config.rateLimit,
   })
@@ -96,6 +112,7 @@ async function main(): Promise<void> {
         rateLimit: config.rateLimit ?? 'disabled',
         // The subdomain, never the key. This line goes to a log that outlives the process.
         media: config.nftcdn === undefined ? 'disabled' : `nftcdn:${config.nftcdn.subdomain}`,
+        remoteConfig: config.configUrl ?? 'disabled',
       },
       `cardano-wallet-backend listening on ${config.host}:${config.port}`,
     )

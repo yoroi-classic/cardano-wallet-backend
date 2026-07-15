@@ -51,4 +51,23 @@ export interface TokenMetadata {
   url?: string
   /** Image pointer (URL/URI), from CIP-25 or CIP-68 metadata. Not image bytes. */
   image?: string
+  /**
+   * NFT traits: the collection-specific attributes a minter attached to this asset, such as
+   * `background: "Seafoam Green"` or `accessories: "Spider"`.
+   *
+   * There is no standard for these. CIP-25 reserves a handful of field names (`name`, `image`,
+   * `description`, `mediaType`, `files`) and leaves the rest of the map to the minter, so the
+   * traits *are* whatever is left over. That is why this is an open map rather than a typed
+   * shape: inventing a schema for it would only be inventing a schema the minters never agreed
+   * to.
+   *
+   * **No rarity.** A trait's rarity ("2% of the collection has Spider") cannot be computed from
+   * one asset: it needs every asset in the policy, which for a ten-thousand-piece collection is
+   * over a hundred upstream calls and minutes of work. That is an indexing job, not a request.
+   * See the issue linked in the provider.
+   *
+   * Absent for a token with no traits, which is most of them: a fungible token has none, and
+   * neither does an NFT whose minter only set a name and an image.
+   */
+  traits?: Record<string, string>
 }

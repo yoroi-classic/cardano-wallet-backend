@@ -36,3 +36,22 @@ jobs:
         run: npm run audit:prod
       - name: Docker build check
         run: npm run docker:build
+
+      # `npm audit` only ever sees our own dependency tree. It knows nothing about the base image,
+      # which is most of what actually ships: the Debian packages, and the npm that Node bundles.
+      # When this was first run against the image, it found seven fixable HIGH/CRITICAL advisories
+      # that every other gate here was blind to, two of them CRITICAL.
+      #
+      # --ignore-unfixed is the load-bearing flag. A Debian slim image always carries a tail of
+      # advisories with no fix published anywhere, and failing on those would be a gate nobody can
+      # pass, which is a gate somebody eventually deletes. This fails only on what we can actually
+      # do something about, which makes a red build a real instruction rather than a nuisance.
+      - name: Scan the image for known vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: cardano-wallet-backend:ci
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+          format: table

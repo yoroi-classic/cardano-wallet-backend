@@ -1020,3 +1020,130 @@ describe('koios getTokenMetadata — CIP-25 version edge cases', () => {
     expect(token?.name).toBe('The unnamed one')
   })
 })
+
+// Traits are the collection-specific attributes a minter attached: `background: "Seafoam Green"`,
+// `accessories: "Spider"`. They cost nothing extra: they are already in the metadata we fetch.
+describe('koios getTokenMetadata — NFT traits', () => {
+  const POLICY = 'd'.repeat(56)
+  const NAME_HEX = Buffer.from('ClayNation1', 'utf8').toString('hex')
+  const SUBJECT = POLICY + NAME_HEX
+
+  function nftRow(attrs: Record<string, unknown>) {
+    return {
+      [SUBJECT]: {
+        policy_id: POLICY,
+        asset_name: NAME_HEX,
+        asset_name_ascii: 'ClayNation1',
+        fingerprint: 'asset1clay',
+        total_supply: '1',
+        name: null,
+        ticker: null,
+        description: null,
+        url: null,
+        decimals: null,
+        minting_tx_metadata: { '721': { [POLICY]: { ClayNation1: attrs } } },
+        cip68_metadata: null,
+      },
+    }
+  }
+
+  // Shaped after a real mainnet Clay Nation NFT.
+  it('extracts every field the spec did not reserve', async () => {
+    const { fetchImpl } = assetFetch(
+      nftRow({
+        name: 'Clay Nation #0001',
+        image: 'ipfs://QmUHdjHYQ',
+        mediaType: 'image/png',
+        Project: 'Clay Nation by Clay Mates',
+        background: 'Seafoam Green',
+        accessories: 'Spider',
+        'hats and hair': 'Green Mohawk',
+      }),
+    )
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [token] = await provider.getTokenMetadata([SUBJECT])
+
+    // There is no list of trait names to match against, so we subtract the reserved ones instead.
+    // An allowlist would silently drop the traits of the next collection to mint.
+    expect(token?.traits).toEqual({
+      background: 'Seafoam Green',
+      accessories: 'Spider',
+      'hats and hair': 'Green Mohawk',
+    })
+    // The reserved fields stay where they belong and do not leak in as traits.
+    expect(token?.name).toBe('Clay Nation #0001')
+    expect(token?.image).toBe('ipfs://QmUHdjHYQ')
+    expect(token?.traits).not.toHaveProperty('name')
+    expect(token?.traits).not.toHaveProperty('image')
+    expect(token?.traits).not.toHaveProperty('mediaType')
+  })
+
+  // Every NFT in the collection carries the same `Project`, so surfacing it would put a
+  // 100%-common "trait" at the top of every card. It is a collection label, not a property.
+  it('excludes the collection-level Project label', async () => {
+    const { fetchImpl } = assetFetch(
+      nftRow({ name: 'A', image: 'ipfs://x', Project: 'Clay Nation', eyes: 'Eye Sockets' }),
+    )
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [token] = await provider.getTokenMetadata([SUBJECT])
+
+    expect(token?.traits).toEqual({ eyes: 'Eye Sockets' })
+  })
+
+  // CIP-25 splits any value over 64 bytes across an array, so a long trait would otherwise arrive
+  // as fragments.
+  it('joins a chunked trait value', async () => {
+    const { fetchImpl } = assetFetch(
+      nftRow({ name: 'A', image: 'ipfs://x', lore: ['Once upon a time, ', 'a very long story.'] }),
+    )
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [token] = await provider.getTokenMetadata([SUBJECT])
+
+    expect(token?.traits?.lore).toBe('Once upon a time, a very long story.')
+  })
+
+  // A nested object is structure, not a trait. Rendering `[object Object]` on someone's NFT card
+  // is worse than leaving the field out.
+  it('drops a trait whose value is not a label', async () => {
+    const { fetchImpl } = assetFetch(
+      nftRow({
+        name: 'A',
+        image: 'ipfs://x',
+        eyes: 'Blue',
+        nested: { deep: { deeper: true } },
+      }),
+    )
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [token] = await provider.getTokenMetadata([SUBJECT])
+
+    expect(token?.traits).toEqual({ eyes: 'Blue' })
+  })
+
+  // Absent, never an empty object: a token with no traits has none, rather than having zero of
+  // them, and a client rendering `{}` would draw an empty traits panel.
+  it('leaves traits absent for an NFT that has none', async () => {
+    const { fetchImpl } = assetFetch(nftRow({ name: 'Plain', image: 'ipfs://x' }))
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [token] = await provider.getTokenMetadata([SUBJECT])
+
+    expect(token?.traits).toBeUndefined()
+    expect(JSON.parse(JSON.stringify(token))).not.toHaveProperty('traits')
+  })
+
+  // An NFT whose *only* metadata is traits still resolves as cip25 rather than falling through to
+  // 'none', which would lose the traits entirely.
+  it('resolves an asset that carries traits and nothing else', async () => {
+    const { fetchImpl } = assetFetch(nftRow({ background: 'Red' }))
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [token] = await provider.getTokenMetadata([SUBJECT])
+
+    expect(token?.source).toBe('cip25')
+    expect(token?.traits).toEqual({ background: 'Red' })
+  })
+})

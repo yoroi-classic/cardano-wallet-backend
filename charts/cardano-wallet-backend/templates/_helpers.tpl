@@ -2,7 +2,7 @@
 Expand the chart name.
 */}}
 {{- define "cardano-wallet-backend.name" -}}
-{{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" -}}
+{{- default .Chart.Name .Values.nameOverride | toString | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
 {{/*
@@ -10,9 +10,9 @@ Create a default fully qualified app name.
 */}}
 {{- define "cardano-wallet-backend.fullname" -}}
 {{- if .Values.fullnameOverride -}}
-{{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" -}}
+{{- .Values.fullnameOverride | toString | trunc 63 | trimSuffix "-" -}}
 {{- else -}}
-{{- $name := default .Chart.Name .Values.nameOverride -}}
+{{- $name := default .Chart.Name .Values.nameOverride | toString -}}
 {{- if contains $name .Release.Name -}}
 {{- .Release.Name | trunc 63 | trimSuffix "-" -}}
 {{- else -}}
@@ -25,9 +25,9 @@ Create a default fully qualified app name.
 Create chart labels.
 */}}
 {{- define "cardano-wallet-backend.labels" -}}
-helm.sh/chart: {{ include "cardano-wallet-backend.chart" . }}
+helm.sh/chart: {{ include "cardano-wallet-backend.chart" . | quote }}
 {{ include "cardano-wallet-backend.selectorLabels" . }}
-app.kubernetes.io/managed-by: {{ .Release.Service }}
+app.kubernetes.io/managed-by: {{ .Release.Service | quote }}
 {{- end -}}
 
 {{- define "cardano-wallet-backend.chart" -}}
@@ -35,8 +35,8 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
 
 {{- define "cardano-wallet-backend.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "cardano-wallet-backend.name" . }}
-app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/name: {{ include "cardano-wallet-backend.name" . | quote }}
+app.kubernetes.io/instance: {{ .Release.Name | quote }}
 {{- end -}}
 
 {{/*
@@ -44,9 +44,9 @@ Create the service account name.
 */}}
 {{- define "cardano-wallet-backend.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create -}}
-{{- default (include "cardano-wallet-backend.fullname" .) .Values.serviceAccount.name -}}
+{{- default (include "cardano-wallet-backend.fullname" .) .Values.serviceAccount.name | toString -}}
 {{- else -}}
-{{- default "default" .Values.serviceAccount.name -}}
+{{- default "default" .Values.serviceAccount.name | toString -}}
 {{- end -}}
 {{- end -}}
 

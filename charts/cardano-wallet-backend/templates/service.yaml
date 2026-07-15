@@ -1,15 +1,15 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "cardano-wallet-backend.fullname" . }}
+  name: {{ include "cardano-wallet-backend.fullname" . | quote }}
   labels:
     {{- include "cardano-wallet-backend.labels" . | nindent 4 }}
 spec:
-  type: {{ .Values.service.type }}
+  type: {{ .Values.service.type | quote }}
   ports:
     - port: {{ .Values.service.port }}
-      targetPort: http
+      targetPort: "http"
       protocol: TCP
-      name: http
+      name: "http"
   selector:
     {{- include "cardano-wallet-backend.selectorLabels" . | nindent 4 }}

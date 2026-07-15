@@ -2,7 +2,7 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: {{ include "cardano-wallet-backend.fullname" . }}
+  name: {{ include "cardano-wallet-backend.fullname" . | quote }}
   labels:
     {{- include "cardano-wallet-backend.labels" . | nindent 4 }}
   {{- with .Values.ingress.annotations }}
@@ -11,7 +11,7 @@ metadata:
   {{- end }}
 spec:
   {{- with .Values.ingress.className }}
-  ingressClassName: {{ . }}
+  ingressClassName: {{ . | quote }}
   {{- end }}
   {{- if .Values.ingress.tls }}
   tls:
@@ -20,7 +20,7 @@ spec:
         {{- range .hosts }}
         - {{ . | quote }}
         {{- end }}
-      secretName: {{ .secretName }}
+      secretName: {{ .secretName | quote }}
     {{- end }}
   {{- end }}
   rules:
@@ -29,11 +29,11 @@ spec:
       http:
         paths:
           {{- range (.paths | default (list (dict "path" "/" "pathType" "Prefix"))) }}
-          - path: {{ default "/" .path }}
-            pathType: {{ default "Prefix" .pathType }}
+          - path: {{ default "/" .path | quote }}
+            pathType: {{ default "Prefix" .pathType | quote }}
             backend:
               service:
-                name: {{ include "cardano-wallet-backend.fullname" $ }}
+                name: {{ include "cardano-wallet-backend.fullname" $ | quote }}
                 port:
                   number: {{ $.Values.service.port }}
           {{- end }}

@@ -34,10 +34,11 @@ The chart does not create secrets. To use optional Koios or NFTCDN credentials, 
 point the chart at it:
 
 ```bash
+install -m 600 /dev/null ./cardano-wallet-backend-secrets.env
+$EDITOR ./cardano-wallet-backend-secrets.env
+
 kubectl create secret generic cardano-wallet-backend-secrets \
-  --from-literal=KOIOS_TOKEN=... \
-  --from-literal=NFTCDN_SUBDOMAIN=preprod \
-  --from-literal=NFTCDN_KEY=...
+  --from-env-file=./cardano-wallet-backend-secrets.env
 
 helm upgrade --install cardano-wallet-backend charts/cardano-wallet-backend \
   --set secrets.existingSecret=cardano-wallet-backend-secrets
@@ -49,8 +50,10 @@ By default the chart does not render `CONFIG_URL`, so the app uses its built-in
 `yoroi-classic/yoroi-config` default. To serve a pinned config URL:
 
 ```bash
+CONFIG_COMMIT=<yoroi-config-commit-sha>
+
 helm upgrade --install cardano-wallet-backend charts/cardano-wallet-backend \
-  --set config.remoteConfig.url=https://raw.githubusercontent.com/yoroi-classic/yoroi-config/refs/heads/main/prod.json
+  --set config.remoteConfig.url=https://raw.githubusercontent.com/yoroi-classic/yoroi-config/${CONFIG_COMMIT}/prod.json
 ```
 
 To disable `/v1/config` explicitly:

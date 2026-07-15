@@ -45,8 +45,14 @@ export interface KoiosConfig {
   baseUrl: string
   /** Optional bearer token for higher rate limits. */
   token?: string
-  /** Per-request timeout in milliseconds. */
+  /** Per-request timeout in milliseconds, for the light reads. */
   timeoutMs?: number
+  /**
+   * Per-request timeout for the endpoints that assemble a lot of rows. See HEAVY_PATHS: the point
+   * is to sit between Koios's two latency modes, so a fast instance is never cut off and a slow
+   * one is abandoned quickly enough for the retry to land somewhere else.
+   */
+  heavyTimeoutMs?: number
   /** Injectable fetch, defaults to the global. */
   fetchImpl?: FetchLike
   /**
@@ -81,6 +87,38 @@ interface RequestInit {
 const DEFAULT_READ_ATTEMPTS = 3
 const DEFAULT_BACKOFF_MS = 150
 const DEFAULT_TIMEOUT_MS = 10_000
+
+/**
+ * Endpoints that are slow upstream, and how long to give them.
+ *
+ * Koios is **bimodal**, not merely slow, and that is what decides the number. Measured on mainnet,
+ * `/pool_info` answers in about 7.2 to 7.8 seconds most of the time and in 22 to 52 seconds the
+ * rest of the time. It is not a distribution with a long tail; it is two distributions, and which
+ * one you get depends on which instance the load balancer picks.
+ *
+ * So the timeout is set to sit **between the two modes**: high enough that a fast instance is
+ * never cut off (7.8s of work under a 15s budget has headroom to spare), low enough that a slow
+ * one is abandoned quickly so the retry can land somewhere else. Raising it to 60s to "make it
+ * work" would be the wrong move: it would convert a fast failure into a minute of a user staring
+ * at a spinner, on a request another instance would have answered in seven seconds.
+ *
+ * The paths listed are the ones that ask Koios to assemble a lot of rows. The light reads (`/tip`,
+ * `/epoch_params`) keep the 10s default, because for them a 15s wait is already a broken upstream.
+ */
+const HEAVY_TIMEOUT_MS = 15_000
+const HEAVY_PATHS = [
+  '/pool_info',
+  '/pool_list',
+  '/tx_info',
+  '/asset_info',
+  '/drep_info',
+  '/drep_metadata',
+  '/account_utxos',
+  '/account_txs',
+]
+
+const timeoutFor = (path: string, base: number, heavy: number): number =>
+  HEAVY_PATHS.some((heavyPath) => path.startsWith(heavyPath)) ? heavy : base
 
 /**
  * The shared Koios plumbing: one authenticated, timed-out, error-mapped, validated call per
@@ -162,6 +200,7 @@ function limitFrom413(err: unknown): number | undefined {
 export function createKoiosClient(config: KoiosConfig): KoiosClient {
   const baseUrl = config.baseUrl.replace(/\/+$/, '')
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  const heavyTimeoutMs = config.heavyTimeoutMs ?? HEAVY_TIMEOUT_MS
   const doFetch: FetchLike = config.fetchImpl ?? (globalThis.fetch as unknown as FetchLike)
   // Not a constant, because upstream may tell us it is smaller. See batchAll.
   let bodyLimit = config.bodyLimitBytes ?? KOIOS_BODY_LIMIT_BYTES
@@ -182,7 +221,8 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
         method: init.method ?? 'GET',
         headers,
         body: init.body,
-        signal: AbortSignal.timeout(timeoutMs),
+        // Per-path, because Koios is bimodal rather than uniformly slow. See HEAVY_PATHS.
+        signal: AbortSignal.timeout(timeoutFor(path, timeoutMs, heavyTimeoutMs)),
       })
     } catch (cause) {
       if (cause instanceof Error && cause.name === 'TimeoutError') {

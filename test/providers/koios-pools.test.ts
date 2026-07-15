@@ -193,7 +193,11 @@ function routedFetch(
   const fetchImpl: FetchLike = async (url, init) => {
     calls.push({ url, method: init?.method, body: init?.body })
     let rows: unknown
-    if (url.includes('/pool_list')) {
+    if (url.includes('/tip')) {
+      // getPoolList keys its cache on the epoch, so it reads the tip. Serving it here means the
+      // tests walk the same path production does rather than a fallback one.
+      rows = [{ hash: 'aa', epoch_no: 300, abs_slot: 1, block_no: 1, block_time: 1_700_000_000 }]
+    } else if (url.includes('/pool_list')) {
       // Keyset paging: the provider anchors on the last pool id it saw (`pool_id_bech32=gt.x`)
       // rather than an offset, so the fake serves from after that id.
       const params = new URL(url).searchParams
@@ -234,11 +238,11 @@ describe('koios getPoolList', () => {
     const pools = await provider.getPoolList({ limit: 50, offset: 0 })
 
     expect(pools.map((p) => p.poolId)).toEqual([POOL_A, POOL_B])
-    const listCall = calls[0]?.url ?? ''
+    const listCall = calls.find((c) => c.url.includes('/pool_list'))?.url ?? ''
     expect(listCall).toContain('/pool_list')
     expect(listCall).toContain('pool_status=eq.registered')
     expect(listCall).not.toContain('ticker=')
-    expect(calls[1]?.url).toBe(`${BASE}/pool_info`)
+    expect(calls.some((c) => c.url === `${BASE}/pool_info`)).toBe(true)
   })
 
   // Regression: Koios stores active_stake as text, so ordering on it upstream sorts
@@ -375,7 +379,7 @@ describe('koios getPoolList', () => {
 
     await provider.getPoolList({ limit: 10, offset: 5, ticker: 'ANGEL' })
 
-    const listCall = calls[0]?.url ?? ''
+    const listCall = calls.find((c) => c.url.includes('/pool_list'))?.url ?? ''
     expect(decodeURIComponent(listCall)).toContain('ticker=ilike.*ANGEL*')
   })
 
@@ -384,8 +388,10 @@ describe('koios getPoolList', () => {
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
     expect(await provider.getPoolList({ limit: 50, offset: 0 })).toEqual([])
-    // Only the pool_list call happened; no hydration for an empty page.
-    expect(calls).toHaveLength(1)
+    // No hydration for an empty page. Asserted on the *absence of a /pool_info call* rather than
+    // on a total call count, because a count also changes when an unrelated call is added (the
+    // tip read that keys the cache), and that would say nothing about whether we hydrated.
+    expect(calls.filter((c) => c.url.includes('/pool_info'))).toHaveLength(0)
   })
 })
 

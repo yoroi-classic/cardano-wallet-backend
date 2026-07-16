@@ -36,6 +36,8 @@ jobs:
         run: npm run audit:prod
       - name: Docker build check
         run: npm run docker:build
+      - name: Docker runtime health check
+        run: npm run docker:smoke
 
       # `npm audit` only ever sees our own dependency tree. It knows nothing about the base image,
       # which is most of what actually ships: the Debian packages, and the npm that Node bundles.

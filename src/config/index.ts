@@ -40,12 +40,25 @@ export interface AppConfig {
     url: string
     token?: string
   }
+  blockfrost: {
+    url: string
+    /** Blockfrost's auth token. Required only when `provider` is `'blockfrost'`. */
+    projectId?: string
+  }
 }
 
 const DEFAULT_KOIOS_URL: Record<Network, string> = {
   mainnet: 'https://api.koios.rest/api/v1',
   preprod: 'https://preprod.koios.rest/api/v1',
   preview: 'https://preview.koios.rest/api/v1',
+}
+
+// Blockfrost's own hosted endpoints, one project per network (see the `servers` block of
+// Blockfrost's OpenAPI spec).
+const DEFAULT_BLOCKFROST_URL: Record<Network, string> = {
+  mainnet: 'https://cardano-mainnet.blockfrost.io/api/v0',
+  preprod: 'https://cardano-preprod.blockfrost.io/api/v0',
+  preview: 'https://cardano-preview.blockfrost.io/api/v0',
 }
 
 const schema = z.object({
@@ -70,6 +83,10 @@ const schema = z.object({
   RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
   KOIOS_URL: z.string().url().optional(),
   KOIOS_TOKEN: z.string().optional(),
+  BLOCKFROST_URL: z.string().url().optional(),
+  // Required only when PROVIDER=blockfrost is actually selected; checked below rather than here
+  // so an unrelated deployment (PROVIDER=koios) is never blocked by a credential it doesn't use.
+  BLOCKFROST_PROJECT_ID: z.string().optional(),
   // NFTCDN. The subdomain is the network name on preprod/preview and an account-specific one on
   // mainnet; the key is base64, exactly as their dashboard gives it. Both or neither: a half
   // configuration is a typo, and it should fail at startup rather than 500 on the first image.
@@ -99,6 +116,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   }
   const e = parsed.data
   const token = e.KOIOS_TOKEN && e.KOIOS_TOKEN.length > 0 ? e.KOIOS_TOKEN : undefined
+  const blockfrostProjectId =
+    e.BLOCKFROST_PROJECT_ID && e.BLOCKFROST_PROJECT_ID.length > 0
+      ? e.BLOCKFROST_PROJECT_ID
+      : undefined
 
   // Both or neither. Half of an NFTCDN configuration is a typo or a half-finished deploy, and the
   // failure it produces without this check is a 500 on the first image somebody looks at, which is
@@ -107,6 +128,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     throw new ConfigError(
       'NFTCDN_SUBDOMAIN and NFTCDN_KEY must be set together, or not at all. Set neither and the ' +
         'media routes answer 503 while everything else works.',
+    )
+  }
+
+  // A deployment that selects blockfrost with no project id is a typo or a half-finished deploy,
+  // exactly like the NFTCDN case above, and the failure it produces without this check is a 500
+  // on the first chain read rather than at startup where an operator is watching. Unlike NFTCDN,
+  // there is no graceful degradation available here: a chain-data provider is not optional, so
+  // this fails loudly rather than falling back to a 503 on some routes.
+  if (e.PROVIDER === 'blockfrost' && blockfrostProjectId === undefined) {
+    throw new ConfigError(
+      'BLOCKFROST_PROJECT_ID is required when PROVIDER=blockfrost. Get one from ' +
+        'https://blockfrost.io.',
     )
   }
 
@@ -134,6 +167,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     koios: {
       url: e.KOIOS_URL ?? DEFAULT_KOIOS_URL[e.NETWORK],
       token,
+    },
+    blockfrost: {
+      url: e.BLOCKFROST_URL ?? DEFAULT_BLOCKFROST_URL[e.NETWORK],
+      projectId: blockfrostProjectId,
     },
   }
 }

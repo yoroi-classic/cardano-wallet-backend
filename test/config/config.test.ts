@@ -34,6 +34,29 @@ describe('loadConfig — happy path', () => {
     const config = loadConfig({ PORT: '4000' })
     expect(config.port).toBe(4000)
   })
+
+  it('picks the default Blockfrost url per network', () => {
+    expect(loadConfig({}).blockfrost.url).toBe('https://cardano-preprod.blockfrost.io/api/v0')
+    expect(loadConfig({ NETWORK: 'mainnet' }).blockfrost.url).toBe(
+      'https://cardano-mainnet.blockfrost.io/api/v0',
+    )
+  })
+
+  it('honors an explicit BLOCKFROST_URL', () => {
+    const config = loadConfig({ BLOCKFROST_URL: 'https://blockfrost.example/api/v0' })
+    expect(config.blockfrost.url).toBe('https://blockfrost.example/api/v0')
+  })
+
+  it('leaves blockfrost.projectId undefined when PROVIDER is not blockfrost', () => {
+    const config = loadConfig({})
+    expect(config.blockfrost.projectId).toBeUndefined()
+  })
+
+  it('accepts PROVIDER=blockfrost with a project id', () => {
+    const config = loadConfig({ PROVIDER: 'blockfrost', BLOCKFROST_PROJECT_ID: 'proj_id' })
+    expect(config.provider).toBe('blockfrost')
+    expect(config.blockfrost.projectId).toBe('proj_id')
+  })
 })
 
 describe('loadConfig — unhappy path', () => {
@@ -52,6 +75,20 @@ describe('loadConfig — unhappy path', () => {
   it('rejects a malformed KOIOS_URL', () => {
     expect(() => loadConfig({ KOIOS_URL: 'not-a-url' })).toThrow(ConfigError)
   })
+
+  it('rejects a malformed BLOCKFROST_URL', () => {
+    expect(() => loadConfig({ BLOCKFROST_URL: 'not-a-url' })).toThrow(ConfigError)
+  })
+
+  it('rejects PROVIDER=blockfrost with no project id', () => {
+    expect(() => loadConfig({ PROVIDER: 'blockfrost' })).toThrow(ConfigError)
+  })
+
+  it('rejects PROVIDER=blockfrost with an empty project id', () => {
+    expect(() => loadConfig({ PROVIDER: 'blockfrost', BLOCKFROST_PROJECT_ID: '' })).toThrow(
+      ConfigError,
+    )
+  })
 })
 
 describe('createProvider', () => {
@@ -60,8 +97,22 @@ describe('createProvider', () => {
     expect(provider.name).toBe('koios')
   })
 
+  it('builds a Blockfrost provider', () => {
+    const config = loadConfig({ PROVIDER: 'blockfrost', BLOCKFROST_PROJECT_ID: 'proj_id' })
+    const provider = createProvider(config)
+    expect(provider.name).toBe('blockfrost')
+  })
+
   it('rejects providers that are not wired up yet', () => {
-    expect(() => createProvider(loadConfig({ PROVIDER: 'blockfrost' }))).toThrow(ConfigError)
     expect(() => createProvider(loadConfig({ PROVIDER: 'dingo' }))).toThrow(ConfigError)
+  })
+
+  it('refuses to build a blockfrost provider from a hand-built config missing a project id', () => {
+    // loadConfig itself refuses to produce this shape (see the unhappy-path test above), so
+    // this exercises a caller that bypasses the loader and builds an AppConfig directly.
+    const config = loadConfig({ PROVIDER: 'koios' })
+    const handBuilt = { ...config, provider: 'blockfrost' as const }
+
+    expect(() => createProvider(handBuilt)).toThrow(ConfigError)
   })
 })

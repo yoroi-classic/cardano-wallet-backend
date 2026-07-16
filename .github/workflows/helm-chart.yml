@@ -17,13 +17,15 @@ permissions:
 
 concurrency:
   group: helm-chart-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   cardano-wallet-backend:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
@@ -39,6 +41,12 @@ jobs:
 
       - name: Package chart
         run: helm package charts/cardano-wallet-backend --destination "${RUNNER_TEMP}"
+
+      - name: Check chart version bump
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.sha }}
+        run: node scripts/check-chart-version-bump.mjs
 
       - name: Validate default chart
         run: helm template cardano-wallet-backend charts/cardano-wallet-backend | kubectl apply --dry-run=server -f -
@@ -100,25 +108,57 @@ jobs:
         id: chart
         env:
           BEFORE: ${{ github.event.before }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -eu
           chart=charts/cardano-wallet-backend
-          registry=oci://ghcr.io/yoroi-classic/charts/cardano-wallet-backend
-          version="$(awk '/^version:/ { print $2 }' "$chart/Chart.yaml")"
+          package_name=charts%2Fcardano-wallet-backend
+          package_output="$(helm package "$chart" --destination "${RUNNER_TEMP}")"
+          package_path="${package_output##*: }"
+          archive="$(basename "$package_path")"
+          version="${archive#cardano-wallet-backend-}"
+          version="${version%.tgz}"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "package_path=$package_path" >> "$GITHUB_OUTPUT"
 
-          if ! git diff --quiet "$BEFORE" HEAD -- "$chart" \
-            && git cat-file -e "$BEFORE:$chart/Chart.yaml" 2>/dev/null; then
-            previous_version="$(
-              git show "$BEFORE:$chart/Chart.yaml" \
-                | awk '/^version:/ { print $2 }'
+          BASE_REF="$BEFORE" node scripts/check-chart-version-bump.mjs
+
+          published=false
+          page=1
+          while :; do
+            response="${RUNNER_TEMP}/ghcr-chart-versions-${page}.json"
+            status="$(
+              curl --silent --show-error \
+                --output "$response" \
+                --write-out '%{http_code}' \
+                --header 'Accept: application/vnd.github+json' \
+                --header "Authorization: Bearer $GH_TOKEN" \
+                --header 'X-GitHub-Api-Version: 2022-11-28' \
+                "https://api.github.com/orgs/yoroi-classic/packages/container/${package_name}/versions?per_page=100&page=${page}"
             )"
-            if [ "$previous_version" = "$version" ]; then
-              echo "::error::Chart content changed without incrementing Chart.yaml version $version"
+            if [ "$status" = 404 ] && [ "$page" = 1 ]; then
+              break
+            fi
+            if [ "$status" != 200 ]; then
+              echo "::error::GHCR package query failed with HTTP $status"
+              cat "$response"
               exit 1
             fi
-          fi
 
-          if helm show chart "$registry" --version "$version" >/dev/null 2>&1; then
+            if jq -e --arg version "$version" \
+              'any(.[]; ((.metadata.container.tags // []) | index($version)) != null)' \
+              "$response" >/dev/null; then
+              published=true
+              break
+            fi
+            count="$(jq 'length' "$response")"
+            if [ "$count" -lt 100 ]; then
+              break
+            fi
+            page=$((page + 1))
+          done
+
+          if [ "$published" = true ]; then
             if ! git diff --quiet "$BEFORE" HEAD -- "$chart"; then
               echo "::error::Chart version $version already exists in GHCR; bump Chart.yaml before changing chart content"
               exit 1
@@ -132,8 +172,6 @@ jobs:
       - name: Publish OCI chart
         if: steps.chart.outputs.publish == 'true'
         env:
-          VERSION: ${{ steps.chart.outputs.version }}
+          PACKAGE_PATH: ${{ steps.chart.outputs.package_path }}
         run: |
-          helm package charts/cardano-wallet-backend --destination "${RUNNER_TEMP}"
-          helm push "${RUNNER_TEMP}/cardano-wallet-backend-${VERSION}.tgz" \
-            oci://ghcr.io/yoroi-classic/charts
+          helm push "$PACKAGE_PATH" oci://ghcr.io/yoroi-classic/charts

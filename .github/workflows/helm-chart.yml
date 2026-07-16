@@ -106,6 +106,18 @@ jobs:
           version="$(awk '/^version:/ { print $2 }' "$chart/Chart.yaml")"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+          if ! git diff --quiet "$BEFORE" HEAD -- "$chart" \
+            && git cat-file -e "$BEFORE:$chart/Chart.yaml" 2>/dev/null; then
+            previous_version="$(
+              git show "$BEFORE:$chart/Chart.yaml" \
+                | awk '/^version:/ { print $2 }'
+            )"
+            if [ "$previous_version" = "$version" ]; then
+              echo "::error::Chart content changed without incrementing Chart.yaml version $version"
+              exit 1
+            fi
+          fi
+
           if helm show chart "$registry" --version "$version" >/dev/null 2>&1; then
             if ! git diff --quiet "$BEFORE" HEAD -- "$chart"; then
               echo "::error::Chart version $version already exists in GHCR; bump Chart.yaml before changing chart content"
@@ -115,11 +127,6 @@ jobs:
             exit 0
           fi
 
-          if ! git diff --quiet "$BEFORE" HEAD -- "$chart" \
-            && git diff --quiet "$BEFORE" HEAD -- "$chart/Chart.yaml"; then
-            echo "::error::Chart content changed without a Chart.yaml version bump"
-            exit 1
-          fi
           echo "publish=true" >> "$GITHUB_OUTPUT"
 
       - name: Publish OCI chart

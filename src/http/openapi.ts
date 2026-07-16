@@ -84,19 +84,19 @@ const COMMON_ERRORS = {
 } as const
 
 /**
- * Every price endpoint carries this warning, because the shape below is a promise and the
- * behaviour today is a 501, and a client author needs to know both.
+ * Every price endpoint carries this warning: what it returns, and what it refuses to.
  */
-const PRICE_NOT_IMPLEMENTED =
-  '**NOT IMPLEMENTED YET. This endpoint answers `501`.** The path, the request and the response ' +
-  'shape are final, so an adapter can be written against them now and will start working the day ' +
-  'a market-data provider is wired behind them, with no client change.\n\n' +
+const PRICE_DESCRIPTION =
+  'Sourced from CoinGecko (ADA fiat price and history) and GeckoTerminal (native-token price and ' +
+  'history, in ADA). Price is the one domain in this API with no on-chain source, so a real ' +
+  'market-data provider sits behind it rather than Koios or Blockfrost.\n\n' +
   '**It never returns a price of zero, null, or a placeholder, and it never will.** A wallet ' +
   'handed a `0` renders a portfolio worth $0.00, and the user cannot tell "the market crashed" ' +
-  'from "the backend is unfinished". One of those is a reason to panic-sell. On a 501, render ' +
-  '"price unavailable".\n\n' +
-  'Price is the one domain here with no on-chain source: the chain does not know what ADA is ' +
-  'worth in dollars. It needs a market-data provider, and that choice is still open.'
+  'from "the data didn\'t arrive". One of those is a reason to panic-sell. If the upstream ' +
+  'provider fails, this answers `502`/`504`, never a guessed number.\n\n' +
+  'A deployment with no price provider wired (a bare test harness; never a real deployment, since ' +
+  'neither upstream needs a credential to work) answers `501` instead, with the same guarantee: ' +
+  'still never a fake price.'
 
 const jsonBody = (schema: object) => ({ content: { 'application/json': { schema } } })
 
@@ -129,7 +129,7 @@ export const openapi = {
     { name: 'assets', description: 'Native token and NFT metadata' },
     { name: 'pools', description: 'Stake pools' },
     { name: 'governance', description: 'DReps and governance actions' },
-    { name: 'price', description: 'Price and market data. Reserved; every endpoint answers 501.' },
+    { name: 'price', description: 'Price and market data, from CoinGecko and GeckoTerminal.' },
     { name: 'tx', description: 'Submit, status, and output lookups' },
   ],
 
@@ -688,7 +688,7 @@ export const openapi = {
         tags: ['price'],
         operationId: 'getAdaPrice',
         summary: 'ADA price, in each requested currency',
-        description: PRICE_NOT_IMPLEMENTED,
+        description: PRICE_DESCRIPTION,
         parameters: [
           {
             name: 'currencies',
@@ -711,7 +711,7 @@ export const openapi = {
         tags: ['price'],
         operationId: 'getAdaPriceHistory',
         summary: 'ADA price history, as candles',
-        description: PRICE_NOT_IMPLEMENTED,
+        description: PRICE_DESCRIPTION,
         parameters: [
           {
             name: 'range',
@@ -736,7 +736,7 @@ export const openapi = {
         tags: ['price'],
         operationId: 'getTokenActivity',
         summary: 'Price and activity for a batch of native tokens',
-        description: PRICE_NOT_IMPLEMENTED,
+        description: PRICE_DESCRIPTION,
         requestBody: jsonBody({
           type: 'object',
           required: ['subjects'],
@@ -761,7 +761,7 @@ export const openapi = {
         tags: ['price'],
         operationId: 'getTokenPriceHistory',
         summary: 'Price history for one native token, as candles',
-        description: PRICE_NOT_IMPLEMENTED,
+        description: PRICE_DESCRIPTION,
         requestBody: jsonBody({
           type: 'object',
           required: ['subject'],

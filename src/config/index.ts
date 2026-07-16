@@ -40,6 +40,13 @@ export interface AppConfig {
     url: string
     token?: string
   }
+  /**
+   * Free "Demo" tier CoinGecko API key, for a higher rate limit than the anonymous tier. Absent
+   * works fine: CoinGecko's public endpoints answer without one, just at a lower limit, and price
+   * is otherwise on by default (see main() in src/index.ts) since neither upstream it uses needs
+   * a credential to work at all.
+   */
+  coingeckoApiKey?: string
 }
 
 const DEFAULT_KOIOS_URL: Record<Network, string> = {
@@ -77,6 +84,8 @@ const schema = z.object({
   NFTCDN_KEY: z.string().min(1).optional(),
   // Client remote config. Defaults to our fork; set to "" to disable the endpoint entirely.
   CONFIG_URL: z.string().default(DEFAULT_CONFIG_URL),
+  // Optional: raises the CoinGecko rate limit above the anonymous tier. Unset works fine.
+  COINGECKO_API_KEY: z.string().optional(),
 })
 
 function parseCorsOrigins(raw: string): string[] | '*' {
@@ -135,5 +144,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       url: e.KOIOS_URL ?? DEFAULT_KOIOS_URL[e.NETWORK],
       token,
     },
+    ...(e.COINGECKO_API_KEY && e.COINGECKO_API_KEY.length > 0
+      ? { coingeckoApiKey: e.COINGECKO_API_KEY }
+      : {}),
   }
 }

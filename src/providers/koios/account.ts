@@ -190,10 +190,18 @@ export function createAccountMethods(koios: KoiosClient): AccountCapability {
     },
 
     async getAccountUtxos(stakeAddress: string): Promise<Utxo[]> {
-      const rows = await koios.batch(z.array(accountUtxoRow), '/account_utxos', {
-        _stake_addresses: [stakeAddress],
-        _extended: true,
-      })
+      // Koios caps result sets at 1,000 rows. Use an explicit stable order and follow its
+      // Content-Range metadata so a large wallet can never be returned as a plausible partial
+      // state. The client retries the whole snapshot if an upstream page is inconsistent.
+      const rows = await koios.batchAllPages(
+        accountUtxoRow,
+        '/account_utxos?order=tx_hash.asc,tx_index.asc',
+        {
+          _stake_addresses: [stakeAddress],
+          _extended: true,
+        },
+        (row) => `${row.tx_hash}#${row.tx_index}`,
+      )
       return rows.map(mapUtxo)
     },
 

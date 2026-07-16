@@ -121,10 +121,12 @@ jobs:
           BASE_REF="$BEFORE" node scripts/check-chart-version-bump.mjs
 
           chart_ref="oci://ghcr.io/yoroi-classic/charts/cardano-wallet-backend"
+          # Helm replaces SemVer build metadata's "+" with "_" in OCI tags.
+          registry_version="${version//+/_}"
           probe_output="${RUNNER_TEMP}/ghcr-chart-probe.txt"
           if helm show chart "$chart_ref" --version "$version" >"$probe_output" 2>&1; then
             published=true
-          elif grep -Fq "${chart_ref#oci://}:$version: not found" "$probe_output"; then
+          elif grep -Fq "${chart_ref#oci://}:$registry_version: not found" "$probe_output"; then
             published=false
           else
             echo "::error::Unable to determine whether chart version $version exists in GHCR"

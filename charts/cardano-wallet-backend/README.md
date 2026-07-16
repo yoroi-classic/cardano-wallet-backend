@@ -21,6 +21,23 @@ helm upgrade --install cardano-wallet-backend charts/cardano-wallet-backend \
   --set image.tag=local
 ```
 
+## Install from GHCR
+
+Releases of this chart are published as OCI artifacts under
+`oci://ghcr.io/yoroi-classic/charts/cardano-wallet-backend`. Pin the chart version and provide an
+image that your cluster can pull:
+
+```bash
+helm upgrade --install cardano-wallet-backend \
+  oci://ghcr.io/yoroi-classic/charts/cardano-wallet-backend \
+  --version 0.1.0 \
+  --set image.repository=YOUR_IMAGE_REPOSITORY \
+  --set image.tag=YOUR_IMAGE_TAG
+```
+
+The `main` branch publication workflow requires `Chart.yaml`'s chart version to change whenever
+chart content changes. GHCR chart versions are immutable.
+
 Expose it locally:
 
 ```bash

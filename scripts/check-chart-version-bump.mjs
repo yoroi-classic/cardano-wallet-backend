@@ -1,61 +1,10 @@
 // Fails when chart content changed without increasing Chart.yaml's version over
 // the selected base ref. This runs both on chart PRs and before publication.
-import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
+import { compareSemver, git, parseSemver } from './version-utils.mjs'
 
 const chartPath = 'charts/cardano-wallet-backend'
 const chartFile = `${chartPath}/Chart.yaml`
-
-function git(args, opts = {}) {
-  return execFileSync('git', args, opts)
-}
-
-function parseSemver(value) {
-  const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(value)
-  if (!match) return null
-  return {
-    major: Number(match[1]),
-    minor: Number(match[2]),
-    patch: Number(match[3]),
-    prerelease: match[4] ?? null,
-  }
-}
-
-function comparePrerelease(a, b) {
-  const left = a.split('.')
-  const right = b.split('.')
-  const length = Math.max(left.length, right.length)
-  for (let i = 0; i < length; i += 1) {
-    const x = left[i]
-    const y = right[i]
-    if (x === undefined) return -1
-    if (y === undefined) return 1
-    const xNumeric = /^\d+$/.test(x)
-    const yNumeric = /^\d+$/.test(y)
-    if (xNumeric && yNumeric) {
-      const xValue = BigInt(x)
-      const yValue = BigInt(y)
-      if (xValue !== yValue) return xValue < yValue ? -1 : 1
-    } else if (xNumeric) {
-      return -1
-    } else if (yNumeric) {
-      return 1
-    } else if (x !== y) {
-      return x < y ? -1 : 1
-    }
-  }
-  return 0
-}
-
-function compare(a, b) {
-  for (const field of ['major', 'minor', 'patch']) {
-    if (a[field] !== b[field]) return a[field] - b[field]
-  }
-  if (a.prerelease === b.prerelease) return 0
-  if (a.prerelease === null) return 1
-  if (b.prerelease === null) return -1
-  return comparePrerelease(a.prerelease, b.prerelease)
-}
 
 function chartVersion(contents, source) {
   const line = contents
@@ -104,7 +53,7 @@ const previousVersion = chartVersion(
   `${baseRef}:${chartFile}`,
 )
 
-if (compare(parseSemver(currentVersion), parseSemver(previousVersion)) <= 0) {
+if (compareSemver(parseSemver(currentVersion), parseSemver(previousVersion)) <= 0) {
   console.error(
     `chart version not bumped: base ${previousVersion} vs current ${currentVersion}. ` +
       `Increase ${chartFile} whenever packaged chart content changes.`,

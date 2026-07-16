@@ -15,10 +15,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: helm-chart-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
-
 jobs:
   cardano-wallet-backend:
     runs-on: ubuntu-latest
@@ -87,6 +83,9 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: cardano-wallet-backend
     runs-on: ubuntu-latest
+    concurrency:
+      group: helm-chart-publish-main
+      queue: max
     permissions:
       contents: read
       packages: write

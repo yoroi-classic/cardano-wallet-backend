@@ -125,7 +125,12 @@ export const openapi = {
     { name: 'service', description: 'Liveness and status' },
     { name: 'chain', description: 'Tip and protocol parameters' },
     { name: 'account', description: 'Stake-account state, UTxOs, and history' },
-    { name: 'addresses', description: 'Address discovery' },
+    {
+      name: 'addresses',
+      description:
+        'Address discovery, and reads keyed by an address set for wallets with no ' +
+        'resolvable stake credential (Byron, enterprise, pointer).',
+    },
     { name: 'assets', description: 'Native token and NFT metadata' },
     { name: 'pools', description: 'Stake pools' },
     { name: 'governance', description: 'DReps and governance actions' },
@@ -259,7 +264,10 @@ export const openapi = {
         summary: 'Which of these addresses have been seen on chain',
         description:
           'Drives address discovery (the gap-limit scan). Returns the used subset, in the order ' +
-          'you sent them.',
+          'you sent them.\n\n' +
+          'Accepts bech32 (any payment type: base, pointer, enterprise) and Byron base58 ' +
+          'addresses, mixed freely in one call. Each address is validated independently, so a ' +
+          'mixed batch is only rejected if one of its entries is actually malformed.',
         requestBody: jsonBody({
           type: 'object',
           required: ['addresses'],
@@ -276,6 +284,82 @@ export const openapi = {
           '200': jsonResponse('The used subset, in input order', {
             type: 'array',
             items: { type: 'string' },
+          }),
+          ...COMMON_ERRORS,
+        },
+      },
+    },
+
+    '/v1/addresses/utxos': {
+      post: {
+        tags: ['addresses'],
+        operationId: 'getUtxosByAddresses',
+        summary: 'Every UTxO controlled by a set of addresses, in one call',
+        description:
+          'The address-keyed sibling of /v1/account/{stakeAddress}/utxos, for wallets whose ' +
+          'addresses carry no resolvable stake credential: Byron, enterprise, and pointer ' +
+          'addresses are all on that side of the line. A base Shelley wallet, which can derive ' +
+          'a stake key from any of its addresses, should prefer the account endpoint instead: ' +
+          'it reads the whole wallet in one call rather than needing every address enumerated.' +
+          '\n\n' +
+          'Accepts the same address formats as filter-used, mixed freely.\n\nNever cached.',
+        requestBody: jsonBody({
+          type: 'object',
+          required: ['addresses'],
+          properties: {
+            addresses: {
+              type: 'array',
+              items: { type: 'string' },
+              minItems: 1,
+              maxItems: 1000,
+            },
+          },
+        }),
+        responses: {
+          '200': jsonResponse('UTxOs across the given addresses', {
+            type: 'array',
+            items: { $ref: '#/components/schemas/Utxo' },
+          }),
+          ...COMMON_ERRORS,
+        },
+      },
+    },
+
+    '/v1/addresses/txs': {
+      post: {
+        tags: ['addresses'],
+        operationId: 'getTxHistoryByAddresses',
+        summary: 'Transaction history for a set of addresses, oldest first',
+        description:
+          'The address-keyed sibling of /v1/account/{stakeAddress}/txs, for the same wallets ' +
+          '/v1/addresses/utxos serves. A transaction touching more than one of the given ' +
+          'addresses (a self-transfer within the same wallet, most commonly) appears exactly ' +
+          'once, not once per matching address.\n\n' +
+          'Page forward with `after`, set to the `block` of the last transaction you saw, the ' +
+          'same cursor the account endpoint uses. A page is never cut through the middle of a ' +
+          'block.\n\nAccepts the same address formats as filter-used, mixed freely.\n\n' +
+          'Never cached.',
+        requestBody: jsonBody({
+          type: 'object',
+          required: ['addresses'],
+          properties: {
+            addresses: {
+              type: 'array',
+              items: { type: 'string' },
+              minItems: 1,
+              maxItems: 1000,
+            },
+            after: {
+              type: 'integer',
+              minimum: 0,
+              description: 'Return transactions in blocks after this height.',
+            },
+          },
+        }),
+        responses: {
+          '200': jsonResponse('Transactions across the given addresses, oldest first', {
+            type: 'array',
+            items: { $ref: '#/components/schemas/WalletTransaction' },
           }),
           ...COMMON_ERRORS,
         },

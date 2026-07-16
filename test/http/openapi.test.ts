@@ -305,6 +305,49 @@ describe('real responses validate against the schemas the spec publishes', () =>
     expect(res.body).toEqual([ADDR(1)])
   })
 
+  // A real Byron address (see test/domain/byron-address.test.ts for provenance), so this also
+  // stands as evidence the route accepts the format the OpenAPI description now claims it does.
+  const BYRON_ADDR = 'Ae2tdPwUPEZFRbyhz3cpfC2CumGzNkFBN2L42rcUc2yjQpEkxDbkPodpMAi'
+
+  it('POST /v1/addresses/utxos', async () => {
+    const utxo = {
+      txHash: TX_HASH,
+      outputIndex: 0,
+      address: BYRON_ADDR,
+      value: '2000000',
+      assets: [{ policyId: POLICY, assetName: '414243', quantity: '5' }],
+    }
+    const res = await post({ getUtxosByAddresses: async () => [utxo] }, '/v1/addresses/utxos', {
+      addresses: [BYRON_ADDR],
+    })
+
+    expect(res.statusCode).toBe(200)
+    eachMatches('Utxo', res.body)
+  })
+
+  it('POST /v1/addresses/txs', async () => {
+    const tx = {
+      txHash: TX_HASH,
+      block: 1_000,
+      blockHash: 'bb'.repeat(32),
+      slot: 5_000,
+      epoch: 10,
+      blockTime: 1_700_000_000,
+      fee: '170000',
+      inputs: [{ address: BYRON_ADDR, value: '1000000', assets: [] }],
+      outputs: [],
+      withdrawals: [],
+      certificates: [{ kind: 'other' as const, index: 0 }],
+    }
+    const res = await post({ getTxHistoryByAddresses: async () => [tx] }, '/v1/addresses/txs', {
+      addresses: [BYRON_ADDR],
+      after: 999,
+    })
+
+    expect(res.statusCode).toBe(200)
+    eachMatches('WalletTransaction', res.body)
+  })
+
   it('POST /v1/tx/submit', async () => {
     const res = await post({ submitTx: async () => ({ txHash: TX_HASH }) }, '/v1/tx/submit', {
       cbor: '84a400818258',

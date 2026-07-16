@@ -5,12 +5,17 @@ export function git(args, opts = {}) {
 }
 
 export function parseSemver(value) {
-  const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(value)
+  const identifier = '(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*)'
+  const match = new RegExp(
+    `^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)` +
+      `(?:-(${identifier}(?:\\.${identifier})*))?` +
+      '(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$',
+  ).exec(value)
   if (!match) return null
   return {
-    major: Number(match[1]),
-    minor: Number(match[2]),
-    patch: Number(match[3]),
+    major: BigInt(match[1]),
+    minor: BigInt(match[2]),
+    patch: BigInt(match[3]),
     prerelease: match[4] ?? null,
   }
 }
@@ -43,7 +48,7 @@ function comparePrerelease(a, b) {
 
 export function compareSemver(a, b) {
   for (const field of ['major', 'minor', 'patch']) {
-    if (a[field] !== b[field]) return a[field] - b[field]
+    if (a[field] !== b[field]) return a[field] < b[field] ? -1 : 1
   }
   if (a.prerelease === b.prerelease) return 0
   if (a.prerelease === null) return 1

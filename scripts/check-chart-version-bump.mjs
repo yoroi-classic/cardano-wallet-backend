@@ -7,10 +7,7 @@ const chartPath = 'charts/cardano-wallet-backend'
 const chartFile = `${chartPath}/Chart.yaml`
 
 function chartVersion(contents, source) {
-  const line = contents
-    .split(/\r?\n/)
-    .map((value) => value.trim())
-    .find((value) => value.startsWith('version:'))
+  const line = contents.split(/\r?\n/).find((value) => value.startsWith('version:'))
   if (line == null) throw new Error(`${source} has no chart version`)
 
   const match = /^version:\s*(?:"([^"]+)"|'([^']+)'|([^#\s]+))\s*(?:#.*)?$/.exec(line)

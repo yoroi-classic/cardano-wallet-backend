@@ -107,11 +107,9 @@ jobs:
         id: chart
         env:
           BEFORE: ${{ github.event.before }}
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
           chart=charts/cardano-wallet-backend
-          package_name=charts%2Fcardano-wallet-backend
           package_output="$(helm package "$chart" --destination "${RUNNER_TEMP}")"
           package_path="${package_output##*: }"
           archive="$(basename "$package_path")"
@@ -122,40 +120,17 @@ jobs:
 
           BASE_REF="$BEFORE" node scripts/check-chart-version-bump.mjs
 
-          published=false
-          page=1
-          while :; do
-            response="${RUNNER_TEMP}/ghcr-chart-versions-${page}.json"
-            status="$(
-              curl --silent --show-error \
-                --output "$response" \
-                --write-out '%{http_code}' \
-                --header 'Accept: application/vnd.github+json' \
-                --header "Authorization: Bearer $GH_TOKEN" \
-                --header 'X-GitHub-Api-Version: 2022-11-28' \
-                "https://api.github.com/orgs/yoroi-classic/packages/container/${package_name}/versions?per_page=100&page=${page}"
-            )"
-            if [ "$status" = 404 ] && [ "$page" = 1 ]; then
-              break
-            fi
-            if [ "$status" != 200 ]; then
-              echo "::error::GHCR package query failed with HTTP $status"
-              cat "$response"
-              exit 1
-            fi
-
-            if jq -e --arg version "$version" \
-              'any(.[]; ((.metadata.container.tags // []) | index($version)) != null)' \
-              "$response" >/dev/null; then
-              published=true
-              break
-            fi
-            count="$(jq 'length' "$response")"
-            if [ "$count" -lt 100 ]; then
-              break
-            fi
-            page=$((page + 1))
-          done
+          chart_ref="oci://ghcr.io/yoroi-classic/charts/cardano-wallet-backend"
+          probe_output="${RUNNER_TEMP}/ghcr-chart-probe.txt"
+          if helm show chart "$chart_ref" --version "$version" >"$probe_output" 2>&1; then
+            published=true
+          elif grep -Fq "${chart_ref#oci://}:$version: not found" "$probe_output"; then
+            published=false
+          else
+            echo "::error::Unable to determine whether chart version $version exists in GHCR"
+            cat "$probe_output"
+            exit 1
+          fi
 
           if [ "$published" = true ]; then
             if ! git diff --quiet "$BEFORE" HEAD -- "$chart"; then

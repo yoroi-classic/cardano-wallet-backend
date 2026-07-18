@@ -89,6 +89,17 @@ describe('loadConfig — unhappy path', () => {
       ConfigError,
     )
   })
+
+  it('rejects PROVIDER=blockfrost with a whitespace-only project id', () => {
+    expect(() => loadConfig({ PROVIDER: 'blockfrost', BLOCKFROST_PROJECT_ID: '   ' })).toThrow(
+      ConfigError,
+    )
+  })
+
+  it('trims surrounding whitespace from the project id', () => {
+    const config = loadConfig({ PROVIDER: 'blockfrost', BLOCKFROST_PROJECT_ID: '  proj_id  ' })
+    expect(config.blockfrost.projectId).toBe('proj_id')
+  })
 })
 
 describe('createProvider', () => {
@@ -112,6 +123,19 @@ describe('createProvider', () => {
     // this exercises a caller that bypasses the loader and builds an AppConfig directly.
     const config = loadConfig({ PROVIDER: 'koios' })
     const handBuilt = { ...config, provider: 'blockfrost' as const }
+
+    expect(() => createProvider(handBuilt)).toThrow(ConfigError)
+  })
+
+  it('refuses to build a blockfrost provider from a hand-built config with a blank project id', () => {
+    // Same bypass, but with a whitespace-only project id: a value that clears an undefined check
+    // yet is no credential at all. The factory has to normalize it the way loadConfig does.
+    const config = loadConfig({ PROVIDER: 'koios' })
+    const handBuilt = {
+      ...config,
+      provider: 'blockfrost' as const,
+      blockfrost: { ...config.blockfrost, projectId: '   ' },
+    }
 
     expect(() => createProvider(handBuilt)).toThrow(ConfigError)
   })

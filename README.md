@@ -5,9 +5,9 @@ HTTP API and is designed to serve it from any configured Cardano data source, so
 wallet never has to care where the data comes from.
 
 This is early. It covers the barebones reads and writes a wallet needs (chain tip and
-protocol parameters, account state and UTxOs, transaction submit and status), and Koios
-is the only wired provider. Blockfrost and a bring-your-own Dingo node are planned
-behind the same contract, and selecting them today fails fast until their drivers land.
+protocol parameters, account state and UTxOs, transaction submit and status). Koios and
+Blockfrost are both wired today; a bring-your-own Dingo node is planned behind the same
+contract, and selecting it fails fast until its driver lands.
 
 ## Requirements
 
@@ -136,8 +136,13 @@ See `charts/cardano-wallet-backend/README.md` for local install and secret confi
 See `.env.example`. Key values:
 
 - `NETWORK` — `mainnet` | `preprod` | `preview` (default `preprod`)
-- `PROVIDER` — `koios` (others land soon)
+- `PROVIDER` — `koios` | `blockfrost` (`dingo` lands later)
 - `KOIOS_URL` — defaults per network; `KOIOS_TOKEN` optional for higher limits
+- `BLOCKFROST_URL` — defaults per network to Blockfrost's own hosted endpoint; set it only to
+  point at something else (a self-hosted node in Blockfrost's compatibility mode)
+- `BLOCKFROST_PROJECT_ID` — Blockfrost's auth token, sent as the `project_id` header. Required
+  when `PROVIDER=blockfrost`; startup fails loudly if it is missing or blank. Get one at
+  https://blockfrost.io
 - `CACHE_ENABLED` — `true` (default) | `false`. Turn it off only to debug upstream: it exists
   because chain-wide reads are identical for every caller, and serving them from upstream on
   every request makes our load on the provider scale with our user count for no benefit.

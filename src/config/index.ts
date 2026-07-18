@@ -116,9 +116,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   }
   const e = parsed.data
   const token = e.KOIOS_TOKEN && e.KOIOS_TOKEN.length > 0 ? e.KOIOS_TOKEN : undefined
+  // Trim before the presence check: a whitespace-only value is not a credential, it is a blank one
+  // dressed up, and letting it through would start up cleanly and then send an empty `project_id`
+  // header on every read. Store the trimmed value so nothing downstream re-pads it.
+  const trimmedBlockfrostProjectId = e.BLOCKFROST_PROJECT_ID?.trim()
   const blockfrostProjectId =
-    e.BLOCKFROST_PROJECT_ID && e.BLOCKFROST_PROJECT_ID.length > 0
-      ? e.BLOCKFROST_PROJECT_ID
+    trimmedBlockfrostProjectId && trimmedBlockfrostProjectId.length > 0
+      ? trimmedBlockfrostProjectId
       : undefined
 
   // Both or neither. Half of an NFTCDN configuration is a typo or a half-finished deploy, and the

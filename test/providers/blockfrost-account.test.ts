@@ -200,4 +200,78 @@ describe('blockfrost account — unhappy path', () => {
 
     await expect(provider.getAccountUtxos(STAKE)).rejects.toBeInstanceOf(ProviderError)
   })
+
+  it.each([
+    ['a policy id shorter than 56 hex chars', 'a'.repeat(54)],
+    ['a non-hex character in the policy id', 'g'.repeat(56)],
+    ['an odd-length asset name', `${'a'.repeat(56)}abc`],
+    ['an asset name longer than 64 hex chars', `${'a'.repeat(56)}${'ab'.repeat(33)}`],
+  ])('rejects a utxo unit with %s as malformed', async (_desc, unit) => {
+    const bad = utxoRow({
+      amount: [
+        { unit: 'lovelace', quantity: '1000000' },
+        { unit, quantity: '5' },
+      ],
+    })
+    const provider = testProvider({ [`/accounts/${STAKE}/utxos`]: [[bad]] })
+
+    await expect(provider.getAccountUtxos(STAKE)).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+
+  it('rejects a duplicate native-asset unit rather than exposing both', async () => {
+    const unit = `${'a'.repeat(56)}6e7574636f696e`
+    const dup = utxoRow({
+      amount: [
+        { unit: 'lovelace', quantity: '1000000' },
+        { unit, quantity: '5' },
+        { unit, quantity: '7' },
+      ],
+    })
+    const provider = testProvider({ [`/accounts/${STAKE}/utxos`]: [[dup]] })
+
+    await expect(provider.getAccountUtxos(STAKE)).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+
+  it('rejects a second lovelace entry rather than letting it overwrite the real ada value', async () => {
+    const dup = utxoRow({
+      amount: [
+        { unit: 'lovelace', quantity: '42000000' },
+        { unit: 'lovelace', quantity: '0' },
+      ],
+    })
+    const provider = testProvider({ [`/accounts/${STAKE}/utxos`]: [[dup]] })
+
+    await expect(provider.getAccountUtxos(STAKE)).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+})
+
+describe('blockfrost account — utxo scan boundary', () => {
+  // A fake that paginates for real: it honours the `count` and `page` query params the driver
+  // sends, so an off-by-one in the probe's offset is visible here the way it is against the live
+  // API. `total` is how many UTxOs the account holds.
+  function paginatingProvider(total: number): ReturnType<typeof createBlockfrostProvider> {
+    const fetchImpl: FetchLike = async (url) => {
+      const parsed = new URL(url)
+      const count = Number(parsed.searchParams.get('count') ?? '100')
+      const page = Number(parsed.searchParams.get('page') ?? '1')
+      const offset = (page - 1) * count
+      const rows = Array.from({ length: Math.max(0, Math.min(count, total - offset)) }, (_v, i) =>
+        utxoRow({ tx_hash: `${offset + i}`.padStart(64, '0'), output_index: 0 }),
+      )
+      return { ok: true, status: 200, json: async () => rows, text: async () => '' }
+    }
+    return createBlockfrostProvider({ baseUrl: BASE, projectId: PROJECT_ID, fetchImpl })
+  }
+
+  it('returns the full set for an account holding exactly 5000 utxos', async () => {
+    const utxos = await paginatingProvider(5000).getAccountUtxos(STAKE)
+
+    expect(utxos).toHaveLength(5000)
+  })
+
+  it('rejects an account holding one more utxo than the scan bound', async () => {
+    await expect(paginatingProvider(5001).getAccountUtxos(STAKE)).rejects.toBeInstanceOf(
+      ProviderError,
+    )
+  })
 })

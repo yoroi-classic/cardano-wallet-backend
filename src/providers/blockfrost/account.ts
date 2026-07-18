@@ -101,11 +101,14 @@ export function createAccountMethods(client: BlockfrostClient): AccountCapabilit
       }
 
       // The cap ran out on a full page, which does not by itself mean anything was missed. Ask
-      // for one more to tell "ended exactly on the boundary" apart from "genuinely truncated",
-      // the same technique the Koios driver uses for its own unbounded lists.
+      // for one more page to tell "ended exactly on the boundary" apart from "genuinely
+      // truncated", the same technique the Koios driver uses for its own unbounded lists. The
+      // probe has to keep the same page size: pagination is offset-based (offset = (page-1) *
+      // count), so page 51 only lands on offset 5000 at count=100. Shrinking count to 1 would
+      // probe offset 50 instead and reject any account with more than 50 UTxOs.
       const probe = await client.getOrUndefined(
         z.array(accountUtxoRow),
-        `${path}?count=1&page=${UTXO_MAX_PAGES + 1}`,
+        `${path}?count=${UTXO_PAGE_SIZE}&page=${UTXO_MAX_PAGES + 1}`,
       )
       if (probe === undefined || probe.length === 0) return rows.map(mapUtxo)
       throw new ProviderError(

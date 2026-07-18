@@ -210,7 +210,10 @@ export const openapi = {
         summary: 'Every UTxO the account controls, in one call',
         description:
           'The whole wallet, not one address. Includes native assets and inline datums, which ' +
-          'the Midnight escrow path depends on.\n\nNever cached.',
+          'the Midnight escrow path depends on.\n\n' +
+          'Bounded at 5,000 UTxOs: an account holding more than that is far outside any real ' +
+          'wallet and answers `502 UPSTREAM_ERROR` rather than a silently truncated set. An ' +
+          'account holding exactly 5,000 is returned in full.\n\nNever cached.',
         parameters: [{ $ref: '#/components/parameters/StakeAddress' }],
         responses: {
           '200': jsonResponse('UTxOs', {

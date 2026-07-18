@@ -27,19 +27,22 @@ function createDriver(config: AppConfig, deps: ProviderDeps, cache: Cache): Chai
         onRetry: deps.onRetry,
         cache,
       })
-    case 'blockfrost':
+    case 'blockfrost': {
       // loadConfig refuses to produce a config with PROVIDER=blockfrost and no project id, so
       // reaching here with one absent means a caller built an AppConfig by hand (a test, most
-      // likely) rather than through the loader. Fail the same way rather than handing the
-      // client a `project_id: undefined` header.
-      if (config.blockfrost.projectId === undefined) {
+      // likely) rather than through the loader. Trim and re-check the same way loadConfig does: a
+      // blank or whitespace-only project id is no credential at all, and letting it through would
+      // hand the client an empty `project_id` header rather than failing loudly here.
+      const projectId = config.blockfrost.projectId?.trim()
+      if (projectId === undefined || projectId.length === 0) {
         throw new ConfigError('BLOCKFROST_PROJECT_ID is required to build a blockfrost provider')
       }
       return createBlockfrostProvider({
         baseUrl: config.blockfrost.url,
-        projectId: config.blockfrost.projectId,
+        projectId,
         onRetry: deps.onRetry,
       })
+    }
     case 'dingo':
       throw new ConfigError(`provider "${config.provider}" is not wired up yet`)
     default: {

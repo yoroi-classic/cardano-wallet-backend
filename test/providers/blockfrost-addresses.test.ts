@@ -52,6 +52,64 @@ describe('blockfrost addresses — happy path', () => {
   })
 })
 
+describe('blockfrost addresses — bounded fan-out', () => {
+  it('caps concurrency, preserves order, and drains every 404 body on a full-size request', async () => {
+    const SIZE = 1000
+    const prefix = `${BASE}/addresses/addr_test1q`
+    const addresses = Array.from({ length: SIZE }, (_, i) => `addr_test1q${i}`)
+    const isUsed = (i: number): boolean => i % 2 === 0
+
+    let inFlight = 0
+    let maxInFlight = 0
+    // One marker per 404 answer, flipped to `read: true` only when the client consumes its body.
+    // If any stays false the driver left a response body unread, which is the connection-pool leak
+    // this guards against.
+    const notFoundBodies: { read: boolean }[] = []
+
+    const fetchImpl: FetchLike = async (url) => {
+      inFlight += 1
+      maxInFlight = Math.max(maxInFlight, inFlight)
+      // Yield so overlapping calls actually overlap: without a turn of the event loop every call
+      // would resolve before the next began and maxInFlight would read 1 no matter the ceiling.
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      inFlight -= 1
+
+      const index = Number(url.slice(prefix.length))
+      if (isUsed(index)) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ address: addresses[index] }),
+          text: async () => '',
+        }
+      }
+      const body = { read: false }
+      notFoundBodies.push(body)
+      return {
+        ok: false,
+        status: 404,
+        json: async () => ({}),
+        text: async () => {
+          body.read = true
+          return ''
+        },
+      }
+    }
+    const provider = createBlockfrostProvider({ baseUrl: BASE, projectId: PROJECT_ID, fetchImpl })
+
+    const result = await provider.filterUsedAddresses(addresses)
+
+    // Order preserved: exactly the used addresses, in input order.
+    expect(result).toEqual(addresses.filter((_address, i) => isUsed(i)))
+    // The ceiling is respected: never all 1000 at once, but genuinely overlapping.
+    expect(maxInFlight).toBeGreaterThan(1)
+    expect(maxInFlight).toBeLessThanOrEqual(10)
+    // Every 404 body was drained.
+    expect(notFoundBodies).toHaveLength(SIZE / 2)
+    expect(notFoundBodies.every((b) => b.read)).toBe(true)
+  })
+})
+
 describe('blockfrost addresses — unhappy path', () => {
   it('surfaces a non-404 upstream error rather than treating it as unused', async () => {
     const provider = testProvider({ [ERRORS]: { status: 500 } })

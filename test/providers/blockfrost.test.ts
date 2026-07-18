@@ -275,4 +275,30 @@ describe('blockfrost provider — unhappy path', () => {
 
     await expect(provider.getTip()).rejects.toBeInstanceOf(ProviderTimeoutError)
   })
+
+  it('asks fetch to error on a redirect rather than follow it and leak the credential', async () => {
+    // The whole point: a redirect must never be followed, because following it would re-send the
+    // project_id header to the redirect target. We model native fetch's `redirect: 'error'`
+    // behaviour — it rejects on a 3xx instead of chasing it — and prove the credential went to
+    // Blockfrost's own host exactly once and was never sent anywhere else.
+    const calls: { redirect?: string; projectId?: string }[] = []
+    const fetchImpl: FetchLike = async (_url, init) => {
+      calls.push({ redirect: init?.redirect, projectId: init?.headers?.project_id })
+      if (init?.redirect === 'error') throw new TypeError('unexpected redirect')
+      return { ok: true, status: 200, json: async () => TIP_ROW, text: async () => '' }
+    }
+    // readAttempts: 1 so the single rejected request is not retried; we are asserting on the exact
+    // set of outbound calls, and a retry would muddy that without changing what is being proven.
+    const provider = createBlockfrostProvider({
+      baseUrl: BASE,
+      projectId: PROJECT_ID,
+      fetchImpl,
+      readAttempts: 1,
+    })
+
+    await expect(provider.getTip()).rejects.toBeInstanceOf(ProviderError)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.redirect).toBe('error')
+    expect(calls[0]?.projectId).toBe(PROJECT_ID)
+  })
 })

@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { POLICY_ID_HEX_LEN } from '../../domain/constants.js'
+import { MAX_ASSET_NAME_HEX_LEN, POLICY_ID_HEX_LEN } from '../../domain/constants.js'
 import { MalformedUpstreamError } from '../../domain/errors.js'
 import type { Asset } from '../../domain/types/common.js'
 
@@ -22,7 +22,25 @@ export const smallNumeric = z
   .transform((v) => (typeof v === 'string' ? Number(v) : v))
   .pipe(z.number().int().nonnegative().safe())
 
-const amountItem = z.object({ unit: z.string(), quantity: numeric })
+/**
+ * A well-formed `amount` unit is either the literal `lovelace` or a concatenated subject: a
+ * 56-hex-char (28-byte) policy id followed by an optional asset name of at most 64 hex chars (32
+ * bytes), and a hex asset name is always an even number of characters. Anything else — a short or
+ * non-hex policy id, an odd-length or oversized asset name — is not a unit we can split into a
+ * real {policyId, assetName}, so it is malformed upstream data rather than an Asset to expose.
+ */
+const UNIT_PATTERN = new RegExp(
+  `^[0-9a-fA-F]{${POLICY_ID_HEX_LEN}}(?:[0-9a-fA-F]{2}){0,${MAX_ASSET_NAME_HEX_LEN / 2}}$`,
+)
+
+function isValidUnit(unit: string): boolean {
+  return unit === 'lovelace' || UNIT_PATTERN.test(unit)
+}
+
+const amountItem = z.object({
+  unit: z.string().refine(isValidUnit, { message: 'malformed asset unit' }),
+  quantity: numeric,
+})
 
 /** Blockfrost's `amount` array, as it appears on a UTxO or a transaction's outputs. */
 export const amountList = z.array(amountItem)
@@ -36,8 +54,19 @@ export const amountList = z.array(amountItem)
 export function splitAmount(items: z.infer<typeof amountList>): { value: string; assets: Asset[] } {
   let value: string | undefined
   const assets: Asset[] = []
+  // A real amount list names each unit at most once. A repeat — a second `lovelace`, or the same
+  // native asset twice — would let one entry silently overwrite another (in particular a duplicate
+  // `lovelace` would clobber the real ADA value), so treat any repeat as malformed rather than
+  // guessing which entry is authoritative.
+  const seen = new Set<string>()
 
   for (const item of items) {
+    if (seen.has(item.unit)) {
+      throw new MalformedUpstreamError(
+        `blockfrost returned a utxo amount with a duplicate '${item.unit}' unit`,
+      )
+    }
+    seen.add(item.unit)
     if (item.unit === 'lovelace') {
       value = String(item.quantity)
       continue

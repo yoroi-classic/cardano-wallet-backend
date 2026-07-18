@@ -10,6 +10,12 @@ export type FetchLike = (
     headers?: Record<string, string>
     body?: string | Uint8Array
     signal?: AbortSignal
+    /**
+     * How to handle a 3xx from upstream. We always pass `'error'` so a redirect rejects rather
+     * than being followed: following one would re-send the `project_id` auth header to whatever
+     * host the redirect names, leaking the credential off Blockfrost's domain.
+     */
+    redirect?: 'error' | 'follow' | 'manual'
   },
 ) => Promise<{
   ok: boolean
@@ -130,6 +136,10 @@ export function createBlockfrostClient(config: BlockfrostConfig): BlockfrostClie
         headers,
         body: init.body,
         signal: AbortSignal.timeout(timeoutMs),
+        // Never follow a redirect: doing so would re-send the `project_id` header to the redirect
+        // target and leak the credential to another host. A 3xx here is not something we expect
+        // from Blockfrost anyway, so treat it as the failure it is rather than chasing it.
+        redirect: 'error',
       })
     } catch (cause) {
       if (cause instanceof Error && cause.name === 'TimeoutError') {
@@ -217,7 +227,14 @@ export function createBlockfrostClient(config: BlockfrostConfig): BlockfrostClie
     getOrUndefined<T>(schema: z.ZodType<T>, path: string): Promise<T | undefined> {
       return read(path, async () => {
         const res = await request(path)
-        if (res.status === 404) return undefined
+        if (res.status === 404) {
+          // Drain the body before returning. A 404 is a routine "not on chain" answer here, but
+          // it still carries a response body; leaving it unread holds the underlying connection
+          // open, and enough of them at once (a wallet restore checks many addresses) exhausts the
+          // connection pool. Reading it to completion lets the socket be reused.
+          await res.text().catch(() => undefined)
+          return undefined
+        }
         if (!res.ok) return failure(res, path)
         return parse(schema, await readBody(res, path), path)
       })

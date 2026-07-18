@@ -295,38 +295,70 @@ describe('blockfrost rate limiter', () => {
 })
 
 describe('blockfrost client config validation', () => {
+  const MAX_TIMER_MS = 2_147_483_647
+  const MAX_RETRIES = 100
+  const MAX_BURST = 100_000
+  const MIN_RPS = 1e-3
+  const MAX_RPS = 1_000_000
+  // 2**53 is a whole number Number.isInteger accepts but Number.isSafeInteger rejects: past it,
+  // integers stop incrementing, so it is exactly the class of "integer" that must not slip through.
+  const UNSAFE_INT = 2 ** 53
+
   it.each([
+    // Integer count knobs: every failure mode, including the two the earlier validator let through
+    // (an unsafe integer, and a value past the sane maximum).
     ['rateLimitRetries negative', { rateLimitRetries: -1 }],
     ['rateLimitRetries fractional', { rateLimitRetries: 1.5 }],
     ['rateLimitRetries NaN', { rateLimitRetries: Number.NaN }],
     ['rateLimitRetries Infinity', { rateLimitRetries: Number.POSITIVE_INFINITY }],
+    ['rateLimitRetries unsafe integer', { rateLimitRetries: UNSAFE_INT }],
+    ['rateLimitRetries over max', { rateLimitRetries: MAX_RETRIES + 1 }],
     ['readAttempts zero', { readAttempts: 0 }],
     ['readAttempts NaN', { readAttempts: Number.NaN }],
-    ['timeoutMs negative', { timeoutMs: -5 }],
-    ['timeoutMs Infinity', { timeoutMs: Number.POSITIVE_INFINITY }],
-    ['retryBackoffMs negative', { retryBackoffMs: -1 }],
-    ['requestsPerSecond zero', { requestsPerSecond: 0 }],
-    ['requestsPerSecond NaN', { requestsPerSecond: Number.NaN }],
+    ['readAttempts unsafe integer', { readAttempts: UNSAFE_INT }],
+    ['readAttempts over max', { readAttempts: MAX_RETRIES + 1 }],
     ['burstSize zero', { burstSize: 0 }],
     ['burstSize fractional', { burstSize: 2.5 }],
+    ['burstSize unsafe integer', { burstSize: UNSAFE_INT }],
+    ['burstSize over max', { burstSize: MAX_BURST + 1 }],
+    // Duration knobs: non-finite, below floor, and above the timer range.
+    ['timeoutMs negative', { timeoutMs: -5 }],
+    ['timeoutMs zero (floor is 1)', { timeoutMs: 0 }],
+    ['timeoutMs Infinity', { timeoutMs: Number.POSITIVE_INFINITY }],
+    ['timeoutMs NaN', { timeoutMs: Number.NaN }],
+    ['timeoutMs over the timer range', { timeoutMs: MAX_TIMER_MS + 1 }],
+    ['retryBackoffMs negative', { retryBackoffMs: -1 }],
+    ['retryBackoffMs Infinity', { retryBackoffMs: Number.POSITIVE_INFINITY }],
+    ['retryBackoffMs over the timer range', { retryBackoffMs: MAX_TIMER_MS + 1 }],
+    // Rate knob: zero, subnormal, Infinity, and past the max.
+    ['requestsPerSecond zero', { requestsPerSecond: 0 }],
+    ['requestsPerSecond subnormal', { requestsPerSecond: Number.MIN_VALUE }],
+    ['requestsPerSecond NaN', { requestsPerSecond: Number.NaN }],
+    ['requestsPerSecond Infinity', { requestsPerSecond: Number.POSITIVE_INFINITY }],
+    ['requestsPerSecond over max', { requestsPerSecond: MAX_RPS + 1 }],
   ])('rejects a malformed %s at construction', (_name, overrides) => {
     expect(() =>
       createBlockfrostProvider({ baseUrl: BASE, projectId: PROJECT_ID, ...overrides }),
     ).toThrow(ConfigError)
   })
 
-  it('accepts the documented in-range values', () => {
+  it.each([
+    ['rateLimitRetries floor', { rateLimitRetries: 0 }],
+    ['rateLimitRetries max', { rateLimitRetries: MAX_RETRIES }],
+    ['readAttempts floor', { readAttempts: 1 }],
+    ['readAttempts max', { readAttempts: MAX_RETRIES }],
+    ['burstSize floor', { burstSize: 1 }],
+    ['burstSize max', { burstSize: MAX_BURST }],
+    ['timeoutMs floor', { timeoutMs: 1 }],
+    ['timeoutMs at the timer range', { timeoutMs: MAX_TIMER_MS }],
+    ['retryBackoffMs floor', { retryBackoffMs: 0 }],
+    ['retryBackoffMs at the timer range', { retryBackoffMs: MAX_TIMER_MS }],
+    ['requestsPerSecond floor', { requestsPerSecond: MIN_RPS }],
+    ['requestsPerSecond max', { requestsPerSecond: MAX_RPS }],
+    ['requestsPerSecond typical', { requestsPerSecond: 10 }],
+  ])('accepts an in-range %s', (_name, overrides) => {
     expect(() =>
-      createBlockfrostProvider({
-        baseUrl: BASE,
-        projectId: PROJECT_ID,
-        rateLimitRetries: 0,
-        readAttempts: 1,
-        timeoutMs: 1,
-        retryBackoffMs: 0,
-        requestsPerSecond: 10,
-        burstSize: 1,
-      }),
+      createBlockfrostProvider({ baseUrl: BASE, projectId: PROJECT_ID, ...overrides }),
     ).not.toThrow()
   })
 })

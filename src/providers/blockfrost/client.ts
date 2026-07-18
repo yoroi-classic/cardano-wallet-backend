@@ -112,28 +112,74 @@ const DEFAULT_RATE_LIMIT_RETRIES = 3
 // cannot park a request indefinitely.
 const MAX_RETRY_AFTER_MS = 30_000
 
+// The timer range shared by setTimeout and AbortSignal.timeout: above 2^31-1 ms the value overflows
+// a signed 32-bit int and the timer fires almost immediately, so any duration we hand them (a
+// request timeout, a backoff) has to stay at or below this. A value above it must fail at startup,
+// not turn into a request that "times out" instantly on every call.
+const MAX_TIMER_MS = 2_147_483_647
+// Upper bounds for the count knobs. None has a legitimate reason to be enormous: a retry budget past
+// ~100 only turns a dead upstream into a longer hang, and a burst past 100k stops being a rate limit
+// at all (it would admit a flood larger than any real provider's bucket, i.e. disable the limiter).
+const MAX_RETRIES = 100
+const MAX_BURST = 100_000
+// The rate knob feeds the limiter as `requestsPerSecond / 1000` tokens per ms. Below ~1e-3 req/s
+// that conversion loses precision and eventually underflows toward a subnormal or zero, which would
+// make every post-burst request wait forever; a single refill wait would also blow past MAX_TIMER_MS.
+// The upper bound is really just "finite and not absurd" — past it, pacing is meaningless anyway.
+const MIN_REQUESTS_PER_SECOND = 1e-3
+const MAX_REQUESTS_PER_SECOND = 1_000_000
+
 /**
- * Validate an optional numeric knob at construction, throwing `ConfigError` on anything that is not
- * a finite number meeting its bound. Left unchecked, a NaN or Infinity slips into the retry and
- * pacing math and turns a bound into an unbounded loop (`attempt >= NaN` is never true) or a wait
- * that never ends (`1000 / 0`). A hand-built config is caught here, at startup, rather than as a
- * request that never returns.
+ * How a single numeric knob is bounded. Three shapes, each with its floor and ceiling spelled out
+ * in one place so there is no unbounded edge left to find:
+ *  - `count`: a whole number of things (retries, burst slots). Must be a *safe* integer in range —
+ *    `Number.isInteger` is not enough, because 2**53 is an "integer" that no longer increments.
+ *  - `duration`: milliseconds handed to a timer. Finite, at or above its floor, at or below the
+ *    timer range so it cannot silently fire early.
+ *  - `rate`: requests per second. Finite and within the band where the limiter's per-ms conversion
+ *    stays a normal, non-underflowing number.
+ */
+type NumericBound =
+  { kind: 'count'; min: number; max: number } | { kind: 'duration'; min: number } | { kind: 'rate' }
+
+/**
+ * Validate an optional numeric knob at construction, throwing `ConfigError` on anything outside its
+ * bound. Left unchecked, a NaN, an Infinity, an unsafe integer, an over-range duration, or a
+ * subnormal rate slips into the retry and pacing math and turns a bound into an unbounded loop
+ * (`attempt >= NaN` is never true), a timer that fires instantly, or a wait that never ends. A
+ * hand-built config is caught here, at startup, rather than as a request that never returns.
  */
 function checkNumber(
   value: number | undefined,
   fallback: number,
   name: string,
-  opts: { integer?: boolean; min: number },
+  bound: NumericBound,
 ): number {
   if (value === undefined) return fallback
-  const tooSmall = opts.integer === true ? value < opts.min : value <= opts.min
-  const notInteger = opts.integer === true && !Number.isInteger(value)
-  if (!Number.isFinite(value) || tooSmall || notInteger) {
-    const shape =
-      opts.integer === true ? `an integer >= ${opts.min}` : `a finite number > ${opts.min}`
-    throw new ConfigError(`blockfrost ${name} must be ${shape}, got ${String(value)}`)
+  const reject = (expected: string): never => {
+    throw new ConfigError(`blockfrost ${name} must be ${expected}, got ${String(value)}`)
   }
-  return value
+  switch (bound.kind) {
+    case 'count':
+      if (!Number.isSafeInteger(value) || value < bound.min || value > bound.max) {
+        reject(`a safe integer in [${bound.min}, ${bound.max}]`)
+      }
+      return value
+    case 'duration':
+      if (!Number.isFinite(value) || value < bound.min || value > MAX_TIMER_MS) {
+        reject(`a finite number of ms in [${bound.min}, ${MAX_TIMER_MS}]`)
+      }
+      return value
+    case 'rate':
+      if (
+        !Number.isFinite(value) ||
+        value < MIN_REQUESTS_PER_SECOND ||
+        value > MAX_REQUESTS_PER_SECOND
+      ) {
+        reject(`a finite rate in [${MIN_REQUESTS_PER_SECOND}, ${MAX_REQUESTS_PER_SECOND}] req/s`)
+      }
+      return value
+  }
 }
 
 /**
@@ -177,36 +223,38 @@ export function createBlockfrostClient(config: BlockfrostConfig): BlockfrostClie
     config.delayImpl ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)))
   const now = config.nowImpl ?? (() => Date.now())
 
-  // Every numeric knob is validated up front. A finite, in-range value or the default; anything
-  // else (NaN, Infinity, a fraction where a count is required, a non-positive rate) throws here
-  // rather than silently corrupting the retry or pacing math into a loop that never ends.
+  // Every numeric knob is validated up front against an explicit bound (see NumericBound). A
+  // finite, in-range value or the default; anything else throws here rather than silently
+  // corrupting the retry or pacing math into a loop that never ends or a timer that fires instantly.
   const timeoutMs = checkNumber(config.timeoutMs, DEFAULT_TIMEOUT_MS, 'timeoutMs', {
-    integer: true,
+    kind: 'duration',
     min: 1,
   })
   const readAttempts = checkNumber(config.readAttempts, DEFAULT_READ_ATTEMPTS, 'readAttempts', {
-    integer: true,
+    kind: 'count',
     min: 1,
+    max: MAX_RETRIES,
   })
   const backoffMs = checkNumber(config.retryBackoffMs, DEFAULT_BACKOFF_MS, 'retryBackoffMs', {
-    integer: true,
+    kind: 'duration',
     min: 0,
   })
   const rateLimitRetries = checkNumber(
     config.rateLimitRetries,
     DEFAULT_RATE_LIMIT_RETRIES,
     'rateLimitRetries',
-    { integer: true, min: 0 },
+    { kind: 'count', min: 0, max: MAX_RETRIES },
   )
   const requestsPerSecond = checkNumber(
     config.requestsPerSecond,
     DEFAULT_REQUESTS_PER_SECOND,
     'requestsPerSecond',
-    { min: 0 },
+    { kind: 'rate' },
   )
   const burstSize = checkNumber(config.burstSize, DEFAULT_BURST_SIZE, 'burstSize', {
-    integer: true,
+    kind: 'count',
     min: 1,
+    max: MAX_BURST,
   })
 
   // One shared limiter for every request this client makes, so overlapping reads draw on a single

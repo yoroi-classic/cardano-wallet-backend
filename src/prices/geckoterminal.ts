@@ -61,18 +61,26 @@ export const TOKEN_POOL_TTL_MS = 60_000
 export const TOKEN_HISTORY_TTL_MS = 5 * 60_000
 
 /**
- * The keyless-tier budget every GeckoTerminal call is paced to.
+ * GeckoTerminal's free public API allows 30 calls per minute (per its FAQ). Two things keep us
+ * inside that budget:
  *
- * A batch of `/v1/price/tokens` can be up to 100 subjects, one upstream call each when cold, and
- * bounding concurrency alone does not bound the per-minute rate that GeckoTerminal actually
- * enforces: a burst of fast calls still trips its ~120/min anonymous limit and 429s the whole
- * response. So every call this client makes goes through one shared token bucket (see the client
- * factory), which lets a small burst through and then paces the rest. The bucket is shared across
- * all concurrent HTTP requests, not created per request, so several overlapping batches stay
- * within one budget together. Tune here if the upstream tier changes.
+ *  - The batch live-price path asks the multi-token endpoint for up to `MULTI_TOKEN_BATCH` tokens
+ *    in one call, so a cold 100-subject request is ~4 calls, not ~100. See `getTokenActivity`.
+ *  - Every call this client makes, from any concurrent request, still passes through one shared
+ *    token bucket (built in the client factory) as a backstop. It lets a small burst through and
+ *    then paces the rest at a sustained rate set a little under 30/min, so the busiest 60-second
+ *    window stays under the real limit even when several batches or history charts overlap.
+ *    Limiting concurrency alone would not do this: it caps how many calls run at once, not how
+ *    many go out per minute, which is the quota GeckoTerminal actually enforces.
+ *
+ * Tune these if the upstream tier changes.
  */
-const GECKOTERMINAL_BURST = 8
-const GECKOTERMINAL_MIN_INTERVAL_MS = 500
+const GECKOTERMINAL_BURST = 4
+// 24 calls/min sustained. With the burst, the busiest minute holds ~28 calls, under the 30 limit.
+const GECKOTERMINAL_MIN_INTERVAL_MS = 2_500
+
+/** The multi-token endpoint accepts up to this many comma-separated addresses in one call. */
+const MULTI_TOKEN_BATCH = 30
 
 // A GeckoTerminal numeric field (a price, a volume, a percentage) serialized as a decimal string.
 // Regex-validated so a malformed value fails at the parse boundary (MalformedUpstreamError)
@@ -99,6 +107,24 @@ const poolRelationships = z.object({
 const poolEntry = z.object({ attributes: poolAttributes, relationships: poolRelationships })
 
 const tokenPoolsResponse = z.object({ data: z.array(poolEntry) })
+
+// The multi-token endpoint (`/tokens/multi/{addresses}?include=top_pools`) answers with each
+// token's most-liquid pool inlined under `included`, keyed by a JSON:API id and referenced from the
+// token's `top_pools` relationship. That top pool is whichever is most liquid overall, which need
+// not be the ADA-quoted one this API requires; see `resolveAdaPoolsBatch` for the fallback.
+const includedPool = poolEntry.extend({ id: z.string() })
+
+const multiTokenEntry = z.object({
+  attributes: z.object({ address: z.string() }),
+  relationships: z
+    .object({ top_pools: z.object({ data: z.array(z.object({ id: z.string() })) }).optional() })
+    .optional(),
+})
+
+const multiTokensResponse = z.object({
+  data: z.array(multiTokenEntry),
+  included: z.array(includedPool).optional(),
+})
 
 // [unix seconds, open, high, low, close, volume]. GeckoTerminal serializes these as JSON numbers
 // (unlike the pool attributes above, which are decimal strings) so there is no precision to lose
@@ -152,6 +178,66 @@ function isDirectAdaPool(subject: string, pool: z.infer<typeof poolEntry>): bool
     pool.relationships.base_token.data.id === `${NETWORK}_${subject}` &&
     pool.relationships.quote_token.data.id === NATIVE_TOKEN_ID
   )
+}
+
+function toAdaPool(pool: z.infer<typeof poolEntry>): AdaPool {
+  return {
+    address: pool.attributes.address,
+    priceAda: pool.attributes.base_token_price_native_currency,
+    adaUsdPrice: pool.attributes.quote_token_price_usd,
+    changePercent24h: pool.attributes.price_change_percentage?.h24,
+    volumeUsd24h: pool.attributes.volume_usd?.h24,
+  }
+}
+
+/**
+ * The most liquid ADA-quoted pool among `pools`, or undefined when none is paired directly with
+ * ADA. Liquidity is compared by the pools' own reserves rather than trusting upstream ordering.
+ */
+function pickMostLiquidAdaPool(
+  subject: string,
+  pools: z.infer<typeof poolEntry>[],
+): AdaPool | undefined {
+  let best: z.infer<typeof poolEntry> | undefined
+  let bestReserve = -1
+  for (const pool of pools) {
+    if (!isDirectAdaPool(subject, pool)) continue
+    const reserve = Number(pool.attributes.reserve_in_usd ?? '0')
+    if (best === undefined || reserve > bestReserve) {
+      best = pool
+      bestReserve = reserve
+    }
+  }
+  return best === undefined ? undefined : toAdaPool(best)
+}
+
+/** Drop duplicate subjects while keeping first-seen order. Input is already lowercased. */
+function dedupeSubjects(subjects: string[]): string[] {
+  const seen = new Set<string>()
+  const unique: string[] = []
+  for (const subject of subjects) {
+    if (seen.has(subject)) continue
+    seen.add(subject)
+    unique.push(subject)
+  }
+  return unique
+}
+
+const poolCacheKey = (subject: string) => `price:token:pool:${subject}`
+
+/** Build a TokenActivity from a resolved pool's own 24h figures, or undefined when incomplete. */
+function activityFromPool(subject: string, pool: AdaPool | undefined): TokenActivity | undefined {
+  if (pool === undefined) return undefined
+  // Both fields are genuinely optional in GeckoTerminal's schema (a pool too new to have a 24h
+  // figure yet). Reporting a partial answer would mean guessing whichever is missing, so the whole
+  // subject is omitted instead, exactly as an unresolved pool is.
+  if (pool.changePercent24h === undefined || pool.volumeUsd24h === undefined) return undefined
+  return {
+    subject,
+    priceAda: pool.priceAda,
+    changePercent: Number(pool.changePercent24h),
+    volumeAda: divideDecimalStrings(pool.volumeUsd24h, pool.adaUsdPrice),
+  }
 }
 
 export interface GeckoTerminalConfig {
@@ -213,37 +299,89 @@ export function createGeckoTerminalClient(config: GeckoTerminalConfig = {}): Gec
    * value) so a subject with no market is not re-asked about on every request.
    */
   async function resolveAdaPool(subject: string): Promise<AdaPool | undefined> {
-    const key = `price:token:pool:${subject}`
-    const resolved = await cache.read<AdaPool | null>(key, TOKEN_POOL_TTL_MS, async () => {
-      const body = await getOrNotFound(
-        `/networks/${NETWORK}/tokens/${subject}/pools`,
-        tokenPoolsResponse,
-      )
-      const candidates = (body?.data ?? []).filter((pool) => isDirectAdaPool(subject, pool))
+    const resolved = await cache.read<AdaPool | null>(
+      poolCacheKey(subject),
+      TOKEN_POOL_TTL_MS,
+      async () => {
+        const body = await getOrNotFound(
+          `/networks/${NETWORK}/tokens/${subject}/pools`,
+          tokenPoolsResponse,
+        )
+        return pickMostLiquidAdaPool(subject, body?.data ?? []) ?? null
+      },
+    )
+    return resolved ?? undefined
+  }
 
-      // The most liquid candidate, picked explicitly by its own reserves rather than trusting
-      // upstream to have returned them pre-sorted.
-      let best: z.infer<typeof poolEntry> | undefined
-      let bestReserve = -1
-      for (const pool of candidates) {
-        const reserve = Number(pool.attributes.reserve_in_usd ?? '0')
-        if (best === undefined || reserve > bestReserve) {
-          best = pool
-          bestReserve = reserve
+  /**
+   * Resolve the ADA pool for many subjects in as few upstream calls as possible.
+   *
+   * Cache hits are served first. The remaining misses go to the multi-token endpoint, up to
+   * `MULTI_TOKEN_BATCH` per call, so a cold 100-subject batch is ~4 calls rather than ~100. That
+   * endpoint returns each token's single most-liquid pool: when it is already ADA-quoted it is used
+   * as-is with no further call. A subject the endpoint does not return at all is one GeckoTerminal
+   * does not index, so it has no market. Only a subject that *is* indexed but whose most-liquid pool
+   * is not ADA-quoted falls back to the per-token pools endpoint, which lists every pool so the
+   * most-liquid ADA-paired one can still be found. ADA is the dominant quote asset across Cardano
+   * DEXes, so that fallback is the exception, not the rule, and stays bounded.
+   */
+  async function resolveAdaPoolsBatch(
+    subjects: string[],
+  ): Promise<Map<string, AdaPool | undefined>> {
+    const resolved = new Map<string, AdaPool | undefined>()
+    const misses: string[] = []
+    for (const subject of subjects) {
+      const cached = cache.peek<AdaPool | null>(poolCacheKey(subject))
+      if (cached !== undefined) resolved.set(subject, cached ?? undefined)
+      else misses.push(subject)
+    }
+
+    const needsFallback: string[] = []
+    for (let i = 0; i < misses.length; i += MULTI_TOKEN_BATCH) {
+      const chunk = misses.slice(i, i + MULTI_TOKEN_BATCH)
+      const body = await getOrNotFound(
+        `/networks/${NETWORK}/tokens/multi/${chunk.join(',')}?include=top_pools`,
+        multiTokensResponse,
+      )
+
+      const poolsById = new Map<string, z.infer<typeof includedPool>>()
+      for (const pool of body?.included ?? []) poolsById.set(pool.id, pool)
+
+      const returned = new Set<string>()
+      for (const token of body?.data ?? []) {
+        const subject = token.attributes.address.toLowerCase()
+        returned.add(subject)
+        const topPools = (token.relationships?.top_pools?.data ?? [])
+          .map((ref) => poolsById.get(ref.id))
+          .filter((pool): pool is z.infer<typeof includedPool> => pool !== undefined)
+        const adaPool = pickMostLiquidAdaPool(subject, topPools)
+        if (adaPool !== undefined) {
+          cache.set(poolCacheKey(subject), adaPool, TOKEN_POOL_TTL_MS)
+          resolved.set(subject, adaPool)
+        } else {
+          // Indexed, but its most-liquid pool is not ADA-quoted. Its full pool list may still hold
+          // an ADA pair, so defer to the per-token lookup below.
+          needsFallback.push(subject)
         }
       }
 
-      return best === undefined
-        ? null
-        : {
-            address: best.attributes.address,
-            priceAda: best.attributes.base_token_price_native_currency,
-            adaUsdPrice: best.attributes.quote_token_price_usd,
-            changePercent24h: best.attributes.price_change_percentage?.h24,
-            volumeUsd24h: best.attributes.volume_usd?.h24,
-          }
-    })
-    return resolved ?? undefined
+      // A subject the endpoint did not return is not indexed at all: no pool, no market. Cache the
+      // absence so it is not re-asked about, mirroring `resolveAdaPool`'s negative cache.
+      for (const subject of chunk) {
+        if (!returned.has(subject)) {
+          cache.set(poolCacheKey(subject), null, TOKEN_POOL_TTL_MS)
+          resolved.set(subject, undefined)
+        }
+      }
+    }
+
+    await Promise.all(
+      needsFallback.map(async (subject) => {
+        resolved.set(subject, await resolveAdaPool(subject))
+      }),
+    )
+
+    return resolved
   }
 
   /** OHLCV candles for one pool, chronological (oldest first), never padded to a fixed length. */
@@ -263,29 +401,18 @@ export function createGeckoTerminalClient(config: GeckoTerminalConfig = {}): Gec
     return [...list].reverse()
   }
 
-  async function computeActivity(
+  /**
+   * The 7d/30d figures for one subject, derived from its pool's daily candles: the close of the
+   * newest is "now", the open of the oldest is "then", and the window's volume is their sum. These
+   * have no equivalent field on the pool object, so this is one OHLCV call per subject (paced by
+   * the shared bucket), unlike the 24h figures which come straight off the resolved pool.
+   */
+  async function activityFromCandles(
     subject: string,
+    pool: AdaPool | undefined,
     window: PriceWindow,
   ): Promise<TokenActivity | undefined> {
-    const pool = await resolveAdaPool(subject)
     if (pool === undefined) return undefined
-
-    if (window === '24h') {
-      // Both fields are genuinely optional in GeckoTerminal's own schema (a pool too new to have a
-      // 24h figure yet). Reporting a partial answer would mean guessing at whichever is missing,
-      // so the whole subject is omitted instead, exactly as an unresolved pool is above.
-      if (pool.changePercent24h === undefined || pool.volumeUsd24h === undefined) return undefined
-      return {
-        subject,
-        priceAda: pool.priceAda,
-        changePercent: Number(pool.changePercent24h),
-        volumeAda: divideDecimalStrings(pool.volumeUsd24h, pool.adaUsdPrice),
-      }
-    }
-
-    // 7d and 30d have no equivalent field on the pool object at all, so they are derived from
-    // daily candles on the same pool: the close of the newest one is "now", the open of the
-    // oldest is "then", and the window's volume is their sum.
     const days = window === '7d' ? 7 : 30
     const cacheKey = `price:token:ohlcv:${subject}:activity:${window}`
     const candles = await cache.read(cacheKey, TOKEN_HISTORY_TTL_MS, () =>
@@ -317,19 +444,31 @@ export function createGeckoTerminalClient(config: GeckoTerminalConfig = {}): Gec
 
   return {
     async getTokenActivity(subjects: string[], window: PriceWindow): Promise<TokenActivity[]> {
-      const normalized = subjects.map((subject) => subject.toLowerCase())
+      const normalized = dedupeSubjects(subjects.map((subject) => subject.toLowerCase()))
 
-      // No manual fan-out cap here: every upstream call is already paced by the shared token
-      // bucket, which both caps the burst and rate-limits the tail, so the whole batch can be
-      // launched at once and the bucket decides when each call actually goes out.
-      const resolved = await Promise.all(
-        normalized.map((subject) => computeActivity(subject, window)),
+      // One batched multi-token lookup resolves every subject's ADA pool (~ceil(N/30) calls), so
+      // the live-price path never fans out to one call per subject.
+      const pools = await resolveAdaPoolsBatch(normalized)
+
+      if (window === '24h') {
+        // Every 24h figure is already on the pool the batch resolved: no further call per subject.
+        const results: TokenActivity[] = []
+        for (const subject of normalized) {
+          const activity = activityFromPool(subject, pools.get(subject))
+          if (activity !== undefined) results.push(activity)
+        }
+        return results
+      }
+
+      // 7d/30d have no field on the pool, so each is one OHLCV call, all paced by the same bucket.
+      const results = await Promise.all(
+        normalized.map((subject) => activityFromCandles(subject, pools.get(subject), window)),
       )
 
       // Unresolvable subjects (no direct ADA pool, or a pool too new for this window) are simply
       // absent from the result, mirroring how /v1/assets/info already treats a subject Koios has
       // never heard of: omission, not a zero.
-      return resolved.filter((activity): activity is TokenActivity => activity !== undefined)
+      return results.filter((activity): activity is TokenActivity => activity !== undefined)
     },
 
     async getTokenHistory(subject: string, range: PriceRange): Promise<Ohlc[]> {

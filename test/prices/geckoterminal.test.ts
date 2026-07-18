@@ -4,7 +4,7 @@ import {
   DEFAULT_GECKOTERMINAL_BASE_URL,
 } from '../../src/prices/geckoterminal.js'
 import type { FetchLike } from '../../src/prices/http.js'
-import { createTokenBucket } from '../../src/prices/rate-limit.js'
+import type { TokenBucket } from '../../src/prices/rate-limit.js'
 import { createMemoryCache } from '../../src/cache/index.js'
 import {
   MalformedUpstreamError,
@@ -81,6 +81,23 @@ function poolsResponse(...pools: ReturnType<typeof pool>[]) {
   return { data: pools }
 }
 
+/**
+ * The `/tokens/multi/{addresses}?include=top_pools` response: each token's pools are inlined under
+ * `included` and referenced from its `top_pools` relationship, exactly as that endpoint returns.
+ */
+function multiResponse(...entries: Array<{ subject: string; pools: ReturnType<typeof pool>[] }>) {
+  const included: unknown[] = []
+  const data = entries.map(({ subject, pools }, entryIdx) => {
+    const refs = pools.map((p, i) => {
+      const id = `pool_${entryIdx}_${i}`
+      included.push({ id, ...p })
+      return { id }
+    })
+    return { attributes: { address: subject }, relationships: { top_pools: { data: refs } } }
+  })
+  return { data, included }
+}
+
 function client(cache?: ReturnType<typeof createMemoryCache>, fetchImpl?: FetchLike) {
   return createGeckoTerminalClient({ cache, fetchImpl })
 }
@@ -88,7 +105,7 @@ function client(cache?: ReturnType<typeof createMemoryCache>, fetchImpl?: FetchL
 describe('geckoterminal client — happy path (24h)', () => {
   it('computes price, change and volume-in-ADA from the pool, with one upstream call', async () => {
     const { fetchImpl, urls } = fakeFetch({
-      [`/tokens/${SUBJECT}/pools`]: { json: poolsResponse(ADA_POOL) },
+      '/tokens/multi/': { json: multiResponse({ subject: SUBJECT, pools: [ADA_POOL] }) },
     })
 
     const [activity] = await client(undefined, fetchImpl).getTokenActivity([SUBJECT], '24h')
@@ -100,13 +117,14 @@ describe('geckoterminal client — happy path (24h)', () => {
       // 96650.3017183848 / 0.163485, formatted as a plain decimal string.
       volumeAda: '591187.5812361061',
     })
+    // A single batched multi-token call resolves the whole request, ADA quote and 24h figures.
     expect(urls).toHaveLength(1)
     expect(urls[0]).toBe(
-      `${DEFAULT_GECKOTERMINAL_BASE_URL}/networks/cardano/tokens/${SUBJECT}/pools`,
+      `${DEFAULT_GECKOTERMINAL_BASE_URL}/networks/cardano/tokens/multi/${SUBJECT}?include=top_pools`,
     )
   })
 
-  it('picks the most liquid ADA-paired pool, not just the first or the biggest overall', async () => {
+  it('picks the most liquid ADA-paired pool, falling back past a bigger non-ADA top pool', async () => {
     const smallAdaPool = pool({ reserveUsd: '100', priceNative: '0.01', address: 'small-ada' })
     const bigNonAdaPool = pool({
       reserveUsd: '999999',
@@ -116,6 +134,9 @@ describe('geckoterminal client — happy path (24h)', () => {
     })
     const bigAdaPool = pool({ reserveUsd: '5000000', priceNative: '0.03', address: 'big-ada' })
     const { fetchImpl } = fakeFetch({
+      // The multi endpoint's single top pool is the non-ADA one, so this token falls back to its
+      // full pool list, where the most-liquid ADA pair is chosen.
+      '/tokens/multi/': { json: multiResponse({ subject: SUBJECT, pools: [bigNonAdaPool] }) },
       [`/tokens/${SUBJECT}/pools`]: {
         json: poolsResponse(smallAdaPool, bigNonAdaPool, bigAdaPool),
       },
@@ -129,7 +150,7 @@ describe('geckoterminal client — happy path (24h)', () => {
 
   it('caches the resolved pool, so activity and history for the same subject share one lookup', async () => {
     const { fetchImpl, urls } = fakeFetch({
-      [`/tokens/${SUBJECT}/pools`]: { json: poolsResponse(ADA_POOL) },
+      '/tokens/multi/': { json: multiResponse({ subject: SUBJECT, pools: [ADA_POOL] }) },
       '/ohlcv/day': { json: { data: { attributes: { ohlcv_list: [] } } } },
     })
     const cache = createMemoryCache()
@@ -138,6 +159,9 @@ describe('geckoterminal client — happy path (24h)', () => {
     await provider.getTokenActivity([SUBJECT], '24h')
     await provider.getTokenHistory(SUBJECT, '6m')
 
+    // Activity resolves and caches the pool via the multi endpoint; history reuses it from cache
+    // and only fetches candles, never a second pool lookup. (The `multi` path is the only /tokens/
+    // call; the OHLCV path lives under /pools/.)
     expect(urls.filter((u) => u.includes('/tokens/'))).toHaveLength(1)
   })
 })
@@ -157,7 +181,7 @@ describe('geckoterminal client — happy path (7d/30d)', () => {
 
   it('derives price, change and volume from daily candles, not from the pool object', async () => {
     const { fetchImpl, urls } = fakeFetch({
-      [`/tokens/${SUBJECT}/pools`]: { json: poolsResponse(ADA_POOL) },
+      '/tokens/multi/': { json: multiResponse({ subject: SUBJECT, pools: [ADA_POOL] }) },
       '/ohlcv/day': { json: { data: { attributes: { ohlcv_list: DAILY_CANDLES_7D } } } },
     })
 
@@ -177,7 +201,7 @@ describe('geckoterminal client — happy path (7d/30d)', () => {
 
   it('uses 30 daily candles for the 30d window', async () => {
     const { fetchImpl, urls } = fakeFetch({
-      [`/tokens/${SUBJECT}/pools`]: { json: poolsResponse(ADA_POOL) },
+      '/tokens/multi/': { json: multiResponse({ subject: SUBJECT, pools: [ADA_POOL] }) },
       '/ohlcv/day': { json: { data: { attributes: { ohlcv_list: DAILY_CANDLES_7D } } } },
     })
 
@@ -232,8 +256,9 @@ describe('geckoterminal client — getTokenHistory', () => {
 })
 
 describe('geckoterminal client — unhappy path', () => {
-  it('omits a subject GeckoTerminal has never indexed (404), rather than an error', async () => {
-    const { fetchImpl } = fakeFetch({ [`/tokens/${SUBJECT}/pools`]: { status: 404 } })
+  it('omits a subject GeckoTerminal has never indexed, rather than an error', async () => {
+    // The multi endpoint simply omits a token it does not index; that subject has no market.
+    const { fetchImpl } = fakeFetch({ '/tokens/multi/': { json: { data: [] } } })
 
     const activity = await client(undefined, fetchImpl).getTokenActivity([SUBJECT], '24h')
 
@@ -251,6 +276,9 @@ describe('geckoterminal client — unhappy path', () => {
   it('omits a subject whose only pools are not paired directly with ADA', async () => {
     const nonAdaPool = pool({ quoteId: 'cardano_deadbeef' })
     const { fetchImpl } = fakeFetch({
+      // Indexed, but the top pool isn't ADA-quoted, so it falls back to the full list, which also
+      // has no ADA pair.
+      '/tokens/multi/': { json: multiResponse({ subject: SUBJECT, pools: [nonAdaPool] }) },
       [`/tokens/${SUBJECT}/pools`]: { json: poolsResponse(nonAdaPool) },
     })
 
@@ -262,7 +290,7 @@ describe('geckoterminal client — unhappy path', () => {
   it('omits a subject whose pool has no 24h figures yet, rather than a partial guess', async () => {
     const freshPool = pool({ changeH24: null, volumeH24: null })
     const { fetchImpl } = fakeFetch({
-      [`/tokens/${SUBJECT}/pools`]: { json: poolsResponse(freshPool) },
+      '/tokens/multi/': { json: multiResponse({ subject: SUBJECT, pools: [freshPool] }) },
     })
 
     const activity = await client(undefined, fetchImpl).getTokenActivity([SUBJECT], '24h')
@@ -272,7 +300,7 @@ describe('geckoterminal client — unhappy path', () => {
 
   it('omits a subject with an ADA pool but no candles yet for the 7d/30d window', async () => {
     const { fetchImpl } = fakeFetch({
-      [`/tokens/${SUBJECT}/pools`]: { json: poolsResponse(ADA_POOL) },
+      '/tokens/multi/': { json: multiResponse({ subject: SUBJECT, pools: [ADA_POOL] }) },
       '/ohlcv/day': { json: { data: { attributes: { ohlcv_list: [] } } } },
     })
 
@@ -282,7 +310,7 @@ describe('geckoterminal client — unhappy path', () => {
   })
 
   it('propagates a genuine upstream failure rather than treating it as "no data"', async () => {
-    const { fetchImpl } = fakeFetch({ [`/tokens/${SUBJECT}/pools`]: { status: 503 } })
+    const { fetchImpl } = fakeFetch({ '/tokens/multi/': { status: 503 } })
 
     await expect(client(undefined, fetchImpl).getTokenActivity([SUBJECT], '24h')).rejects.toThrow(
       ProviderError,
@@ -299,9 +327,9 @@ describe('geckoterminal client — unhappy path', () => {
     )
   })
 
-  it('maps a malformed pool shape to MalformedUpstreamError', async () => {
+  it('maps a malformed multi-token shape to MalformedUpstreamError', async () => {
     const { fetchImpl } = fakeFetch({
-      [`/tokens/${SUBJECT}/pools`]: { json: { data: [{ attributes: { address: 1 } }] } },
+      '/tokens/multi/': { json: { data: [{ attributes: { address: 1 } }] } },
     })
 
     await expect(client(undefined, fetchImpl).getTokenActivity([SUBJECT], '24h')).rejects.toThrow(
@@ -315,7 +343,7 @@ describe('geckoterminal client — unhappy path', () => {
       [700_000_000, 0, 0, 0, 0, 10], // oldest candle opened at 0
     ]
     const { fetchImpl } = fakeFetch({
-      [`/tokens/${SUBJECT}/pools`]: { json: poolsResponse(ADA_POOL) },
+      '/tokens/multi/': { json: multiResponse({ subject: SUBJECT, pools: [ADA_POOL] }) },
       '/ohlcv/day': { json: { data: { attributes: { ohlcv_list: zeroOpenCandles } } } },
     })
 
@@ -326,9 +354,10 @@ describe('geckoterminal client — unhappy path', () => {
 })
 
 describe('geckoterminal client — pool lookup coalescing', () => {
-  it('collapses two concurrent lookups for the same subject onto one upstream call', async () => {
+  it('collapses two concurrent history lookups for the same subject onto one pool call', async () => {
     const { fetchImpl, urls } = fakeFetch({
       [`/tokens/${SUBJECT}/pools`]: { json: poolsResponse(ADA_POOL) },
+      '/ohlcv/day': { json: { data: { attributes: { ohlcv_list: [] } } } },
     })
     const cache = createMemoryCache()
     const provider = client(cache, fetchImpl)
@@ -336,126 +365,90 @@ describe('geckoterminal client — pool lookup coalescing', () => {
     // Fired together, before either resolves: without in-flight coalescing on the pool lookup they
     // would each issue the identical /tokens/{subject}/pools call and race to cache it.
     const [a, b] = await Promise.all([
-      provider.getTokenActivity([SUBJECT], '24h'),
-      provider.getTokenActivity([SUBJECT], '24h'),
+      provider.getTokenHistory(SUBJECT, '6m'),
+      provider.getTokenHistory(SUBJECT, '6m'),
     ])
 
     expect(a).toEqual(b)
-    expect(urls.filter((u) => u.includes('/tokens/'))).toHaveLength(1)
+    expect(urls.filter((u) => u.includes(`/tokens/${SUBJECT}/pools`))).toHaveLength(1)
   })
 })
 
-describe('geckoterminal client — upstream call rate', () => {
-  // A clock and a wait a test controls directly: `delay(ms)` registers a waiter that only resolves
-  // once the test advances its clock past it, so pacing is exercised with no real time passing.
-  function manualClock() {
-    let current = 0
-    const waiters: Array<{ at: number; resolve: () => void }> = []
-    // A macrotask boundary that drains the whole microtask queue, so every continuation a released
-    // waiter unblocks (the fetch, the parse, the next reservation) has run before the next step.
-    const flush = () => new Promise<void>((resolve) => setImmediate(resolve))
-    return {
-      now: () => current,
-      delay: (ms: number): Promise<void> =>
-        ms <= 0
-          ? Promise.resolve()
-          : new Promise<void>((resolve) => {
-              waiters.push({ at: current + ms, resolve })
-            }),
-      async advanceTo(target: number): Promise<void> {
-        for (;;) {
-          await flush()
-          let idx = -1
-          for (let i = 0; i < waiters.length; i++) {
-            if (waiters[i]!.at <= target && (idx === -1 || waiters[i]!.at < waiters[idx]!.at)) {
-              idx = i
-            }
-          }
-          if (idx === -1) break
-          const [next] = waiters.splice(idx, 1)
-          current = Math.max(current, next!.at)
-          next!.resolve()
+describe('geckoterminal client — batch call count', () => {
+  // Timing is not what this test measures, so the bucket is a passthrough; the shared bucket's
+  // pacing is covered in rate-limit.test.ts.
+  const passthroughBucket: TokenBucket = { acquire: () => Promise.resolve() }
+
+  it('resolves a cold 100-subject batch in ceil(N/30) multi calls, with a bounded fallback', async () => {
+    const subjects = Array.from({ length: 100 }, (_, i) => i.toString(16).padStart(56, '0'))
+    // One subject whose most-liquid pool isn't ADA-quoted, forcing a single per-token fallback.
+    const nonAda = subjects[0]!
+
+    const urls: string[] = []
+    const fetchImpl: FetchLike = (async (url: string) => {
+      urls.push(url)
+      if (url.includes('/tokens/multi/')) {
+        const addrs = url
+          .slice(url.indexOf('/multi/') + '/multi/'.length, url.indexOf('?'))
+          .split(',')
+        const data = addrs.map((subject) => ({
+          attributes: { address: subject },
+          relationships: { top_pools: { data: [{ id: `pool_${subject}` }] } },
+        }))
+        const included = addrs.map((subject) => ({
+          id: `pool_${subject}`,
+          attributes: {
+            address: `addr_${subject}`,
+            base_token_price_native_currency: '1.5',
+            quote_token_price_usd: '0.4',
+            reserve_in_usd: '1000',
+            price_change_percentage: { h24: '2' },
+            volume_usd: { h24: '100' },
+          },
+          relationships: {
+            base_token: { data: { id: `cardano_${subject}` } },
+            quote_token: { data: { id: subject === nonAda ? 'cardano_deadbeef' : NATIVE_ID } },
+          },
+        }))
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ data, included }),
+          text: async () => '',
         }
-        current = target
-      },
-    }
-  }
-
-  // A distinct, valid 56-hex subject per index, so nothing coalesces and each is one upstream call.
-  const subjectAt = (i: number) => i.toString(16).padStart(56, '0')
-
-  const BURST = 8
-  const INTERVAL_MS = 500
-
-  function rateHarness() {
-    const clock = manualClock()
-    const bucket = createTokenBucket({
-      capacity: BURST,
-      refillIntervalMs: INTERVAL_MS,
-      now: clock.now,
-      delay: clock.delay,
-    })
-    const emitTimes: number[] = []
-    const fetchImpl: FetchLike = (async () => {
-      emitTimes.push(clock.now())
-      // An empty pool list: the subject resolves to "no market", but the upstream call still
-      // happened, which is all the rate is measured from.
-      return { ok: true, status: 200, json: async () => ({ data: [] }), text: async () => '' }
+      }
+      // Fallback: the non-ADA subject's full pool list does contain an ADA pair.
+      return {
+        ok: true,
+        status: 200,
+        json: async () =>
+          poolsResponse(pool({ baseId: `cardano_${nonAda}`, address: `addr_${nonAda}` })),
+        text: async () => '',
+      }
     }) as FetchLike
+
     const provider = createGeckoTerminalClient({
       fetchImpl,
-      tokenBucket: bucket,
+      tokenBucket: passthroughBucket,
       cache: createMemoryCache(),
     })
-    return { clock, emitTimes, provider }
-  }
 
-  // The budget invariant the bucket enforces: at most `capacity` calls may bunch together, and the
-  // (i + capacity)-th call is at least one interval after the i-th, so no window shorter than the
-  // interval ever holds more than `capacity` calls.
-  function expectWithinBudget(emitTimes: number[]) {
-    const sorted = [...emitTimes].sort((a, b) => a - b)
-    expect(sorted.filter((t) => t === 0)).toHaveLength(BURST)
-    for (let i = 0; i + BURST < sorted.length; i++) {
-      expect(sorted[i + BURST]! - sorted[i]!).toBeGreaterThanOrEqual(INTERVAL_MS)
-    }
-  }
+    const activity = await provider.getTokenActivity(subjects, '24h')
 
-  it('paces a full cold 100-subject batch: a burst, then one call per interval', async () => {
-    const { clock, emitTimes, provider } = rateHarness()
-    const subjects = Array.from({ length: 100 }, (_, i) => subjectAt(i))
-
-    const done = provider.getTokenActivity(subjects, '24h')
-    await clock.advanceTo(5 * 60_000) // well past the last paced call
-    await done
-
-    expect(emitTimes).toHaveLength(100)
-    expectWithinBudget(emitTimes)
-  })
-
-  it('holds the same budget across two overlapping batches, proving one shared bucket', async () => {
-    const { clock, emitTimes, provider } = rateHarness()
-    const batchA = Array.from({ length: 50 }, (_, i) => subjectAt(i))
-    const batchB = Array.from({ length: 50 }, (_, i) => subjectAt(i + 50))
-
-    // Both in flight at once. A per-request bucket would give batch B its own fresh burst at t=0,
-    // putting 16 calls in the first instant; one shared bucket keeps the burst at 8 total.
-    const done = Promise.all([
-      provider.getTokenActivity(batchA, '24h'),
-      provider.getTokenActivity(batchB, '24h'),
-    ])
-    await clock.advanceTo(5 * 60_000)
-    await done
-
-    expect(emitTimes).toHaveLength(100)
-    expectWithinBudget(emitTimes)
+    const multiCalls = urls.filter((u) => u.includes('/tokens/multi/'))
+    const fallbackCalls = urls.filter((u) => /\/tokens\/[0-9a-f]+\/pools/.test(u))
+    expect(multiCalls).toHaveLength(4) // ceil(100 / 30), not ~100
+    expect(fallbackCalls).toHaveLength(1) // only the one non-ADA-top-pool subject
+    expect(urls).toHaveLength(5)
+    // Every subject still resolved to a price, the fallback one included.
+    expect(activity).toHaveLength(100)
   })
 })
 
 describe('geckoterminal client — regression', () => {
   it('keeps priceAda and volumeAda as decimal strings in the 24h path', async () => {
     const { fetchImpl } = fakeFetch({
-      [`/tokens/${SUBJECT}/pools`]: { json: poolsResponse(ADA_POOL) },
+      '/tokens/multi/': { json: multiResponse({ subject: SUBJECT, pools: [ADA_POOL] }) },
     })
 
     const [activity] = await client(undefined, fetchImpl).getTokenActivity([SUBJECT], '24h')
@@ -470,7 +463,7 @@ describe('geckoterminal client — regression', () => {
       [700_000_000, 1e-9, 1e-9, 1e-9, 1e-9, 1],
     ]
     const { fetchImpl } = fakeFetch({
-      [`/tokens/${SUBJECT}/pools`]: { json: poolsResponse(ADA_POOL) },
+      '/tokens/multi/': { json: multiResponse({ subject: SUBJECT, pools: [ADA_POOL] }) },
       '/ohlcv/day': { json: { data: { attributes: { ohlcv_list: tinyCandles } } } },
     })
 

@@ -48,6 +48,19 @@ function isPaymentAddress(value: string): boolean {
   return isBech32PaymentAddress(value) || isByronAddress(value)
 }
 
+/**
+ * Collapse a batch to its distinct addresses, keeping first-seen order.
+ *
+ * A caller can repeat an address in the set, and the reads that follow answer per address across
+ * more than one upstream request when the set is large enough to split. Left as-is, a repeated
+ * address that lands in two different chunks brings its UTxOs back twice, so the endpoint would
+ * return duplicates for a set it promised to answer once. Deduplicating here, at the boundary,
+ * fixes it for every read below rather than in each one.
+ */
+function distinct(addresses: string[]): string[] {
+  return [...new Set(addresses)]
+}
+
 /** Address-level reads: discovery, and reads keyed by an address set rather than a stake key. */
 export function registerAddressRoutes(app: FastifyInstance, provider: ChainProvider): void {
   app.post('/v1/addresses/filter-used', async (request) => {
@@ -58,7 +71,7 @@ export function registerAddressRoutes(app: FastifyInstance, provider: ChainProvi
     if (!parsed.data.addresses.every(isPaymentAddress)) {
       throw new BadRequestError(PAYMENT_ADDRESS_ERROR)
     }
-    return provider.filterUsedAddresses(parsed.data.addresses)
+    return provider.filterUsedAddresses(distinct(parsed.data.addresses))
   })
 
   /**
@@ -76,7 +89,7 @@ export function registerAddressRoutes(app: FastifyInstance, provider: ChainProvi
     if (!parsed.data.addresses.every(isPaymentAddress)) {
       throw new BadRequestError(PAYMENT_ADDRESS_ERROR)
     }
-    return provider.getUtxosByAddresses(parsed.data.addresses)
+    return provider.getUtxosByAddresses(distinct(parsed.data.addresses))
   })
 
   /**
@@ -95,6 +108,6 @@ export function registerAddressRoutes(app: FastifyInstance, provider: ChainProvi
     if (!parsed.data.addresses.every(isPaymentAddress)) {
       throw new BadRequestError(PAYMENT_ADDRESS_ERROR)
     }
-    return provider.getTxHistoryByAddresses(parsed.data.addresses, parsed.data.after)
+    return provider.getTxHistoryByAddresses(distinct(parsed.data.addresses), parsed.data.after)
   })
 }

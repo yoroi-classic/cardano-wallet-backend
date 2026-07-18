@@ -15,6 +15,14 @@ const ICARUS = 'Ae2tdPwUPEZFRbyhz3cpfC2CumGzNkFBN2L42rcUc2yjQpEkxDbkPodpMAi'
 // uint.
 const DAEDALUS =
   'DdzFFzCqrht9W56zJGEFvHHywdeXZiGVYGqVhoZj6SRrS9o2HNLmorEzZhKm7khqfBKvCaTKGLtTnQSToxuvdzJTkQqcAf6f2ErxbSKS'
+// A constructed, structurally real Byron address (array-of-three [28-byte root, empty attribute
+// map, address type 0]) whose CRC32 lands in the 256-65535 range, so the outer checksum uses the
+// CBOR 2-byte uint encoding. Locks that the hand-rolled reader handles that encoding on a genuine
+// Byron body, not only the 4-byte form both live fixtures happen to carry.
+const VALID_2BYTE_CRC = 'VhLXUZmS1gXD4L47eXno8gbMveRjZtXhhn2D3NGprm4zuAoKGU4enRp8'
+// A constructed Byron redeem (AVVM) address: address type 2, exercising a variant neither live
+// fixture above uses. Both fixtures above are type 0 (public key).
+const VALID_TYPE2 = 'Ae2tdPwUPEYxWXqTgtb8eV8NAt1pW99Wq2FPAFfTQx3BWTiMqRh5eem5r47'
 
 describe('isByronAddress — happy path', () => {
   it('accepts a real Icarus-style (Ae2) address', () => {
@@ -35,12 +43,46 @@ describe('isByronAddress — regression', () => {
   })
 
   // Both real fixtures happen to carry a CRC big enough to need the 4-byte CBOR uint encoding.
-  // This one is constructed (a random 20-byte payload, CRC32'd, wrapped in the same
-  // array/tag-24/bytestring shape) specifically so its CRC falls in the 256-65535 range, which
-  // the CBOR reader encodes with its 2-byte form. Locks that the hand-rolled reader handles that
-  // encoding too, not only the one both live fixtures happen to exercise.
-  it('accepts a constructed address whose CRC uses the CBOR 2-byte uint encoding', () => {
-    expect(isByronAddress('2M4A5ZZXZko8ZTkRLLf62XwDWUqyUn73hoTMSAG')).toBe(true)
+  // This one's CRC falls in the 256-65535 range, which the CBOR reader encodes with its 2-byte
+  // form. Locks that the hand-rolled reader handles that encoding too, not only the one both live
+  // fixtures happen to exercise.
+  it('accepts a real Byron body whose CRC uses the CBOR 2-byte uint encoding', () => {
+    expect(isByronAddress(VALID_2BYTE_CRC)).toBe(true)
+  })
+
+  it('accepts a Byron redeem address (address type 2)', () => {
+    expect(isByronAddress(VALID_TYPE2)).toBe(true)
+  })
+})
+
+// The envelope alone is forgeable: the outer shape [ #6.24(bytes), uint ] and a CRC32 recomputed
+// over the tagged bytes carry no proof that the tagged bytes are a Byron address at all. Each of
+// these decodes and CRC-checks cleanly, yet is not the body [addressRoot, addressAttributes,
+// addressType], so it must be rejected on structure. A real mainnet Byron address is asserted
+// alongside each so the tightening cannot pass by simply rejecting everything.
+describe('isByronAddress — forged envelope', () => {
+  it('rejects a valid envelope whose inner CBOR is a bare uint, not a Byron body', () => {
+    expect(isByronAddress('q6xe8yxe784EYnUesB8')).toBe(false)
+    expect(isByronAddress(ICARUS)).toBe(true)
+  })
+
+  it('rejects a valid envelope whose address root is 27 bytes instead of 28', () => {
+    expect(isByronAddress('3Bf3BWfUXmSBxQAuuCQJUUPTjnV5esAAWGWYLHkBcoc8eVLy94e48yskMA')).toBe(false)
+    expect(isByronAddress(ICARUS)).toBe(true)
+  })
+
+  it('rejects a valid envelope with a well-formed Byron body plus a trailing junk byte', () => {
+    expect(isByronAddress('jYTLseJK1m1s7moiDAKmtZkdwn4bDgrbwpyp2vaRaxoM8DTJdgpiqJvuBQiJ')).toBe(
+      false,
+    )
+    expect(isByronAddress(DAEDALUS)).toBe(true)
+  })
+
+  // The exact string a prior revision of these tests accepted as a "constructed" Byron address:
+  // a random 20-byte payload under a valid envelope and CRC. It is the canonical forged case, and
+  // it must now be rejected rather than mistaken for the real thing.
+  it('rejects a random payload wrapped in an otherwise valid envelope', () => {
+    expect(isByronAddress('2M4A5ZZXZko8ZTkRLLf62XwDWUqyUn73hoTMSAG')).toBe(false)
   })
 })
 

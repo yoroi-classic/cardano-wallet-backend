@@ -15,12 +15,13 @@ interface Call {
   url: string
   method?: string
   body?: string | Uint8Array
+  headers?: Record<string, string>
 }
 
 function fakeFetch(json: () => Promise<unknown>): { fetchImpl: FetchLike; calls: Call[] } {
   const calls: Call[] = []
   const fetchImpl: FetchLike = async (url, init) => {
-    calls.push({ url, method: init?.method, body: init?.body })
+    calls.push({ url, method: init?.method, body: init?.body, headers: init?.headers })
     return { ok: true, status: 200, json, text: async () => '' }
   }
   return { fetchImpl, calls }
@@ -70,7 +71,11 @@ describe('koios getUtxosByAddresses', () => {
         inlineDatum: 'd87980',
       },
     ])
-    expect(calls[0]?.url).toBe(`${BASE}/address_utxos`)
+    expect(calls[0]?.url).toBe(
+      `${BASE}/address_utxos?order=tx_hash.asc,tx_index.asc&limit=1000&offset=0`,
+    )
+    expect(calls[0]?.headers).toMatchObject({ prefer: 'count=exact' })
+    expect(calls[0]?.headers).not.toHaveProperty('range')
     expect(JSON.parse(String(calls[0]?.body))).toEqual({
       _addresses: [BYRON_A],
       _extended: true,
@@ -99,6 +104,78 @@ describe('koios getUtxosByAddresses', () => {
   it('rejects a malformed utxo shape as upstream-malformed, not a 500', async () => {
     const { fetchImpl } = fakeFetch(async () => [{ tx_hash: 'aa', tx_index: 'nope' }])
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getUtxosByAddresses([BYRON_A])).rejects.toBeInstanceOf(
+      MalformedUpstreamError,
+    )
+  })
+
+  // The reason /address_utxos cannot be a single request: Koios/PostgREST caps a response at 1,000
+  // rows and reports the true total in Content-Range. A wallet with more than 1,000 UTxOs used to
+  // silently lose everything past the first thousand. Walk every page and assemble the whole set.
+  it('walks Content-Range pages and returns every utxo past the 1000-row cap', async () => {
+    const rows = Array.from({ length: 1_501 }, (_, index) => ({
+      ...ROW,
+      tx_hash: index.toString(16).padStart(64, '0'),
+      tx_index: index % 4,
+      value: String(index + 1),
+      asset_list: null,
+      inline_datum: null,
+    }))
+    const calls: Call[] = []
+    const fetchImpl: FetchLike = async (url, init) => {
+      calls.push({ url, method: init?.method, body: init?.body, headers: init?.headers })
+      const offset = new URL(url).searchParams.get('offset')
+      if (offset === '0') {
+        return {
+          ok: true,
+          status: 206,
+          headers: { get: (name) => (name === 'content-range' ? '0-999/1501' : null) },
+          json: async () => rows.slice(0, 1_000),
+          text: async () => '',
+        }
+      }
+      if (offset === '1000') {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: (name) => (name === 'content-range' ? '1000-1500/1501' : null) },
+          json: async () => rows.slice(1_000),
+          text: async () => '',
+        }
+      }
+      throw new Error(`unexpected offset: ${offset}`)
+    }
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const utxos = await provider.getUtxosByAddresses([BYRON_A])
+
+    expect(utxos).toHaveLength(1_501)
+    expect(calls.map((call) => new URL(call.url).searchParams.get('offset'))).toEqual(['0', '1000'])
+    expect(utxos[1_500]).toMatchObject({ value: '1501' })
+  })
+
+  // A repeated output reference across two pages is upstream inconsistency, not a wallet holding
+  // the same UTxO twice, so it must fail loudly rather than double-count the balance.
+  it('rejects the same output reference appearing on two pages', async () => {
+    const dup = {
+      ...ROW,
+      tx_hash: 'a'.repeat(64),
+      tx_index: 0,
+      asset_list: null,
+      inline_datum: null,
+    }
+    const fetchImpl: FetchLike = async (url) => {
+      const first = new URL(url).searchParams.get('offset') === '0'
+      return {
+        ok: true,
+        status: first ? 206 : 200,
+        headers: { get: (name) => (name === 'content-range' ? (first ? '0-0/2' : '1-1/2') : null) },
+        json: async () => [dup],
+        text: async () => '',
+      }
+    }
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
 
     await expect(provider.getUtxosByAddresses([BYRON_A])).rejects.toBeInstanceOf(
       MalformedUpstreamError,
@@ -234,6 +311,62 @@ describe('koios getTxHistoryByAddresses', () => {
     expect(history.map((t) => t.txHash)).toEqual(['cc'])
     const txInfoCall = calls.find((c) => c.url.includes('/tx_info'))
     expect(JSON.parse(String(txInfoCall?.body))._tx_hashes).toEqual(['cc'])
+  })
+
+  // /address_txs is capped at 1,000 rows per response the same way. Ordered oldest-first, the
+  // window this endpoint returns lives in the first page, but the read must still walk the whole
+  // Content-Range so no history is skipped for a set with more than 1,000 matching transactions.
+  it('walks Content-Range pages of address_txs before windowing the history', async () => {
+    const txs = Array.from({ length: 1_501 }, (_, index) => ({
+      tx_hash: `t${index}`,
+      block_height: index,
+      block_time: index * 10,
+      epoch_no: 1,
+    }))
+    const oldest = txs.slice(0, 50)
+    const calls: Call[] = []
+    const fetchImpl: FetchLike = async (url, init) => {
+      calls.push({ url, method: init?.method, body: init?.body, headers: init?.headers })
+      if (url.includes('/tx_info')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => oldest.map((t) => txInfoRowFor(t.tx_hash, t.block_height)),
+          text: async () => '',
+        }
+      }
+      const offset = new URL(url).searchParams.get('offset')
+      if (offset === '0') {
+        return {
+          ok: true,
+          status: 206,
+          headers: { get: (name) => (name === 'content-range' ? '0-999/1501' : null) },
+          json: async () => txs.slice(0, 1_000),
+          text: async () => '',
+        }
+      }
+      if (offset === '1000') {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: (name) => (name === 'content-range' ? '1000-1500/1501' : null) },
+          json: async () => txs.slice(1_000),
+          text: async () => '',
+        }
+      }
+      throw new Error(`unexpected offset: ${offset}`)
+    }
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const history = await provider.getTxHistoryByAddresses([BYRON_A])
+
+    const listOffsets = calls
+      .filter((c) => c.url.includes('/address_txs'))
+      .map((c) => new URL(c.url).searchParams.get('offset'))
+    expect(listOffsets).toEqual(['0', '1000'])
+    expect(history).toHaveLength(50)
+    expect(history[0]?.txHash).toBe('t0')
+    expect(history[49]?.txHash).toBe('t49')
   })
 
   it('does not cut a page through the middle of a block', async () => {

@@ -263,6 +263,36 @@ describe('POST /v1/addresses/utxos', () => {
     expect(res.json()).toEqual([utxo(BYRON_ICARUS), utxo(USED)])
   })
 
+  // A repeated address in a batch large enough for the Koios provider to split by body size lands
+  // the same address in two separate request chunks, and each chunk brings its UTxOs back, so the
+  // endpoint returned duplicates for a set it promised to answer once. The route deduplicates the
+  // validated set first, preserving first-seen order, so the provider is only ever asked about a
+  // given address once no matter how the caller repeats it.
+  it('deduplicates repeated addresses across chunk boundaries before the provider', async () => {
+    let seen: string[] = []
+    app = await buildServer({
+      provider: fakeProvider({
+        getUtxosByAddresses: async (addresses) => {
+          seen = addresses
+          return addresses.map(utxo)
+        },
+      }),
+    })
+
+    // 600 entries, alternating two distinct addresses: far more than fit in one Koios request
+    // body, so without deduplication the repeats would straddle a chunk boundary.
+    const repeated = Array.from({ length: 600 }, (_, i) => (i % 2 === 0 ? BYRON_ICARUS : USED))
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/addresses/utxos',
+      payload: { addresses: repeated },
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(seen).toEqual([BYRON_ICARUS, USED])
+    expect(res.json()).toEqual([utxo(BYRON_ICARUS), utxo(USED)])
+  })
+
   it('rejects a malformed address with 400 before hitting the provider', async () => {
     app = await buildServer({
       provider: fakeProvider({

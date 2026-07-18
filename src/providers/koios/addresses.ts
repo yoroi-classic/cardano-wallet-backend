@@ -81,6 +81,24 @@ function pagedBatchAll<Row>(
 }
 
 export function createAddressMethods(koios: KoiosClient): AddressCapability {
+  async function usedPaymentCredentials(credentials: string[]): Promise<string[]> {
+    if (credentials.length === 0) return []
+
+    // Koios accepts a credential batch, but /credential_txs does not identify which member
+    // matched. An empty response proves the whole group unused; a non-empty response is split
+    // until the matching singleton(s) are known. `limit=1` keeps every existence probe small.
+    const rows = await koios.batch(z.array(addressTxRow), '/credential_txs?limit=1', {
+      _payment_credentials: credentials,
+    })
+    if (rows.length === 0) return []
+    if (credentials.length === 1) return credentials
+
+    const middle = Math.ceil(credentials.length / 2)
+    const left = await usedPaymentCredentials(credentials.slice(0, middle))
+    const right = await usedPaymentCredentials(credentials.slice(middle))
+    return [...left, ...right]
+  }
+
   return {
     async filterUsedAddresses(addresses: string[]): Promise<string[]> {
       if (addresses.length === 0) return []
@@ -91,6 +109,22 @@ export function createAddressMethods(koios: KoiosClient): AddressCapability {
       })
       const used = new Set(rows.map((r) => r.address))
       return addresses.filter((a) => used.has(a))
+    },
+
+    async filterUsedPaymentCredentials(paymentCredentials: string[]): Promise<string[]> {
+      const unique = [...new Set(paymentCredentials)]
+      if (unique.length === 0) return []
+      const used = new Set(
+        await koios.packAdaptively(
+          unique,
+          (chunk) => ({ _payment_credentials: chunk }),
+          (body) =>
+            usedPaymentCredentials(
+              (body as { _payment_credentials: string[] })._payment_credentials,
+            ),
+        ),
+      )
+      return unique.filter((credential) => used.has(credential))
     },
 
     async getUtxosByAddresses(addresses: string[]): Promise<Utxo[]> {

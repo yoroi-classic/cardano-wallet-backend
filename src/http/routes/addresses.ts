@@ -22,6 +22,8 @@ const PAYMENT_ADDRESS_MAX_TYPE = 7
 
 const PAYMENT_ADDRESS_ERROR =
   'addresses must be valid payment addresses (bech32 addr / addr_test, or Byron base58)'
+const FILTER_USED_ERROR =
+  'addresses must be valid payment addresses or bech32 payment key hashes (addr_vkh)'
 
 function isBech32PaymentAddress(value: string): boolean {
   const decoded = bech32.decodeUnsafe(value, BECH32_LIMIT)
@@ -48,6 +50,14 @@ function isPaymentAddress(value: string): boolean {
   return isBech32PaymentAddress(value) || isByronAddress(value)
 }
 
+function paymentCredentialHex(value: string): string | undefined {
+  const decoded = bech32.decodeUnsafe(value, BECH32_LIMIT)
+  if (decoded === undefined || decoded.prefix !== 'addr_vkh') return undefined
+  const bytes = bech32.fromWordsUnsafe(decoded.words)
+  if (bytes === undefined || bytes.length !== 28) return undefined
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
 /**
  * Collapse a batch to its distinct addresses, keeping first-seen order.
  *
@@ -68,10 +78,30 @@ export function registerAddressRoutes(app: FastifyInstance, provider: ChainProvi
     if (!parsed.success) {
       throw new BadRequestError('body must be { "addresses": [<address>, ...] } (1 to 1000)')
     }
-    if (!parsed.data.addresses.every(isPaymentAddress)) {
-      throw new BadRequestError(PAYMENT_ADDRESS_ERROR)
+    const inputs = distinct(parsed.data.addresses)
+    const credentials = new Map<string, string>()
+    const paymentAddresses: string[] = []
+    for (const input of inputs) {
+      const credential = paymentCredentialHex(input)
+      if (credential !== undefined) credentials.set(input, credential)
+      else if (isPaymentAddress(input)) paymentAddresses.push(input)
+      else throw new BadRequestError(FILTER_USED_ERROR)
     }
-    return provider.filterUsedAddresses(distinct(parsed.data.addresses))
+
+    const [usedAddresses, usedCredentials] = await Promise.all([
+      paymentAddresses.length === 0
+        ? Promise.resolve([])
+        : provider.filterUsedAddresses(paymentAddresses),
+      credentials.size === 0
+        ? Promise.resolve([])
+        : provider.filterUsedPaymentCredentials([...credentials.values()]),
+    ])
+    const addressSet = new Set(usedAddresses)
+    const credentialSet = new Set(usedCredentials)
+    return inputs.filter((input) => {
+      const credential = credentials.get(input)
+      return credential === undefined ? addressSet.has(input) : credentialSet.has(credential)
+    })
   })
 
   /**

@@ -131,6 +131,7 @@ export const HEAVY_PATHS = [
   // with no stake credential reads its UTxOs and history here, and both walk every matching page.
   '/address_utxos',
   '/address_txs',
+  '/credential_txs',
 ]
 
 export const timeoutFor = (path: string, base: number, heavy: number): number =>

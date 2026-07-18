@@ -265,9 +265,10 @@ export const openapi = {
         description:
           'Drives address discovery (the gap-limit scan). Returns the used subset, in the order ' +
           'you sent them.\n\n' +
-          'Accepts bech32 (any payment type: base, pointer, enterprise) and Byron base58 ' +
-          'addresses, mixed freely in one call. Each address is validated independently, so a ' +
-          'mixed batch is only rejected if one of its entries is actually malformed.',
+          'Accepts bech32 payment addresses (base, pointer, enterprise), Byron base58 addresses, ' +
+          'and bech32 `addr_vkh` payment-key hashes, mixed freely in one call. Payment-key hashes ' +
+          'are queried as credentials, not interpreted as full addresses. Each entry is validated ' +
+          'independently, so a mixed batch is only rejected if one entry is malformed.',
         requestBody: jsonBody({
           type: 'object',
           required: ['addresses'],

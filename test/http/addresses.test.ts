@@ -14,6 +14,10 @@ function addrTest(fill: number): string {
 }
 const USED = addrTest(1)
 const UNUSED = addrTest(2)
+const credential = (fill: number): string =>
+  bech32.encode('addr_vkh', bech32.toWords(new Uint8Array(28).fill(fill)), 1023)
+const USED_CREDENTIAL = credential(3)
+const UNUSED_CREDENTIAL = credential(4)
 
 // Real, live-verified Byron addresses (see the comment on the same fixtures in
 // test/domain/byron-address.test.ts), not placeholder strings: the branded address types
@@ -57,6 +61,69 @@ describe('filter-used route', () => {
 
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual([USED])
+  })
+
+  it('queries addr_vkh values as payment credentials and returns their original encoding', async () => {
+    let seen: string[] = []
+    app = await buildServer({
+      provider: providerWith({
+        filterUsedPaymentCredentials: async (credentials) => {
+          seen = credentials
+          return credentials.slice(0, 1)
+        },
+      }),
+    })
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/addresses/filter-used',
+      payload: { addresses: [USED_CREDENTIAL, UNUSED_CREDENTIAL] },
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual([USED_CREDENTIAL])
+    expect(seen).toEqual(['03'.repeat(28), '04'.repeat(28)])
+  })
+
+  it('preserves order and deduplicates a mixed address and credential batch', async () => {
+    let addressesSeen: string[] = []
+    let credentialsSeen: string[] = []
+    app = await buildServer({
+      provider: providerWith({
+        filterUsedAddresses: async (addresses) => {
+          addressesSeen = addresses
+          return [USED]
+        },
+        filterUsedPaymentCredentials: async (credentials) => {
+          credentialsSeen = credentials
+          return ['03'.repeat(28)]
+        },
+      }),
+    })
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/addresses/filter-used',
+      payload: { addresses: [USED_CREDENTIAL, USED, USED_CREDENTIAL, UNUSED] },
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual([USED_CREDENTIAL, USED])
+    expect(addressesSeen).toEqual([USED, UNUSED])
+    expect(credentialsSeen).toEqual(['03'.repeat(28)])
+  })
+
+  it('rejects an addr_vkh with the wrong credential length', async () => {
+    const shortCredential = bech32.encode('addr_vkh', bech32.toWords(new Uint8Array(27)), 1023)
+    app = await buildServer({ provider: providerWith({}) })
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/addresses/filter-used',
+      payload: { addresses: [shortCredential] },
+    })
+
+    expect(res.statusCode).toBe(400)
   })
 
   it('rejects a missing addresses list with 400', async () => {

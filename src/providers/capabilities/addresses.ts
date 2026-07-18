@@ -10,6 +10,12 @@ export interface AddressCapability {
   filterUsedAddresses(addresses: string[]): Promise<string[]>
 
   /**
+   * Of the given 28-byte payment-key credentials (lowercase hex), which have appeared on
+   * chain. Returns the used subset preserving input order.
+   */
+  filterUsedPaymentCredentials(paymentCredentials: string[]): Promise<string[]>
+
+  /**
    * Every UTxO controlled by any of the given addresses, in one call.
    *
    * Keyed by address set rather than by stake key, for wallets whose addresses carry no

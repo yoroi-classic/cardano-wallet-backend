@@ -24,6 +24,7 @@ describe('timeoutFor', () => {
         HEAVY,
       ),
     ).toBe(HEAVY)
+    expect(timeoutFor('/credential_txs?limit=1', LIGHT, HEAVY)).toBe(HEAVY)
   })
 
   it('keeps the light budget for a light read', () => {
@@ -32,7 +33,9 @@ describe('timeoutFor', () => {
   })
 
   it('lists both address reads alongside their account siblings', () => {
-    expect(HEAVY_PATHS).toEqual(expect.arrayContaining(['/address_utxos', '/address_txs']))
+    expect(HEAVY_PATHS).toEqual(
+      expect.arrayContaining(['/address_utxos', '/address_txs', '/credential_txs']),
+    )
     expect(HEAVY_PATHS).toEqual(expect.arrayContaining(['/account_utxos', '/account_txs']))
   })
 })

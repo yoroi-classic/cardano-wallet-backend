@@ -37,6 +37,7 @@ function validate(schemaName: string, value: unknown): string[] {
 const STAKE = bech32.encode('stake_test', bech32.toWords(new Uint8Array(29)), 1023)
 const ADDR = (fill: number): string =>
   bech32.encode('addr_test', bech32.toWords(new Uint8Array(57).fill(fill)), 1023)
+const ADDR_VKH = bech32.encode('addr_vkh', bech32.toWords(new Uint8Array(28).fill(3)), 1023)
 const TX_HASH = 'ab'.repeat(32)
 const POLICY = 'a'.repeat(56)
 const POOL = 'pool1wn6a6f23ctq06udwhw27ravdpd6zcr7jlut3yez0wzdackz3222'
@@ -296,13 +297,16 @@ describe('real responses validate against the schemas the spec publishes', () =>
 
   it('POST /v1/addresses/filter-used', async () => {
     const res = await post(
-      { filterUsedAddresses: async (a: string[]) => a.slice(0, 1) },
+      {
+        filterUsedAddresses: async (a: string[]) => a.slice(0, 1),
+        filterUsedPaymentCredentials: async (credentials: string[]) => credentials,
+      },
       '/v1/addresses/filter-used',
-      { addresses: [ADDR(1), ADDR(2)] },
+      { addresses: [ADDR(1), ADDR(2), ADDR_VKH] },
     )
 
     expect(res.statusCode).toBe(200)
-    expect(res.body).toEqual([ADDR(1)])
+    expect(res.body).toEqual([ADDR(1), ADDR_VKH])
   })
 
   // A real Byron address (see test/domain/byron-address.test.ts for provenance), so this also

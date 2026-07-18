@@ -452,6 +452,47 @@ describe('koios filterUsedAddresses', () => {
   })
 })
 
+describe('koios filterUsedPaymentCredentials', () => {
+  it('splits non-empty groups to identify the exact used credential subset', async () => {
+    const a = '01'.repeat(28)
+    const b = '02'.repeat(28)
+    const c = '03'.repeat(28)
+    const calls: Call[] = []
+    const used = new Set([b, c])
+    const fetchImpl: FetchLike = async (url, init) => {
+      calls.push({ url, method: init?.method, body: init?.body })
+      const body = JSON.parse(String(init?.body)) as { _payment_credentials: string[] }
+      const hasUsed = body._payment_credentials.some((credential) => used.has(credential))
+      return {
+        ok: true,
+        status: 200,
+        json: async () =>
+          hasUsed ? [{ tx_hash: 'aa', block_height: 1, block_time: 2, epoch_no: 3 }] : [],
+        text: async () => '',
+      }
+    }
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.filterUsedPaymentCredentials([a, b, c])).resolves.toEqual([b, c])
+    expect(calls.every((call) => call.url === `${BASE}/credential_txs?limit=1`)).toBe(true)
+    expect(calls.map((call) => JSON.parse(String(call.body))._payment_credentials)).toEqual([
+      [a, b, c],
+      [a, b],
+      [a],
+      [b],
+      [c],
+    ])
+  })
+
+  it('returns empty without calling upstream for an empty credential list', async () => {
+    const { fetchImpl, calls } = fakeFetch({ json: async () => [] })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.filterUsedPaymentCredentials([])).resolves.toEqual([])
+    expect(calls).toHaveLength(0)
+  })
+})
+
 // A minimal, schema-valid /tx_info row. Shared by the boundary suites below so there is
 // one fixture to keep in step with the schema, not two.
 function txInfoRowFor(hash: string, block: number) {

@@ -172,6 +172,12 @@ describe('POST /v1/price/tokens', () => {
     ['an empty subject list', { subjects: [] }],
     ['an unknown window', { subjects: [SUBJECT], window: '1y' }],
     ['more subjects than the batch allows', { subjects: Array(101).fill(SUBJECT) }],
+    // A subject that is not a canonical policy-id (+ asset-name) would otherwise be interpolated
+    // straight into the GeckoTerminal path/query and reshape the request rather than 400.
+    ['a subject that is not hex', { subjects: ['foo?x='] }],
+    ['a policy id of the wrong length', { subjects: ['aa'.repeat(20)] }],
+    ['an odd-length asset name', { subjects: [SUBJECT + 'abc'] }],
+    ['an asset name longer than 64 hex chars', { subjects: [SUBJECT + 'ab'.repeat(33)] }],
   ])('rejects %s with a 400 before the provider is asked', async (_case, payload) => {
     const app = await server(
       fakePriceProvider({
@@ -184,6 +190,29 @@ describe('POST /v1/price/tokens', () => {
     const res = await app.inject({ method: 'POST', url: '/v1/price/tokens', payload })
 
     expect(res.statusCode).toBe(400)
+    await app.close()
+  })
+
+  it('deduplicates subjects (case-insensitively) while preserving first-seen order', async () => {
+    let seen: string[] = []
+    const app = await server(
+      fakePriceProvider({
+        getTokenActivity: async (subjects) => {
+          seen = subjects
+          return []
+        },
+      }),
+    )
+    const other = 'bb'.repeat(28)
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/price/tokens',
+      payload: { subjects: [SUBJECT, other, SUBJECT.toUpperCase(), other] },
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(seen).toEqual([SUBJECT, other])
     await app.close()
   })
 
@@ -242,6 +271,11 @@ describe('POST /v1/price/tokens/history', () => {
   it.each([
     ['a missing subject', {}],
     ['an unknown range', { subject: SUBJECT, range: 'forever' }],
+    // The same canonical-subject rule as the batch route: a non-hex subject must never reach the
+    // GeckoTerminal path.
+    ['a subject that is not hex', { subject: 'foo?x=' }],
+    ['a policy id of the wrong length', { subject: 'aa'.repeat(20) }],
+    ['an odd-length asset name', { subject: SUBJECT + 'abc' }],
   ])('rejects %s with a 400', async (_case, payload) => {
     const app = await server(fakePriceProvider())
 

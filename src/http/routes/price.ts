@@ -41,13 +41,34 @@ const historyQuery = z.object({
   currency: currencyCode.default('USD'),
 })
 
+/**
+ * A token subject is a 56-hex-character policy id followed by an even-length hex asset name of at
+ * most 64 characters (32 bytes, the ledger maximum). It is validated here, not merely length-
+ * checked, because it is interpolated straight into the GeckoTerminal path and query: an arbitrary
+ * string (`foo?x=`) would otherwise alter the request's URL structure rather than being rejected.
+ */
+const tokenSubject = z.string().regex(/^[0-9a-fA-F]{56}([0-9a-fA-F]{2}){0,32}$/)
+
+/** Drop duplicate subjects (case-insensitively) while keeping first-seen order. */
+function dedupeSubjects(subjects: string[]): string[] {
+  const seen = new Set<string>()
+  const unique: string[] = []
+  for (const subject of subjects) {
+    const key = subject.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    unique.push(subject)
+  }
+  return unique
+}
+
 const activityBody = z.object({
-  subjects: z.array(z.string().min(1)).min(1).max(100),
+  subjects: z.array(tokenSubject).min(1).max(100).transform(dedupeSubjects),
   window: z.enum(PRICE_WINDOWS).default('24h'),
 })
 
 const tokenHistoryBody = z.object({
-  subject: z.string().min(1),
+  subject: tokenSubject,
   range: z.enum(PRICE_RANGES).default('1m'),
 })
 
@@ -98,7 +119,10 @@ export function registerPriceRoutes(app: FastifyInstance, priceProvider?: PriceP
     const parsed = activityBody.safeParse(request.body)
     if (!parsed.success) {
       throw new BadRequestError(
-        `body must be { "subjects": [...] (1 to 100), "window": "${PRICE_WINDOWS.join('" | "')}" }`,
+        'body must be { "subjects": [...] (1 to 100 token subjects, each a 56-hex policy id plus ' +
+          `an even-length hex asset name of at most 64 chars), "window": "${PRICE_WINDOWS.join(
+            '" | "',
+          )}" }`,
       )
     }
     return requireProvider().getTokenActivity(parsed.data.subjects, parsed.data.window)
@@ -109,7 +133,8 @@ export function registerPriceRoutes(app: FastifyInstance, priceProvider?: PriceP
     const parsed = tokenHistoryBody.safeParse(request.body)
     if (!parsed.success) {
       throw new BadRequestError(
-        `body must be { "subject": "...", "range": "${PRICE_RANGES.join('|')}" }`,
+        'body must be { "subject": a 56-hex policy id plus an even-length hex asset name of at ' +
+          `most 64 chars, "range": "${PRICE_RANGES.join('|')}" }`,
       )
     }
     return requireProvider().getTokenHistory(parsed.data.subject, parsed.data.range)

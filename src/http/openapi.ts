@@ -884,7 +884,9 @@ export const openapi = {
       ),
       UpstreamTimeout: jsonResponse('The chain data source did not answer in time', ERROR_RESPONSE),
       NotImplemented: jsonResponse(
-        'Reserved but not built yet. Never a fake value: render the field as unavailable.',
+        'No price provider is configured for this deployment. The price routes are live and their ' +
+          'contract is final; this is the answer only when the deployment has wired no market-data ' +
+          'provider. Never a fake value: render the field as unavailable.',
         ERROR_RESPONSE,
       ),
       FeatureUnavailable: jsonResponse(

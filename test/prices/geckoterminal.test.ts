@@ -4,6 +4,7 @@ import {
   DEFAULT_GECKOTERMINAL_BASE_URL,
 } from '../../src/prices/geckoterminal.js'
 import type { FetchLike } from '../../src/prices/http.js'
+import { createTokenBucket } from '../../src/prices/rate-limit.js'
 import { createMemoryCache } from '../../src/cache/index.js'
 import {
   MalformedUpstreamError,
@@ -321,6 +322,133 @@ describe('geckoterminal client — unhappy path', () => {
     const activity = await client(undefined, fetchImpl).getTokenActivity([SUBJECT], '7d')
 
     expect(activity).toEqual([])
+  })
+})
+
+describe('geckoterminal client — pool lookup coalescing', () => {
+  it('collapses two concurrent lookups for the same subject onto one upstream call', async () => {
+    const { fetchImpl, urls } = fakeFetch({
+      [`/tokens/${SUBJECT}/pools`]: { json: poolsResponse(ADA_POOL) },
+    })
+    const cache = createMemoryCache()
+    const provider = client(cache, fetchImpl)
+
+    // Fired together, before either resolves: without in-flight coalescing on the pool lookup they
+    // would each issue the identical /tokens/{subject}/pools call and race to cache it.
+    const [a, b] = await Promise.all([
+      provider.getTokenActivity([SUBJECT], '24h'),
+      provider.getTokenActivity([SUBJECT], '24h'),
+    ])
+
+    expect(a).toEqual(b)
+    expect(urls.filter((u) => u.includes('/tokens/'))).toHaveLength(1)
+  })
+})
+
+describe('geckoterminal client — upstream call rate', () => {
+  // A clock and a wait a test controls directly: `delay(ms)` registers a waiter that only resolves
+  // once the test advances its clock past it, so pacing is exercised with no real time passing.
+  function manualClock() {
+    let current = 0
+    const waiters: Array<{ at: number; resolve: () => void }> = []
+    // A macrotask boundary that drains the whole microtask queue, so every continuation a released
+    // waiter unblocks (the fetch, the parse, the next reservation) has run before the next step.
+    const flush = () => new Promise<void>((resolve) => setImmediate(resolve))
+    return {
+      now: () => current,
+      delay: (ms: number): Promise<void> =>
+        ms <= 0
+          ? Promise.resolve()
+          : new Promise<void>((resolve) => {
+              waiters.push({ at: current + ms, resolve })
+            }),
+      async advanceTo(target: number): Promise<void> {
+        for (;;) {
+          await flush()
+          let idx = -1
+          for (let i = 0; i < waiters.length; i++) {
+            if (waiters[i]!.at <= target && (idx === -1 || waiters[i]!.at < waiters[idx]!.at)) {
+              idx = i
+            }
+          }
+          if (idx === -1) break
+          const [next] = waiters.splice(idx, 1)
+          current = Math.max(current, next!.at)
+          next!.resolve()
+        }
+        current = target
+      },
+    }
+  }
+
+  // A distinct, valid 56-hex subject per index, so nothing coalesces and each is one upstream call.
+  const subjectAt = (i: number) => i.toString(16).padStart(56, '0')
+
+  const BURST = 8
+  const INTERVAL_MS = 500
+
+  function rateHarness() {
+    const clock = manualClock()
+    const bucket = createTokenBucket({
+      capacity: BURST,
+      refillIntervalMs: INTERVAL_MS,
+      now: clock.now,
+      delay: clock.delay,
+    })
+    const emitTimes: number[] = []
+    const fetchImpl: FetchLike = (async () => {
+      emitTimes.push(clock.now())
+      // An empty pool list: the subject resolves to "no market", but the upstream call still
+      // happened, which is all the rate is measured from.
+      return { ok: true, status: 200, json: async () => ({ data: [] }), text: async () => '' }
+    }) as FetchLike
+    const provider = createGeckoTerminalClient({
+      fetchImpl,
+      tokenBucket: bucket,
+      cache: createMemoryCache(),
+    })
+    return { clock, emitTimes, provider }
+  }
+
+  // The budget invariant the bucket enforces: at most `capacity` calls may bunch together, and the
+  // (i + capacity)-th call is at least one interval after the i-th, so no window shorter than the
+  // interval ever holds more than `capacity` calls.
+  function expectWithinBudget(emitTimes: number[]) {
+    const sorted = [...emitTimes].sort((a, b) => a - b)
+    expect(sorted.filter((t) => t === 0)).toHaveLength(BURST)
+    for (let i = 0; i + BURST < sorted.length; i++) {
+      expect(sorted[i + BURST]! - sorted[i]!).toBeGreaterThanOrEqual(INTERVAL_MS)
+    }
+  }
+
+  it('paces a full cold 100-subject batch: a burst, then one call per interval', async () => {
+    const { clock, emitTimes, provider } = rateHarness()
+    const subjects = Array.from({ length: 100 }, (_, i) => subjectAt(i))
+
+    const done = provider.getTokenActivity(subjects, '24h')
+    await clock.advanceTo(5 * 60_000) // well past the last paced call
+    await done
+
+    expect(emitTimes).toHaveLength(100)
+    expectWithinBudget(emitTimes)
+  })
+
+  it('holds the same budget across two overlapping batches, proving one shared bucket', async () => {
+    const { clock, emitTimes, provider } = rateHarness()
+    const batchA = Array.from({ length: 50 }, (_, i) => subjectAt(i))
+    const batchB = Array.from({ length: 50 }, (_, i) => subjectAt(i + 50))
+
+    // Both in flight at once. A per-request bucket would give batch B its own fresh burst at t=0,
+    // putting 16 calls in the first instant; one shared bucket keeps the burst at 8 total.
+    const done = Promise.all([
+      provider.getTokenActivity(batchA, '24h'),
+      provider.getTokenActivity(batchB, '24h'),
+    ])
+    await clock.advanceTo(5 * 60_000)
+    await done
+
+    expect(emitTimes).toHaveLength(100)
+    expectWithinBudget(emitTimes)
   })
 })
 

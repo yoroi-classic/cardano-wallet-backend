@@ -17,6 +17,36 @@ describe('toDecimalString', () => {
     expect(toDecimalString(-1.5)).toBe('-1.5')
   })
 
+  it('expands a magnitude below the old 18-place window instead of rounding it to zero', () => {
+    // toFixed(18) turned anything under ~0.5e-18 into "0"; the expansion keeps every digit.
+    expect(toDecimalString(5e-20)).toBe('0.00000000000000000005')
+    expect(toDecimalString(1.234e-19)).toBe('0.0000000000000000001234')
+    expect(toDecimalString(5e-20)).not.toBe('0')
+    expect(toDecimalString(5e-20)).not.toMatch(/e[+-]/i)
+  })
+
+  it('expands a large magnitude (>= 1e21) to a plain integer, never scientific notation', () => {
+    // toFixed on these just re-emitted the exponent form; shifting the point gives a plain string.
+    expect(toDecimalString(1e21)).toBe('1000000000000000000000')
+    expect(toDecimalString(1.5e21)).toBe('1500000000000000000000')
+    expect(toDecimalString(1e21)).not.toMatch(/e[+-]/i)
+    expect(toDecimalString(1.5e21)).not.toMatch(/e[+-]/i)
+  })
+
+  it('expands both signs of exponent, and keeps a negative sign through the expansion', () => {
+    expect(toDecimalString(-3e-9)).toBe('-0.000000003')
+    expect(toDecimalString(-1.5e21)).toBe('-1500000000000000000000')
+  })
+
+  it('holds at the boundaries where JavaScript flips to and from exponential notation', () => {
+    // 1e-6 prints plain, 1e-7 flips to exponent; both must come back plain-decimal.
+    expect(toDecimalString(1e-6)).toBe('0.000001')
+    expect(toDecimalString(1e-7)).toBe('0.0000001')
+    // 1e20 prints plain, 1e21 flips to exponent; both must come back plain-decimal.
+    expect(toDecimalString(1e20)).toBe('100000000000000000000')
+    expect(toDecimalString(1e21)).toBe('1000000000000000000000')
+  })
+
   it('rejects a non-finite input rather than stringifying NaN or Infinity', () => {
     expect(() => toDecimalString(NaN)).toThrow(RangeError)
     expect(() => toDecimalString(Infinity)).toThrow(RangeError)

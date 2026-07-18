@@ -20,9 +20,15 @@
  * `String(n)` is used first because it is JavaScript's own shortest round-tripping
  * representation, which is exactly right for ordinary-magnitude prices and avoids introducing
  * binary-floating-point noise that a fixed-digit format would expose (`(123456.789).toFixed(18)`
- * prints trailing garbage that isn't really there). It only falls back to `toFixed` for the
- * magnitudes where JavaScript itself switches to exponential notation (roughly `|n| < 1e-6` or
- * very large), where that noise is not a practical concern.
+ * prints trailing garbage that isn't really there). It only needs expanding for the magnitudes
+ * where JavaScript itself switches to exponential notation (roughly `|n| < 1e-6`, or `|n| >= 1e21`).
+ *
+ * That expansion works off the exponent in `String(n)` rather than a fixed number of decimal
+ * places. A fixed `toFixed(18)` broke the plain-decimal contract at both ends of the window: a
+ * magnitude below ~0.5e-18 rounded to `0`, and a value `>= 1e21` came back still in scientific
+ * notation, because `toFixed` on those just re-emits the exponent form. Shifting the decimal point
+ * by the actual exponent keeps every digit the float carries and stays plain-decimal at any
+ * magnitude.
  */
 export function toDecimalString(n: number): string {
   if (!Number.isFinite(n)) {
@@ -31,14 +37,41 @@ export function toDecimalString(n: number): string {
 
   const str = n.toString()
   if (!/e/i.test(str)) return str
+  return expandExponential(str)
+}
 
-  // 18 places comfortably covers any realistic Cardano native-token price ratio (a long-tail
-  // token at 1e-9 ADA, say) without pretending to recover precision beyond what the float
-  // already lost. A value smaller than ~1e-18 would round to zero here; that is a documented
-  // limit of representing this as a JS number at all; the 24h path above (GeckoTerminal's own
-  // decimal string) never falls into it because it never converts through a float first.
-  const fixed = n.toFixed(18)
-  return fixed.includes('.') ? fixed.replace(/0+$/, '').replace(/\.$/, '') : fixed
+/**
+ * Rewrite a JavaScript exponential literal (`1.234e-9`, `1e+21`) as a plain decimal string by
+ * shifting the decimal point by the exponent, preserving exactly the digits present.
+ */
+function expandExponential(str: string): string {
+  const match = /^(-?)(\d+)(?:\.(\d+))?e([+-]?\d+)$/i.exec(str)
+  // `str` always carries an exponent when this is called, but guard rather than assert.
+  if (match === null) return str
+
+  const sign = match[1] ?? ''
+  const intPart = match[2] ?? '0'
+  const fracPart = match[3] ?? ''
+  const exponent = Number(match[4])
+
+  const digits = intPart + fracPart
+  // Where the decimal point lands, counting from the left of `digits`, after applying the exponent.
+  const pointPos = intPart.length + exponent
+
+  let body: string
+  if (pointPos <= 0) {
+    // Point is left of every digit: a leading `0.` and enough zeros to reach the first digit.
+    body = `0.${'0'.repeat(-pointPos)}${digits}`
+  } else if (pointPos >= digits.length) {
+    // Point is right of every digit: an integer, padded with trailing zeros. No fractional part,
+    // so its trailing zeros are significant and must not be stripped below.
+    return `${sign}${digits}${'0'.repeat(pointPos - digits.length)}`
+  } else {
+    body = `${digits.slice(0, pointPos)}.${digits.slice(pointPos)}`
+  }
+
+  // Only a fractional result reaches here; drop any trailing zeros the split left behind.
+  return `${sign}${body.replace(/0+$/, '').replace(/\.$/, '')}`
 }
 
 /**

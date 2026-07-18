@@ -4,7 +4,17 @@ import { MalformedUpstreamError, ProviderError, ProviderTimeoutError } from '../
 /** A minimal fetch signature so tests can inject a fake without pulling in DOM types. */
 export type FetchLike = (
   input: string,
-  init?: { headers?: Record<string, string>; signal?: AbortSignal },
+  init?: {
+    headers?: Record<string, string>
+    signal?: AbortSignal
+    /**
+     * How a redirect is handled. Always `'error'` here: an API key travels in a request header,
+     * and the platform default (`'follow'`) would replay that header onto whatever origin the
+     * redirect points at, leaking the credential to a third party. Refusing the redirect keeps the
+     * key on the one host it was meant for.
+     */
+    redirect?: 'error'
+  },
 ) => Promise<{
   ok: boolean
   status: number
@@ -62,6 +72,8 @@ export async function fetchJsonOrNotFound<T>(
     res = await opts.fetchImpl(url, {
       headers: { accept: 'application/json', ...opts.headers },
       signal: AbortSignal.timeout(opts.timeoutMs),
+      // Never follow a redirect: it would forward an api-key header to another origin. See FetchLike.
+      redirect: 'error',
     })
   } catch (cause) {
     if (cause instanceof Error && cause.name === 'TimeoutError') {
@@ -70,7 +82,13 @@ export async function fetchJsonOrNotFound<T>(
     throw new ProviderError(`${opts.upstream} request failed: ${url}`, { cause })
   }
 
-  if (res.status === 404) return undefined
+  if (res.status === 404) {
+    // A 404 is a normal, high-volume answer here (any token GeckoTerminal has not indexed), so the
+    // body must be drained rather than abandoned: an unread body pins the underlying connection and
+    // defeats keep-alive reuse, one leaked socket per unindexed token.
+    await res.text().catch(() => '')
+    return undefined
+  }
 
   if (!res.ok) {
     const body = await res.text().catch(() => '')
@@ -86,6 +104,12 @@ export async function fetchJsonOrNotFound<T>(
   try {
     data = await res.json()
   } catch (cause) {
+    // The timeout can fire while the body is still streaming in, after a 200. That is a timeout,
+    // not malformed json, and must surface as a 504 like every other timeout (matching the Koios
+    // client) rather than being misreported as a 502 the caller cannot retry sensibly.
+    if (cause instanceof Error && cause.name === 'TimeoutError') {
+      throw new ProviderTimeoutError(`${opts.upstream} response timed out: ${url}`, cause)
+    }
     throw new MalformedUpstreamError(`${opts.upstream} returned invalid json for ${url}`, cause)
   }
 

@@ -460,7 +460,7 @@ describe('real responses validate against the schemas the spec publishes', () =>
   // 501 is the same error envelope as everything else, so an adapter needs no special case.
   it.each([
     ['GET', '/v1/price/ada?currencies=USD', undefined],
-    ['POST', '/v1/price/tokens', { subjects: ['aa'] }],
+    ['POST', '/v1/price/tokens', { subjects: [POLICY] }],
   ])('%s %s answers the documented 501 envelope', async (method, url, payload) => {
     const res = await call({}, method as 'GET' | 'POST', url, payload)
 

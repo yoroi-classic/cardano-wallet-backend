@@ -3,6 +3,7 @@ import { noCache, type Cache } from '../cache/index.js'
 import type { Ohlc, PriceRange, PriceWindow, TokenActivity } from '../domain/types/price.js'
 import { divideDecimalStrings, toDecimalString } from './decimal.js'
 import { fetchJsonOrNotFound, type FetchLike } from './http.js'
+import { createTokenBucket, type TokenBucket } from './rate-limit.js'
 
 /**
  * GeckoTerminal: native-token price and history, in ADA.
@@ -60,12 +61,18 @@ export const TOKEN_POOL_TTL_MS = 60_000
 export const TOKEN_HISTORY_TTL_MS = 5 * 60_000
 
 /**
- * Batch fan-out for `/v1/price/tokens` (up to 100 subjects) is bounded, not run fully in parallel.
- * GeckoTerminal's free, keyless tier is a shared, low, per-IP rate limit, and this API's own
- * anonymous rate limit (120/min by default) is meant to protect exactly this kind of burst; a
- * single request for a full batch should not by itself exhaust either.
+ * The keyless-tier budget every GeckoTerminal call is paced to.
+ *
+ * A batch of `/v1/price/tokens` can be up to 100 subjects, one upstream call each when cold, and
+ * bounding concurrency alone does not bound the per-minute rate that GeckoTerminal actually
+ * enforces: a burst of fast calls still trips its ~120/min anonymous limit and 429s the whole
+ * response. So every call this client makes goes through one shared token bucket (see the client
+ * factory), which lets a small burst through and then paces the rest. The bucket is shared across
+ * all concurrent HTTP requests, not created per request, so several overlapping batches stay
+ * within one budget together. Tune here if the upstream tier changes.
  */
-const ACTIVITY_CONCURRENCY = 8
+const GECKOTERMINAL_BURST = 8
+const GECKOTERMINAL_MIN_INTERVAL_MS = 500
 
 // A GeckoTerminal numeric field (a price, a volume, a percentage) serialized as a decimal string.
 // Regex-validated so a malformed value fails at the parse boundary (MalformedUpstreamError)
@@ -152,6 +159,11 @@ export interface GeckoTerminalConfig {
   fetchImpl?: FetchLike
   baseUrl?: string
   timeoutMs?: number
+  /**
+   * The rate limiter every upstream call is paced through. Injectable so a test can drive it with
+   * its own clock; production gets the shared default built from the constants above.
+   */
+  tokenBucket?: TokenBucket
 }
 
 export interface GeckoTerminalClient {
@@ -162,8 +174,22 @@ export interface GeckoTerminalClient {
 export function createGeckoTerminalClient(config: GeckoTerminalConfig = {}): GeckoTerminalClient {
   const baseUrl = (config.baseUrl ?? DEFAULT_GECKOTERMINAL_BASE_URL).replace(/\/+$/, '')
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS
-  const fetchImpl: FetchLike = config.fetchImpl ?? (globalThis.fetch as unknown as FetchLike)
+  const rawFetch: FetchLike = config.fetchImpl ?? (globalThis.fetch as unknown as FetchLike)
   const cache = config.cache ?? noCache
+  const bucket =
+    config.tokenBucket ??
+    createTokenBucket({
+      capacity: GECKOTERMINAL_BURST,
+      refillIntervalMs: GECKOTERMINAL_MIN_INTERVAL_MS,
+    })
+
+  // Every GeckoTerminal call, from any concurrent request, passes through the one shared bucket
+  // before it goes out, so the whole client stays inside the keyless-tier rate rather than each
+  // request bursting on its own.
+  const fetchImpl: FetchLike = async (url, init) => {
+    await bucket.acquire()
+    return rawFetch(url, init)
+  }
 
   function getOrNotFound<T>(path: string, schema: z.ZodType<T>): Promise<T | undefined> {
     return fetchJsonOrNotFound(`${baseUrl}${path}`, schema, {
@@ -179,33 +205,36 @@ export function createGeckoTerminalClient(config: GeckoTerminalConfig = {}): Gec
    * Cached per subject rather than per batch (mirroring koios/assets.ts's token-metadata cache),
    * so a batch of overlapping subjects across two calls to `/v1/price/tokens` shares hits, and so
    * a "no ADA pool" answer is remembered too instead of asking again on every request.
+   *
+   * Resolution runs inside `cache.read`, not a peek/fetch/set sequence, so its in-flight
+   * coalescing covers this call too: two concurrent requests for the same subject (including a
+   * duplicate inside one batch) collapse onto a single upstream lookup instead of racing to issue
+   * identical ones. A confirmed absence is stored as `null` (which `read` caches like any other
+   * value) so a subject with no market is not re-asked about on every request.
    */
   async function resolveAdaPool(subject: string): Promise<AdaPool | undefined> {
     const key = `price:token:pool:${subject}`
-    const cached = cache.peek<AdaPool | null>(key)
-    if (cached !== undefined) return cached ?? undefined
+    const resolved = await cache.read<AdaPool | null>(key, TOKEN_POOL_TTL_MS, async () => {
+      const body = await getOrNotFound(
+        `/networks/${NETWORK}/tokens/${subject}/pools`,
+        tokenPoolsResponse,
+      )
+      const candidates = (body?.data ?? []).filter((pool) => isDirectAdaPool(subject, pool))
 
-    const body = await getOrNotFound(
-      `/networks/${NETWORK}/tokens/${subject}/pools`,
-      tokenPoolsResponse,
-    )
-    const candidates = (body?.data ?? []).filter((pool) => isDirectAdaPool(subject, pool))
-
-    // The most liquid candidate, picked explicitly by its own reserves rather than trusting
-    // upstream to have returned them pre-sorted.
-    let best: z.infer<typeof poolEntry> | undefined
-    let bestReserve = -1
-    for (const pool of candidates) {
-      const reserve = Number(pool.attributes.reserve_in_usd ?? '0')
-      if (best === undefined || reserve > bestReserve) {
-        best = pool
-        bestReserve = reserve
+      // The most liquid candidate, picked explicitly by its own reserves rather than trusting
+      // upstream to have returned them pre-sorted.
+      let best: z.infer<typeof poolEntry> | undefined
+      let bestReserve = -1
+      for (const pool of candidates) {
+        const reserve = Number(pool.attributes.reserve_in_usd ?? '0')
+        if (best === undefined || reserve > bestReserve) {
+          best = pool
+          bestReserve = reserve
+        }
       }
-    }
 
-    const resolved: AdaPool | undefined =
-      best === undefined
-        ? undefined
+      return best === undefined
+        ? null
         : {
             address: best.attributes.address,
             priceAda: best.attributes.base_token_price_native_currency,
@@ -213,11 +242,8 @@ export function createGeckoTerminalClient(config: GeckoTerminalConfig = {}): Gec
             changePercent24h: best.attributes.price_change_percentage?.h24,
             volumeUsd24h: best.attributes.volume_usd?.h24,
           }
-
-    // A confirmed absence is stored as `null`: `peek` distinguishes "not cached" (undefined) from
-    // "cached, and the answer is no" (null), and only the former is worth another upstream call.
-    cache.set(key, resolved ?? null, TOKEN_POOL_TTL_MS)
-    return resolved
+    })
+    return resolved ?? undefined
   }
 
   /** OHLCV candles for one pool, chronological (oldest first), never padded to a fixed length. */
@@ -292,22 +318,18 @@ export function createGeckoTerminalClient(config: GeckoTerminalConfig = {}): Gec
   return {
     async getTokenActivity(subjects: string[], window: PriceWindow): Promise<TokenActivity[]> {
       const normalized = subjects.map((subject) => subject.toLowerCase())
-      const results: TokenActivity[] = []
 
-      for (let i = 0; i < normalized.length; i += ACTIVITY_CONCURRENCY) {
-        const chunk = normalized.slice(i, i + ACTIVITY_CONCURRENCY)
-        const chunkResults = await Promise.all(
-          chunk.map((subject) => computeActivity(subject, window)),
-        )
-        for (const activity of chunkResults) {
-          // Unresolvable subjects (no direct ADA pool, or a pool too new for this window) are
-          // simply absent from the result, mirroring how /v1/assets/info already treats a subject
-          // Koios has never heard of: omission, not a zero.
-          if (activity !== undefined) results.push(activity)
-        }
-      }
+      // No manual fan-out cap here: every upstream call is already paced by the shared token
+      // bucket, which both caps the burst and rate-limits the tail, so the whole batch can be
+      // launched at once and the bucket decides when each call actually goes out.
+      const resolved = await Promise.all(
+        normalized.map((subject) => computeActivity(subject, window)),
+      )
 
-      return results
+      // Unresolvable subjects (no direct ADA pool, or a pool too new for this window) are simply
+      // absent from the result, mirroring how /v1/assets/info already treats a subject Koios has
+      // never heard of: omission, not a zero.
+      return resolved.filter((activity): activity is TokenActivity => activity !== undefined)
     },
 
     async getTokenHistory(subject: string, range: PriceRange): Promise<Ohlc[]> {

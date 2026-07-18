@@ -23,6 +23,9 @@
   of stopping at the upstream 1,000-row cap, so a wallet with more than 1,000 matching UTxOs or
   transactions no longer silently loses everything past the first page. UTxO pages are read in a
   stable order and deduplicated by output reference; history pages are read oldest-first on a
-  block-boundary cursor so nothing is skipped.
+  block-boundary cursor so nothing is skipped. They pack the address set against the body budget
+  through the same primitive as the other batched reads, so a self-hosted or proxied Koios that
+  advertises a smaller body cap with a 413 is adapted to (the limit is lowered and the set
+  repacked) rather than surfacing as a 502.
 - `POST /v1/addresses/utxos` deduplicates a repeated address in the request set before reading, so
   a batch large enough to split across upstream requests can no longer return the same UTxO twice.

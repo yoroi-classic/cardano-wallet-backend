@@ -465,3 +465,83 @@ describe('koios getTxHistoryByAddresses', () => {
     )
   })
 })
+
+// The reads pack a large address set into several request bodies and then page each body. Behind a
+// self-hosted or proxied Koios that advertises a smaller body cap than the documented one, the
+// first packing overshoots and upstream answers 413 naming the real limit. The reads share
+// batchAll's limit-learning, so they lower the budget, repack the set into smaller chunks, and
+// complete, each chunk still walked page by page, rather than surfacing that 413 as a 502.
+describe('koios address reads — 413 body-limit adaptation', () => {
+  // Distinct 30-char addresses: all of them fit in one body under the default 5,120-byte budget,
+  // but split into 2-per-chunk once the budget is lowered to the 248 bytes the 413 names below.
+  const ADDRS = Array.from({ length: 6 }, (_, i) => `addr_${i}`.padEnd(30, '0'))
+
+  it('learns a smaller body limit from a 413, repacks, and pages every chunk', async () => {
+    let rejectedOversizedBody = false
+    const calls: Call[] = []
+    const fetchImpl: FetchLike = async (url, init) => {
+      calls.push({ url, method: init?.method, body: init?.body, headers: init?.headers })
+      const body = JSON.parse(String(init?.body))
+      const count = body._addresses.length
+
+      // The first attempt packs all six addresses into one body. Reject it once, naming a cap that
+      // forces the repack below to produce more than one chunk.
+      if (!rejectedOversizedBody && count > 2) {
+        rejectedOversizedBody = true
+        return {
+          ok: false,
+          status: 413,
+          json: async () => ({}),
+          text: async () =>
+            'Payload too large, body length was 812. Please ensure your request body size is below 248 bytes',
+        }
+      }
+
+      // After the repack: a two-address chunk, walked across two Content-Range pages so the fix is
+      // shown to compose packing, limit-learning, and paging together.
+      const addr = body._addresses[0]
+      const offset = new URL(url).searchParams.get('offset')
+      const row = (suffix: string, index: number, value: string) => ({
+        tx_hash: `${addr}#${suffix}`,
+        tx_index: index,
+        address: addr,
+        value,
+        asset_list: null,
+        datum_hash: null,
+        inline_datum: null,
+        reference_script: null,
+      })
+      if (offset === '0') {
+        return {
+          ok: true,
+          status: 206,
+          headers: { get: (name) => (name === 'content-range' ? '0-0/2' : null) },
+          json: async () => [row('a', 0, '1000000')],
+          text: async () => '',
+        }
+      }
+      if (offset === '1') {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: (name) => (name === 'content-range' ? '1-1/2' : null) },
+          json: async () => [row('b', 1, '2000000')],
+          text: async () => '',
+        }
+      }
+      throw new Error(`unexpected offset: ${offset}`)
+    }
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const utxos = await provider.getUtxosByAddresses(ADDRS)
+
+    // Three chunks of two addresses, two pages each: six UTxOs, none lost to the 413.
+    expect(utxos).toHaveLength(6)
+    expect(rejectedOversizedBody).toBe(true)
+
+    const addressCounts = calls.map((c) => JSON.parse(String(c.body))._addresses.length)
+    // The single oversized attempt, then every follow-up carrying at most the learned chunk size.
+    expect(addressCounts[0]).toBe(6)
+    expect(addressCounts.slice(1).every((n) => n <= 2)).toBe(true)
+  })
+})

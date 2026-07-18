@@ -2,7 +2,7 @@ import { z } from 'zod'
 import type { Utxo, WalletTransaction } from '../../domain/types/transactions.js'
 import type { AddressCapability } from '../capabilities/addresses.js'
 import type { KoiosClient } from './client.js'
-import { assetItem, mapAssets, numeric, packBySize } from './schema.js'
+import { assetItem, mapAssets, numeric } from './schema.js'
 import { hydrateTxHistory } from './tx-info.js'
 
 // How many transactions we detail per page. Matches the stake-account history page (and the
@@ -56,17 +56,18 @@ const addressTxRow = z.object({
  * walked page by page). The client's batchAll only ever split request bodies; it never followed
  * the response range, so a wallet with more than 1,000 matching rows silently lost the overflow.
  *
- * This composes koios.batchAllPages, the shared paged-read primitive, over the body chunks.
- * batchAllPages is the same method the account-utxos pagination work adds to the Koios client;
- * once that lands on development the two client-side definitions collapse to one and this keeps
- * calling it unchanged. Should a body-chunking-plus-paging primitive ever land on the client, this
- * local combiner should be replaced by it.
+ * The packing runs through koios.packAdaptively, the same body-budget primitive batchAll uses, so
+ * these reads inherit its 413 handling: a self-hosted or proxied Koios that advertises a smaller
+ * body cap lowers the client's limit, the address set is repacked, and the run is retried, instead
+ * of surfacing a 502. Each chunk is then read through koios.batchAllPages, the shared paged-read
+ * primitive the account-utxos pagination work also adds to the client; once that lands on
+ * development the two client-side definitions collapse to one and this keeps calling it unchanged.
  *
  * The whole set is fetched, not just the page a caller ultimately needs, because Koios pages a
  * single body and cannot merge address chunks itself. batchAllPages' own upper bound guards the
  * pathological case; in practice a caller narrows the set with `after` before it ever grows large.
  */
-async function pagedBatchAll<Row>(
+function pagedBatchAll<Row>(
   koios: KoiosClient,
   rowSchema: z.ZodType<Row>,
   path: string,
@@ -74,11 +75,9 @@ async function pagedBatchAll<Row>(
   toBody: (chunk: string[]) => unknown,
   rowKey?: (row: Row) => string,
 ): Promise<Row[]> {
-  const chunks = packBySize(addresses, toBody, koios.bodyLimit)
-  const perChunk = await Promise.all(
-    chunks.map((chunk) => koios.batchAllPages(rowSchema, path, toBody(chunk), rowKey)),
+  return koios.packAdaptively(addresses, toBody, (body) =>
+    koios.batchAllPages(rowSchema, path, body, rowKey),
   )
-  return perChunk.flat()
 }
 
 export function createAddressMethods(koios: KoiosClient): AddressCapability {

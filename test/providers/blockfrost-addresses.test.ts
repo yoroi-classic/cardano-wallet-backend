@@ -95,7 +95,15 @@ describe('blockfrost addresses — bounded fan-out', () => {
         },
       }
     }
-    const provider = createBlockfrostProvider({ baseUrl: BASE, projectId: PROJECT_ID, fetchImpl })
+    // A burst larger than the batch keeps the rate limiter out of the way: this test is about the
+    // concurrency ceiling and body draining, not pacing (that is covered separately with an
+    // injected clock), and pacing under real timers would make it needlessly slow.
+    const provider = createBlockfrostProvider({
+      baseUrl: BASE,
+      projectId: PROJECT_ID,
+      fetchImpl,
+      burstSize: SIZE + 1,
+    })
 
     const result = await provider.filterUsedAddresses(addresses)
 

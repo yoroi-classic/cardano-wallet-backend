@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import type { ErrorCode } from '../../domain/errors.js'
 import { MalformedUpstreamError, ProviderError, ProviderTimeoutError } from '../../domain/errors.js'
+import { createRateLimiter } from './rate-limiter.js'
 
 /** A minimal fetch signature so tests can inject a fake without pulling in DOM types. */
 export type FetchLike = (
@@ -22,6 +23,11 @@ export type FetchLike = (
   status: number
   json: () => Promise<unknown>
   text: () => Promise<string>
+  /**
+   * Response headers, read only for `Retry-After` on a 429. Optional so a test fake can omit it;
+   * the global `fetch` Response satisfies it as-is.
+   */
+  headers?: { get: (name: string) => string | null }
 }>
 
 /**
@@ -62,6 +68,23 @@ export interface BlockfrostConfig {
   retryBackoffMs?: number
   /** Injectable delay, so tests exercise the backoff without waiting for it. */
   delayImpl?: (ms: number) => Promise<void>
+  /** Injectable clock for the rate limiter, so tests pace without real time. Defaults to Date.now. */
+  nowImpl?: () => number
+  /**
+   * Sustained request rate to Blockfrost, in requests per second. Paced by a shared token bucket
+   * so overlapping reads share one budget. Defaults to Blockfrost's own sustained ceiling.
+   */
+  requestsPerSecond?: number
+  /**
+   * How many requests may go out back-to-back before the rate limiter starts pacing. Defaults to
+   * the size of Blockfrost's burst bucket.
+   */
+  burstSize?: number
+  /**
+   * How many times a 429 is retried, honoring its `Retry-After`, before the error surfaces. Reads
+   * only; a write (submit) is never retried. Defaults to 3.
+   */
+  rateLimitRetries?: number
   /** Called before each retry. See RetryEvent. */
   onRetry?: (event: RetryEvent) => void
 }
@@ -75,6 +98,14 @@ interface RequestInit {
 const DEFAULT_READ_ATTEMPTS = 3
 const DEFAULT_BACKOFF_MS = 150
 const DEFAULT_TIMEOUT_MS = 10_000
+// Blockfrost's published limits: ~10 requests/second sustained, drawn from a 500-slot burst
+// bucket that refills at that rate. Matching them here keeps a large batch from tripping the 429.
+const DEFAULT_REQUESTS_PER_SECOND = 10
+const DEFAULT_BURST_SIZE = 500
+const DEFAULT_RATE_LIMIT_RETRIES = 3
+// Ceiling on how long a single `Retry-After` will hold a read, so a hostile or absurd header value
+// cannot park a request indefinitely.
+const MAX_RETRY_AFTER_MS = 30_000
 
 /**
  * The shared Blockfrost plumbing: one authenticated, timed-out, error-mapped, validated call per
@@ -118,10 +149,30 @@ export function createBlockfrostClient(config: BlockfrostConfig): BlockfrostClie
   const backoffMs = config.retryBackoffMs ?? DEFAULT_BACKOFF_MS
   const delay =
     config.delayImpl ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)))
+  const now = config.nowImpl ?? (() => Date.now())
+  const rateLimitRetries = Math.max(0, config.rateLimitRetries ?? DEFAULT_RATE_LIMIT_RETRIES)
+  // One shared limiter for every request this client makes, so overlapping reads draw on a single
+  // budget rather than each opening its own window onto the same upstream.
+  const limiter = createRateLimiter(
+    config.requestsPerSecond ?? DEFAULT_REQUESTS_PER_SECOND,
+    config.burstSize ?? DEFAULT_BURST_SIZE,
+    { now, delay },
+  )
 
-  async function request(
+  /** The `Retry-After` on a 429, in ms: an integer number of seconds, or an HTTP date. */
+  function retryAfterMs(res: Awaited<ReturnType<FetchLike>>): number | undefined {
+    const raw = res.headers?.get('retry-after')
+    if (raw === null || raw === undefined || raw === '') return undefined
+    const seconds = Number(raw)
+    if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000)
+    const at = Date.parse(raw)
+    if (!Number.isNaN(at)) return Math.max(0, at - now())
+    return undefined
+  }
+
+  async function fetchOnce(
     path: string,
-    init: RequestInit = {},
+    init: RequestInit,
   ): Promise<Awaited<ReturnType<FetchLike>>> {
     const url = `${baseUrl}${path}`
     const headers: Record<string, string> = {
@@ -130,6 +181,9 @@ export function createBlockfrostClient(config: BlockfrostConfig): BlockfrostClie
     }
     if (init.contentType) headers['content-type'] = init.contentType
 
+    // Take a token before every attempt, so retries and the initial call all count against the
+    // same rate budget.
+    await limiter.acquire()
     try {
       return await doFetch(url, {
         method: init.method ?? 'GET',
@@ -146,6 +200,35 @@ export function createBlockfrostClient(config: BlockfrostConfig): BlockfrostClie
         throw new ProviderTimeoutError(`blockfrost request timed out: ${path}`, cause)
       }
       throw new ProviderError(`blockfrost request failed: ${path}`, { cause })
+    }
+  }
+
+  /**
+   * A single HTTP round trip, plus a bounded retry on a 429. The rate limiter above is meant to
+   * keep us under Blockfrost's ceiling in the first place; this is the safety net for when we go
+   * over anyway (a shared deployment, a burst from another caller). A 429 is retried only for a
+   * read — `retryOn429` is false for a submit, because a write must never be replayed — and only
+   * up to `rateLimitRetries` times, honoring the server's own `Retry-After`.
+   */
+  async function request(
+    path: string,
+    init: RequestInit = {},
+    retryOn429 = false,
+  ): Promise<Awaited<ReturnType<FetchLike>>> {
+    for (let attempt = 0; ; attempt += 1) {
+      const res = await fetchOnce(path, init)
+      if (res.status !== 429 || !retryOn429 || attempt >= rateLimitRetries) return res
+      // Drain the 429 body before waiting so its socket is freed rather than pinned open.
+      await res.text().catch(() => undefined)
+      const waitMs = Math.min(retryAfterMs(res) ?? backoffMs * (attempt + 1), MAX_RETRY_AFTER_MS)
+      config.onRetry?.({
+        path,
+        attempt: attempt + 1,
+        attempts: rateLimitRetries + 1,
+        code: 'UPSTREAM_ERROR',
+        message: `blockfrost returned 429 for ${path}`,
+      })
+      await delay(waitMs)
     }
   }
 
@@ -218,7 +301,7 @@ export function createBlockfrostClient(config: BlockfrostConfig): BlockfrostClie
   return {
     get<T>(schema: z.ZodType<T>, path: string): Promise<T> {
       return read(path, async () => {
-        const res = await request(path)
+        const res = await request(path, {}, true)
         if (!res.ok) return failure(res, path)
         return parse(schema, await readBody(res, path), path)
       })
@@ -226,7 +309,7 @@ export function createBlockfrostClient(config: BlockfrostConfig): BlockfrostClie
 
     getOrUndefined<T>(schema: z.ZodType<T>, path: string): Promise<T | undefined> {
       return read(path, async () => {
-        const res = await request(path)
+        const res = await request(path, {}, true)
         if (res.status === 404) {
           // Drain the body before returning. A 404 is a routine "not on chain" answer here, but
           // it still carries a response body; leaving it unread holds the underlying connection

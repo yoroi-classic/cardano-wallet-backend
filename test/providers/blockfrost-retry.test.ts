@@ -134,11 +134,12 @@ describe('blockfrost read retry', () => {
     }
   })
 
-  // The one class of failure that must not be retried, matching the Koios client's own policy: a
-  // 404 or a 400 is our own request being wrong, or upstream telling us something specific and
-  // final (not on chain, rate limited), and every instance answers it identically.
-  it('does not retry a 4xx', async () => {
-    for (const status of [400, 403, 404, 418, 429]) {
+  // These 4xx must not be retried: a 400, 403, 404, or 418 is our own request being wrong, or
+  // upstream telling us something specific and final (not on chain), and every instance answers it
+  // identically. A 429 is the deliberate exception — upstream asking us to slow down, not to stop —
+  // and it has its own bounded, Retry-After-honoring retry path (see blockfrost-rate-limit.test.ts).
+  it('does not retry a 4xx other than 429', async () => {
+    for (const status of [400, 403, 404, 418]) {
       const { provider, callsTo, retries } = testProvider({ '/blocks/latest': [{ status }] })
 
       await expect(provider.getTip()).rejects.toBeInstanceOf(ProviderError)

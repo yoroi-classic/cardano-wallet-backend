@@ -8,6 +8,10 @@ import { hydrateTxHistory } from './tx-info.js'
 // How many transactions we detail per page. Matches the stake-account history page (and the
 // extension's request size).
 const HISTORY_PAGE_SIZE = 50
+// A large credential OR-query can time out on Koios when one member is used. Probe small groups
+// concurrently, then recursively split only the groups that matched. Follow-up #107 replaces
+// this workaround when an upstream bulk result identifies the matching credential directly.
+const CREDENTIAL_PROBE_SIZE = 5
 
 const addressRow = z.object({ address: z.string() })
 
@@ -114,16 +118,11 @@ export function createAddressMethods(koios: KoiosClient): AddressCapability {
     async filterUsedPaymentCredentials(paymentCredentials: string[]): Promise<string[]> {
       const unique = [...new Set(paymentCredentials)]
       if (unique.length === 0) return []
-      const used = new Set(
-        await koios.packAdaptively(
-          unique,
-          (chunk) => ({ _payment_credentials: chunk }),
-          (body) =>
-            usedPaymentCredentials(
-              (body as { _payment_credentials: string[] })._payment_credentials,
-            ),
-        ),
-      )
+      const groups: string[][] = []
+      for (let start = 0; start < unique.length; start += CREDENTIAL_PROBE_SIZE) {
+        groups.push(unique.slice(start, start + CREDENTIAL_PROBE_SIZE))
+      }
+      const used = new Set((await Promise.all(groups.map(usedPaymentCredentials))).flat())
       return unique.filter((credential) => used.has(credential))
     },
 

@@ -491,6 +491,19 @@ describe('koios filterUsedPaymentCredentials', () => {
     await expect(provider.filterUsedPaymentCredentials([])).resolves.toEqual([])
     expect(calls).toHaveLength(0)
   })
+
+  it('bounds the initial Koios OR-query before recursively probing matches', async () => {
+    const credentials = Array.from({ length: 11 }, (_, i) =>
+      i.toString(16).padStart(2, '0').repeat(28),
+    )
+    const { fetchImpl, calls } = fakeFetch({ json: async () => [] })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.filterUsedPaymentCredentials(credentials)).resolves.toEqual([])
+    expect(calls.map((call) => JSON.parse(String(call.body))._payment_credentials.length)).toEqual([
+      5, 5, 1,
+    ])
+  })
 })
 
 // A minimal, schema-valid /tx_info row. Shared by the boundary suites below so there is

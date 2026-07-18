@@ -443,6 +443,70 @@ describe('geckoterminal client — batch call count', () => {
     // Every subject still resolved to a price, the fallback one included.
     expect(activity).toHaveLength(100)
   })
+
+  // A multi-token fetch that records the addresses of every call and answers each with an
+  // ADA-quoted pool, so a resolved subject needs no fallback.
+  function recordingMultiFetch() {
+    const calls: string[][] = []
+    const fetchImpl: FetchLike = (async (url: string) => {
+      const addrs = url
+        .slice(url.indexOf('/multi/') + '/multi/'.length, url.indexOf('?'))
+        .split(',')
+      calls.push(addrs)
+      const data = addrs.map((subject) => ({
+        attributes: { address: subject },
+        relationships: { top_pools: { data: [{ id: `pool_${subject}` }] } },
+      }))
+      const included = addrs.map((subject) => ({
+        id: `pool_${subject}`,
+        attributes: {
+          address: `addr_${subject}`,
+          base_token_price_native_currency: '1',
+          quote_token_price_usd: '0.4',
+          reserve_in_usd: '10',
+          price_change_percentage: { h24: '1' },
+          volume_usd: { h24: '5' },
+        },
+        relationships: {
+          base_token: { data: { id: `cardano_${subject}` } },
+          quote_token: { data: { id: NATIVE_ID } },
+        },
+      }))
+      return { ok: true, status: 200, json: async () => ({ data, included }), text: async () => '' }
+    }) as FetchLike
+    return { fetchImpl, calls }
+  }
+
+  it('coalesces overlapping concurrent batches so a shared subject is resolved once', async () => {
+    const [s1, s2, s3, s4] = [1, 2, 3, 4].map((n) => n.toString(16).padStart(56, '0')) as [
+      string,
+      string,
+      string,
+      string,
+    ]
+    const { fetchImpl, calls } = recordingMultiFetch()
+    const provider = createGeckoTerminalClient({
+      fetchImpl,
+      tokenBucket: passthroughBucket,
+      cache: createMemoryCache(),
+    })
+
+    // Both launched before either awaits: the second batch sees s2/s3 already in flight from the
+    // first and must not re-fetch them.
+    const pA = provider.getTokenActivity([s1, s2, s3], '24h')
+    const pB = provider.getTokenActivity([s2, s3, s4], '24h')
+    const [a, b] = await Promise.all([pA, pB])
+
+    // Every subject was requested from upstream exactly once: the shared s2/s3 were coalesced, not
+    // duplicated across the two batches' multi-token calls.
+    const requested = calls.flat()
+    expect([...requested].sort()).toEqual([s1, s2, s3, s4].sort())
+    expect(new Set(requested).size).toBe(requested.length)
+
+    // Both batches still received a price for each of their subjects.
+    expect(a.map((x) => x.subject).sort()).toEqual([s1, s2, s3].sort())
+    expect(b.map((x) => x.subject).sort()).toEqual([s2, s3, s4].sort())
+  })
 })
 
 describe('geckoterminal client — regression', () => {

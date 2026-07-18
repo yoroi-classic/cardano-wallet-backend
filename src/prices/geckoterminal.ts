@@ -240,6 +240,23 @@ function activityFromPool(subject: string, pool: AdaPool | undefined): TokenActi
   }
 }
 
+interface Deferred<T> {
+  promise: Promise<T>
+  resolve: (value: T) => void
+  reject: (error: unknown) => void
+}
+
+/** A promise whose settlement is controlled from outside, for sharing one in-flight result. */
+function createDeferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void
+  let reject!: (error: unknown) => void
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
+}
+
 export interface GeckoTerminalConfig {
   cache?: Cache
   fetchImpl?: FetchLike
@@ -268,6 +285,13 @@ export function createGeckoTerminalClient(config: GeckoTerminalConfig = {}): Gec
       capacity: GECKOTERMINAL_BURST,
       refillIntervalMs: GECKOTERMINAL_MIN_INTERVAL_MS,
     })
+
+  // Per-subject in-flight pool resolutions, shared across every concurrent request to this client.
+  // The batch path (`resolveAdaPoolsBatch`) registers a subject here while its multi-token lookup is
+  // outstanding, so an overlapping batch that arrives meanwhile awaits the same resolution instead
+  // of issuing a duplicate call. This is the batch counterpart to `cache.read`'s own coalescing,
+  // which already covers the per-subject and history paths.
+  const inFlightPools = new Map<string, Promise<AdaPool | undefined>>()
 
   // Every GeckoTerminal call, from any concurrent request, passes through the one shared bucket
   // before it goes out, so the whole client stays inside the keyless-tier rate rather than each
@@ -314,31 +338,20 @@ export function createGeckoTerminalClient(config: GeckoTerminalConfig = {}): Gec
   }
 
   /**
-   * Resolve the ADA pool for many subjects in as few upstream calls as possible.
-   *
-   * Cache hits are served first. The remaining misses go to the multi-token endpoint, up to
-   * `MULTI_TOKEN_BATCH` per call, so a cold 100-subject batch is ~4 calls rather than ~100. That
-   * endpoint returns each token's single most-liquid pool: when it is already ADA-quoted it is used
-   * as-is with no further call. A subject the endpoint does not return at all is one GeckoTerminal
-   * does not index, so it has no market. Only a subject that *is* indexed but whose most-liquid pool
-   * is not ADA-quoted falls back to the per-token pools endpoint, which lists every pool so the
-   * most-liquid ADA-paired one can still be found. ADA is the dominant quote asset across Cardano
-   * DEXes, so that fallback is the exception, not the rule, and stays bounded.
+   * The upstream half of batch resolution: resolve `subjects` (all known-uncached and de-duplicated)
+   * via the multi-token endpoint, up to `MULTI_TOKEN_BATCH` per call, so a cold 100-subject batch is
+   * ~4 calls rather than ~100. That endpoint returns each token's single most-liquid pool: when it
+   * is already ADA-quoted it is used as-is with no further call. A subject the endpoint does not
+   * return at all is one GeckoTerminal does not index, so it has no market. Only a subject that *is*
+   * indexed but whose most-liquid pool is not ADA-quoted falls back to the per-token pools endpoint,
+   * which lists every pool so the most-liquid ADA-paired one can still be found. ADA is the dominant
+   * quote asset across Cardano DEXes, so that fallback is the exception, not the rule.
    */
-  async function resolveAdaPoolsBatch(
-    subjects: string[],
-  ): Promise<Map<string, AdaPool | undefined>> {
+  async function fetchAdaPools(subjects: string[]): Promise<Map<string, AdaPool | undefined>> {
     const resolved = new Map<string, AdaPool | undefined>()
-    const misses: string[] = []
-    for (const subject of subjects) {
-      const cached = cache.peek<AdaPool | null>(poolCacheKey(subject))
-      if (cached !== undefined) resolved.set(subject, cached ?? undefined)
-      else misses.push(subject)
-    }
-
     const needsFallback: string[] = []
-    for (let i = 0; i < misses.length; i += MULTI_TOKEN_BATCH) {
-      const chunk = misses.slice(i, i + MULTI_TOKEN_BATCH)
+    for (let i = 0; i < subjects.length; i += MULTI_TOKEN_BATCH) {
+      const chunk = subjects.slice(i, i + MULTI_TOKEN_BATCH)
       const body = await getOrNotFound(
         `/networks/${NETWORK}/tokens/multi/${chunk.join(',')}?include=top_pools`,
         multiTokensResponse,
@@ -381,6 +394,62 @@ export function createGeckoTerminalClient(config: GeckoTerminalConfig = {}): Gec
       }),
     )
 
+    return resolved
+  }
+
+  /**
+   * Resolve the ADA pool for many subjects in as few upstream calls as possible.
+   *
+   * Cache hits are served first. Of the misses, any subject already being resolved by another
+   * concurrent batch is awaited rather than fetched again (`inFlightPools`); the rest are claimed by
+   * this call, fetched together through `fetchAdaPools`, and their shared promises settled for the
+   * waiters. Two overlapping batches therefore issue one multi-token lookup for the subjects they
+   * share, not two, at subject granularity, so a partial overlap still shares its common subjects.
+   */
+  async function resolveAdaPoolsBatch(
+    subjects: string[],
+  ): Promise<Map<string, AdaPool | undefined>> {
+    const resolved = new Map<string, AdaPool | undefined>()
+    const awaiting = new Map<string, Promise<AdaPool | undefined>>()
+    const owned = new Map<string, Deferred<AdaPool | undefined>>()
+
+    for (const subject of subjects) {
+      const cached = cache.peek<AdaPool | null>(poolCacheKey(subject))
+      if (cached !== undefined) {
+        resolved.set(subject, cached ?? undefined)
+        continue
+      }
+      const pending = inFlightPools.get(subject)
+      if (pending !== undefined) {
+        awaiting.set(subject, pending)
+        continue
+      }
+      // First to want this subject: register a shared promise others can await, and claim the fetch.
+      const deferred = createDeferred<AdaPool | undefined>()
+      inFlightPools.set(subject, deferred.promise)
+      owned.set(subject, deferred)
+      awaiting.set(subject, deferred.promise)
+    }
+
+    if (owned.size > 0) {
+      try {
+        const fetched = await fetchAdaPools([...owned.keys()])
+        for (const [subject, deferred] of owned) deferred.resolve(fetched.get(subject))
+      } catch (error) {
+        // Fail every waiter on this attempt, exactly as `cache.read` fails its coalesced callers.
+        for (const deferred of owned.values()) deferred.reject(error)
+      } finally {
+        for (const subject of owned.keys()) inFlightPools.delete(subject)
+      }
+    }
+
+    // Await via Promise.all so every shared promise has a handler attached (no stray unhandled
+    // rejection if the fetch failed); the first rejection still propagates to this caller.
+    await Promise.all(
+      [...awaiting].map(async ([subject, promise]) => {
+        resolved.set(subject, await promise)
+      }),
+    )
     return resolved
   }
 

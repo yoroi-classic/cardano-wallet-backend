@@ -12,6 +12,7 @@ const HISTORY_PAGE_SIZE = 50
 // concurrently, then recursively split only the groups that matched. Follow-up #107 replaces
 // this workaround when an upstream bulk result identifies the matching credential directly.
 const CREDENTIAL_PROBE_SIZE = 5
+const CREDENTIAL_PROBE_CONCURRENCY = 4
 
 const addressRow = z.object({ address: z.string() })
 
@@ -122,7 +123,17 @@ export function createAddressMethods(koios: KoiosClient): AddressCapability {
       for (let start = 0; start < unique.length; start += CREDENTIAL_PROBE_SIZE) {
         groups.push(unique.slice(start, start + CREDENTIAL_PROBE_SIZE))
       }
-      const used = new Set((await Promise.all(groups.map(usedPaymentCredentials))).flat())
+      const results: string[][] = new Array(groups.length)
+      let nextGroup = 0
+      await Promise.all(
+        Array.from({ length: Math.min(CREDENTIAL_PROBE_CONCURRENCY, groups.length) }, async () => {
+          while (nextGroup < groups.length) {
+            const index = nextGroup++
+            results[index] = await usedPaymentCredentials(groups[index]!)
+          }
+        }),
+      )
+      const used = new Set(results.flat())
       return unique.filter((credential) => used.has(credential))
     },
 

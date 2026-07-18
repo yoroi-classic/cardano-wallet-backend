@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { createKoiosProvider, type FetchLike } from '../../src/providers/koios/index.js'
 import { KOIOS_BODY_LIMIT_BYTES } from '../../src/providers/koios/schema.js'
 import { BadRequestError, MalformedUpstreamError, ProviderError } from '../../src/domain/errors.js'
@@ -503,6 +503,33 @@ describe('koios filterUsedPaymentCredentials', () => {
     expect(calls.map((call) => JSON.parse(String(call.body))._payment_credentials.length)).toEqual([
       5, 5, 1,
     ])
+  })
+
+  it('bounds concurrent initial credential probes', async () => {
+    const credentials = Array.from({ length: 50 }, (_, i) =>
+      i.toString(16).padStart(2, '0').repeat(28),
+    )
+    let active = 0
+    let peak = 0
+    let release: (() => void) | undefined
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const fetchImpl: FetchLike = async () => {
+      active += 1
+      peak = Math.max(peak, active)
+      await gate
+      active -= 1
+      return { ok: true, status: 200, json: async () => [], text: async () => '' }
+    }
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const request = provider.filterUsedPaymentCredentials(credentials)
+    await vi.waitFor(() => expect(active).toBe(4))
+    release?.()
+
+    await expect(request).resolves.toEqual([])
+    expect(peak).toBe(4)
   })
 })
 

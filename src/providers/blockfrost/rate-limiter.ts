@@ -21,32 +21,51 @@ export interface RateLimiter {
  * would empty the burst in a moment and then 429 its tail. This paces the average rate instead, so
  * one shared budget covers every overlapping request.
  *
- * Implemented as GCRA (a leaky-bucket variant): a single `tat` (theoretical arrival time) marches
- * forward by one emission interval per grant, and `burst` sets how far ahead of the clock a run of
- * grants may get before pacing engages. The reservation is computed and stored synchronously,
- * before any await, so concurrent callers each claim a distinct, correctly spaced slot with no
- * lock and no race on the single JS thread.
+ * Implemented as a token bucket: `burst` tokens to start, refilled at `requestsPerSecond`, one
+ * spent per grant. The refill is *capped at `burst`*, and every waiter re-checks the live bucket
+ * each time it wakes rather than trusting a wait computed before it slept. That combination is what
+ * holds the burst ceiling across a long process pause or a timer that fires late: however much time
+ * passed while requests were queued, at most a full bucket is released the instant they wake, not
+ * one grant per elapsed interval all at once.
+ *
+ * The refill/check/spend step is synchronous and runs to completion before any await, so concurrent
+ * callers cannot both claim the same token and there is no lock and no race on the single JS thread.
  */
 export function createRateLimiter(
   requestsPerSecond: number,
   burst: number,
   clock: RateLimiterClock,
 ): RateLimiter {
-  // Milliseconds between sustained grants.
-  const interval = 1000 / requestsPerSecond
-  // How far ahead of "now" a burst of grants is allowed to reserve before a wait is imposed.
-  const tolerance = Math.max(0, burst - 1) * interval
-  // Theoretical arrival time of the next grant; starts in the past so the first burst is free.
-  let tat = clock.now()
+  // Tokens gained per millisecond; one token is spent per granted request.
+  const refillPerMs = requestsPerSecond / 1000
+  // Start full so the first `burst` requests go out back-to-back.
+  let tokens = burst
+  let last = clock.now()
+
+  function refill(): void {
+    const now = clock.now()
+    const elapsed = now - last
+    if (elapsed <= 0) return
+    // Cap at `burst`: no matter how long the pause, the bucket never holds more than one burst's
+    // worth, so the queue cannot drain more than that in a single instant when it wakes.
+    tokens = Math.min(burst, tokens + elapsed * refillPerMs)
+    last = now
+  }
 
   return {
     async acquire(): Promise<void> {
-      const now = clock.now()
-      const grantAt = Math.max(tat, now)
-      // Reserve this slot before awaiting anything, so an overlapping caller cannot claim it too.
-      tat = grantAt + interval
-      const waitMs = grantAt - tolerance - now
-      if (waitMs > 0) await clock.delay(waitMs)
+      for (;;) {
+        refill()
+        if (tokens >= 1) {
+          tokens -= 1
+          return
+        }
+        // Not enough in the bucket yet: wait roughly long enough to refill the shortfall, then
+        // loop and re-check against the live budget. `Math.max(1, ...)` guarantees forward
+        // progress rather than a zero-length spin.
+        const waitMs = Math.max(1, Math.ceil((1 - tokens) / refillPerMs))
+        await clock.delay(waitMs)
+      }
     },
   }
 }

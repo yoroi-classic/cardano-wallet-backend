@@ -1,6 +1,11 @@
 import { z } from 'zod'
 import type { ErrorCode } from '../../domain/errors.js'
-import { MalformedUpstreamError, ProviderError, ProviderTimeoutError } from '../../domain/errors.js'
+import {
+  ConfigError,
+  MalformedUpstreamError,
+  ProviderError,
+  ProviderTimeoutError,
+} from '../../domain/errors.js'
 import { createRateLimiter } from './rate-limiter.js'
 
 /** A minimal fetch signature so tests can inject a fake without pulling in DOM types. */
@@ -108,6 +113,30 @@ const DEFAULT_RATE_LIMIT_RETRIES = 3
 const MAX_RETRY_AFTER_MS = 30_000
 
 /**
+ * Validate an optional numeric knob at construction, throwing `ConfigError` on anything that is not
+ * a finite number meeting its bound. Left unchecked, a NaN or Infinity slips into the retry and
+ * pacing math and turns a bound into an unbounded loop (`attempt >= NaN` is never true) or a wait
+ * that never ends (`1000 / 0`). A hand-built config is caught here, at startup, rather than as a
+ * request that never returns.
+ */
+function checkNumber(
+  value: number | undefined,
+  fallback: number,
+  name: string,
+  opts: { integer?: boolean; min: number },
+): number {
+  if (value === undefined) return fallback
+  const tooSmall = opts.integer === true ? value < opts.min : value <= opts.min
+  const notInteger = opts.integer === true && !Number.isInteger(value)
+  if (!Number.isFinite(value) || tooSmall || notInteger) {
+    const shape =
+      opts.integer === true ? `an integer >= ${opts.min}` : `a finite number > ${opts.min}`
+    throw new ConfigError(`blockfrost ${name} must be ${shape}, got ${String(value)}`)
+  }
+  return value
+}
+
+/**
  * The shared Blockfrost plumbing: one authenticated, timed-out, error-mapped, validated call per
  * method, mirroring the Koios client's shape.
  *
@@ -143,21 +172,46 @@ export interface BlockfrostClient {
 
 export function createBlockfrostClient(config: BlockfrostConfig): BlockfrostClient {
   const baseUrl = config.baseUrl.replace(/\/+$/, '')
-  const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const doFetch: FetchLike = config.fetchImpl ?? (globalThis.fetch as unknown as FetchLike)
-  const readAttempts = Math.max(1, config.readAttempts ?? DEFAULT_READ_ATTEMPTS)
-  const backoffMs = config.retryBackoffMs ?? DEFAULT_BACKOFF_MS
   const delay =
     config.delayImpl ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)))
   const now = config.nowImpl ?? (() => Date.now())
-  const rateLimitRetries = Math.max(0, config.rateLimitRetries ?? DEFAULT_RATE_LIMIT_RETRIES)
+
+  // Every numeric knob is validated up front. A finite, in-range value or the default; anything
+  // else (NaN, Infinity, a fraction where a count is required, a non-positive rate) throws here
+  // rather than silently corrupting the retry or pacing math into a loop that never ends.
+  const timeoutMs = checkNumber(config.timeoutMs, DEFAULT_TIMEOUT_MS, 'timeoutMs', {
+    integer: true,
+    min: 1,
+  })
+  const readAttempts = checkNumber(config.readAttempts, DEFAULT_READ_ATTEMPTS, 'readAttempts', {
+    integer: true,
+    min: 1,
+  })
+  const backoffMs = checkNumber(config.retryBackoffMs, DEFAULT_BACKOFF_MS, 'retryBackoffMs', {
+    integer: true,
+    min: 0,
+  })
+  const rateLimitRetries = checkNumber(
+    config.rateLimitRetries,
+    DEFAULT_RATE_LIMIT_RETRIES,
+    'rateLimitRetries',
+    { integer: true, min: 0 },
+  )
+  const requestsPerSecond = checkNumber(
+    config.requestsPerSecond,
+    DEFAULT_REQUESTS_PER_SECOND,
+    'requestsPerSecond',
+    { min: 0 },
+  )
+  const burstSize = checkNumber(config.burstSize, DEFAULT_BURST_SIZE, 'burstSize', {
+    integer: true,
+    min: 1,
+  })
+
   // One shared limiter for every request this client makes, so overlapping reads draw on a single
   // budget rather than each opening its own window onto the same upstream.
-  const limiter = createRateLimiter(
-    config.requestsPerSecond ?? DEFAULT_REQUESTS_PER_SECOND,
-    config.burstSize ?? DEFAULT_BURST_SIZE,
-    { now, delay },
-  )
+  const limiter = createRateLimiter(requestsPerSecond, burstSize, { now, delay })
 
   /** The `Retry-After` on a 429, in ms: an integer number of seconds, or an HTTP date. */
   function retryAfterMs(res: Awaited<ReturnType<FetchLike>>): number | undefined {
@@ -218,9 +272,19 @@ export function createBlockfrostClient(config: BlockfrostConfig): BlockfrostClie
     for (let attempt = 0; ; attempt += 1) {
       const res = await fetchOnce(path, init)
       if (res.status !== 429 || !retryOn429 || attempt >= rateLimitRetries) return res
-      // Drain the 429 body before waiting so its socket is freed rather than pinned open.
+
+      // When the server told us how long to wait, and that is longer than we are willing to hold a
+      // request, surface the 429 rather than retrying after a shorter wait. Retrying early would
+      // hit the server before it said it was safe, which only deepens the throttle it just asked
+      // us to back off from. `failure()` will read the body when this is returned, so leave it.
+      const serverDelay = retryAfterMs(res)
+      if (serverDelay !== undefined && serverDelay > MAX_RETRY_AFTER_MS) return res
+
+      // Retrying: drain the body we are discarding so its socket is freed rather than pinned open.
       await res.text().catch(() => undefined)
-      const waitMs = Math.min(retryAfterMs(res) ?? backoffMs * (attempt + 1), MAX_RETRY_AFTER_MS)
+      // A server-directed wait is honored as-is (already known to be within the cap); without one,
+      // fall back to our own linear backoff, itself capped so it cannot run away.
+      const waitMs = serverDelay ?? Math.min(backoffMs * (attempt + 1), MAX_RETRY_AFTER_MS)
       config.onRetry?.({
         path,
         attempt: attempt + 1,

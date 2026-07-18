@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createBlockfrostProvider, type FetchLike } from '../../src/providers/blockfrost/index.js'
-import { ProviderError } from '../../src/domain/errors.js'
+import { createRateLimiter } from '../../src/providers/blockfrost/rate-limiter.js'
+import { ConfigError, ProviderError } from '../../src/domain/errors.js'
 
 const BASE = 'https://cardano-preprod.blockfrost.io/api/v0'
 const PROJECT_ID = 'preprodTestProjectId'
@@ -221,5 +222,161 @@ describe('blockfrost rate limiter', () => {
 
     expect(outcome).toBeInstanceOf(ProviderError)
     expect(calls).toBe(1)
+  })
+
+  it('surfaces a 429 whose Retry-After exceeds the local wait cap instead of retrying early', async () => {
+    const { clock, runUntil } = virtualClock()
+    let calls = 0
+    const fetchImpl: FetchLike = async () => {
+      calls += 1
+      return {
+        ok: false,
+        status: 429,
+        json: async () => ({}),
+        text: async () => 'come back much later',
+        // 120s, well past the 30s local cap: waiting only the cap would hit the server before it
+        // said it was safe, so this must surface rather than retry.
+        headers: { get: (name) => (name.toLowerCase() === 'retry-after' ? '120' : null) },
+      }
+    }
+    const provider = createBlockfrostProvider({
+      baseUrl: BASE,
+      projectId: PROJECT_ID,
+      fetchImpl,
+      nowImpl: clock.now,
+      delayImpl: clock.delay,
+    })
+
+    const settled = provider.getTip().then(
+      () => 'resolved',
+      (err: unknown) => err,
+    )
+    await runUntil(settled)
+    const outcome = await settled
+
+    expect(outcome).toBeInstanceOf(ProviderError)
+    expect((outcome as ProviderError).upstreamStatus).toBe(429)
+    // No retry: the one call was made, the over-cap Retry-After was respected by giving up.
+    expect(calls).toBe(1)
+  })
+
+  it('still retries when Retry-After is exactly at the wait cap', async () => {
+    const { clock, runUntil } = virtualClock()
+    let calls = 0
+    const fetchImpl: FetchLike = async () => {
+      calls += 1
+      if (calls === 1) {
+        return {
+          ok: false,
+          status: 429,
+          json: async () => ({}),
+          text: async () => 'slow down',
+          // 30s == the cap, not over it, so this is honored and retried, not surfaced.
+          headers: { get: (name) => (name.toLowerCase() === 'retry-after' ? '30' : null) },
+        }
+      }
+      return { ok: true, status: 200, json: async () => TIP_ROW, text: async () => '' }
+    }
+    const provider = createBlockfrostProvider({
+      baseUrl: BASE,
+      projectId: PROJECT_ID,
+      fetchImpl,
+      nowImpl: clock.now,
+      delayImpl: clock.delay,
+    })
+
+    const pending = provider.getTip()
+    await runUntil(pending)
+    const tip = await pending
+
+    expect(tip.block).toBe(TIP_ROW.height)
+    expect(calls).toBe(2)
+  })
+})
+
+describe('blockfrost client config validation', () => {
+  it.each([
+    ['rateLimitRetries negative', { rateLimitRetries: -1 }],
+    ['rateLimitRetries fractional', { rateLimitRetries: 1.5 }],
+    ['rateLimitRetries NaN', { rateLimitRetries: Number.NaN }],
+    ['rateLimitRetries Infinity', { rateLimitRetries: Number.POSITIVE_INFINITY }],
+    ['readAttempts zero', { readAttempts: 0 }],
+    ['readAttempts NaN', { readAttempts: Number.NaN }],
+    ['timeoutMs negative', { timeoutMs: -5 }],
+    ['timeoutMs Infinity', { timeoutMs: Number.POSITIVE_INFINITY }],
+    ['retryBackoffMs negative', { retryBackoffMs: -1 }],
+    ['requestsPerSecond zero', { requestsPerSecond: 0 }],
+    ['requestsPerSecond NaN', { requestsPerSecond: Number.NaN }],
+    ['burstSize zero', { burstSize: 0 }],
+    ['burstSize fractional', { burstSize: 2.5 }],
+  ])('rejects a malformed %s at construction', (_name, overrides) => {
+    expect(() =>
+      createBlockfrostProvider({ baseUrl: BASE, projectId: PROJECT_ID, ...overrides }),
+    ).toThrow(ConfigError)
+  })
+
+  it('accepts the documented in-range values', () => {
+    expect(() =>
+      createBlockfrostProvider({
+        baseUrl: BASE,
+        projectId: PROJECT_ID,
+        rateLimitRetries: 0,
+        readAttempts: 1,
+        timeoutMs: 1,
+        retryBackoffMs: 0,
+        requestsPerSecond: 10,
+        burstSize: 1,
+      }),
+    ).not.toThrow()
+  })
+})
+
+describe('blockfrost rate limiter — burst ceiling across a pause', () => {
+  it('caps the post-pause release at the burst, not one grant per elapsed interval', async () => {
+    // A hand-driven clock so the test can jump time forward the way a process pause or a late timer
+    // would, then fire everything that came due at once.
+    let now = 0
+    let pending: { at: number; resolve: () => void }[] = []
+    const clock = {
+      now: () => now,
+      delay: (ms: number): Promise<void> =>
+        new Promise((resolve) => {
+          pending.push({ at: now + Math.max(0, ms), resolve })
+        }),
+    }
+    const flush = async (): Promise<void> => {
+      for (let i = 0; i < 500; i += 1) await Promise.resolve()
+    }
+
+    const RATE = 10
+    const BURST = 5
+    const limiter = createRateLimiter(RATE, BURST, clock)
+
+    // The virtual time each acquire cleared at.
+    const grantTimes: number[] = []
+    const TOTAL = 20
+    for (let i = 0; i < TOTAL; i += 1) {
+      void limiter.acquire().then(() => {
+        grantTimes.push(now)
+      })
+    }
+    await flush()
+
+    // The initial burst clears immediately; the rest are queued on delays.
+    expect(grantTimes.filter((t) => t === 0)).toHaveLength(BURST)
+
+    // Jump far past many refill intervals (100s is 1000 intervals here) and release every timer
+    // that is now due, exactly as the event loop would after a long sleep.
+    now = 100_000
+    const due = pending
+    pending = []
+    for (const t of due) t.resolve()
+    await flush()
+
+    // The refill is capped at BURST, so only a full bucket clears at this instant — not all 15 that
+    // were waiting, and not the ~1000 intervals' worth that elapsed.
+    expect(grantTimes.filter((t) => t === 100_000)).toHaveLength(BURST)
+    // The remainder is still parked, waiting for the bucket to refill again.
+    expect(grantTimes).toHaveLength(BURST + BURST)
   })
 })

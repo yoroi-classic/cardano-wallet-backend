@@ -321,15 +321,18 @@ describe('blockfrost client config validation', () => {
     ['burstSize fractional', { burstSize: 2.5 }],
     ['burstSize unsafe integer', { burstSize: UNSAFE_INT }],
     ['burstSize over max', { burstSize: MAX_BURST + 1 }],
-    // Duration knobs: non-finite, below floor, and above the timer range.
+    // Duration knobs: non-finite, below floor, above the timer range, and fractional (a timer
+    // requires an integer ms delay, so 100.5 would fail every request).
     ['timeoutMs negative', { timeoutMs: -5 }],
     ['timeoutMs zero (floor is 1)', { timeoutMs: 0 }],
     ['timeoutMs Infinity', { timeoutMs: Number.POSITIVE_INFINITY }],
     ['timeoutMs NaN', { timeoutMs: Number.NaN }],
     ['timeoutMs over the timer range', { timeoutMs: MAX_TIMER_MS + 1 }],
+    ['timeoutMs fractional', { timeoutMs: 100.5 }],
     ['retryBackoffMs negative', { retryBackoffMs: -1 }],
     ['retryBackoffMs Infinity', { retryBackoffMs: Number.POSITIVE_INFINITY }],
     ['retryBackoffMs over the timer range', { retryBackoffMs: MAX_TIMER_MS + 1 }],
+    ['retryBackoffMs fractional', { retryBackoffMs: 150.25 }],
     // Rate knob: zero, subnormal, Infinity, and past the max.
     ['requestsPerSecond zero', { requestsPerSecond: 0 }],
     ['requestsPerSecond subnormal', { requestsPerSecond: Number.MIN_VALUE }],
@@ -350,8 +353,10 @@ describe('blockfrost client config validation', () => {
     ['burstSize floor', { burstSize: 1 }],
     ['burstSize max', { burstSize: MAX_BURST }],
     ['timeoutMs floor', { timeoutMs: 1 }],
+    ['timeoutMs integer', { timeoutMs: 100 }],
     ['timeoutMs at the timer range', { timeoutMs: MAX_TIMER_MS }],
     ['retryBackoffMs floor', { retryBackoffMs: 0 }],
+    ['retryBackoffMs integer', { retryBackoffMs: 150 }],
     ['retryBackoffMs at the timer range', { retryBackoffMs: MAX_TIMER_MS }],
     ['requestsPerSecond floor', { requestsPerSecond: MIN_RPS }],
     ['requestsPerSecond max', { requestsPerSecond: MAX_RPS }],

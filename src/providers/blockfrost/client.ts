@@ -166,8 +166,11 @@ function checkNumber(
       }
       return value
     case 'duration':
-      if (!Number.isFinite(value) || value < bound.min || value > MAX_TIMER_MS) {
-        reject(`a finite number of ms in [${bound.min}, ${MAX_TIMER_MS}]`)
+      // Integer ms, same as a count: AbortSignal.timeout and setTimeout both require an integer
+      // delay, so a fractional value (100.5) would fail every request. Reject it loudly at startup
+      // rather than silently truncating, matching how every other knob is handled.
+      if (!Number.isSafeInteger(value) || value < bound.min || value > MAX_TIMER_MS) {
+        reject(`a safe integer number of ms in [${bound.min}, ${MAX_TIMER_MS}]`)
       }
       return value
     case 'rate':
@@ -261,14 +264,19 @@ export function createBlockfrostClient(config: BlockfrostConfig): BlockfrostClie
   // budget rather than each opening its own window onto the same upstream.
   const limiter = createRateLimiter(requestsPerSecond, burstSize, { now, delay })
 
-  /** The `Retry-After` on a 429, in ms: an integer number of seconds, or an HTTP date. */
+  /**
+   * The `Retry-After` on a 429, in ms: an integer number of seconds, or an HTTP date. Floored to a
+   * whole millisecond because the result is eventually handed to a timer, and a fractional delay
+   * (from a fractional Retry-After, or date math against a non-integer clock) would be rejected by
+   * `setTimeout`/`AbortSignal.timeout` the same way a fractional `timeoutMs` would.
+   */
   function retryAfterMs(res: Awaited<ReturnType<FetchLike>>): number | undefined {
     const raw = res.headers?.get('retry-after')
     if (raw === null || raw === undefined || raw === '') return undefined
     const seconds = Number(raw)
-    if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000)
+    if (Number.isFinite(seconds)) return Math.max(0, Math.floor(seconds * 1000))
     const at = Date.parse(raw)
-    if (!Number.isNaN(at)) return Math.max(0, at - now())
+    if (!Number.isNaN(at)) return Math.max(0, Math.floor(at - now()))
     return undefined
   }
 

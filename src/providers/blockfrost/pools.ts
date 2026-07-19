@@ -188,16 +188,25 @@ export function createPoolMethods(
   // The pools with a scheduled future retirement, keyed to the epoch each retires in. A small list
   // (a handful of pools), read once per uncached page so `retiring` can be told from `retired`.
   async function retiringPools(): Promise<Map<string, number>> {
-    const rows = await collectPages(
-      client,
-      poolRetireRow,
-      '/pools/retiring',
-      Number.POSITIVE_INFINITY,
-      { label: '/pools/retiring' },
-    )
-    // A pool can carry more than one retirement certificate over its life; the last one listed is
-    // its current scheduled epoch.
-    return new Map(rows.map((row) => [row.pool_id, row.epoch]))
+    // Best-effort enrichment: `/pools/retiring` only refines `retiring` vs `retired` and supplies
+    // the retiring epoch. If it cannot be read (a rate-limit, a timeout, a 5xx), a pool's core data
+    // is still good, so this returns an empty map and the status falls back to the certificate-count
+    // heuristic rather than failing the whole pool read. A pool actually retiring is then reported
+    // as `retired` until the endpoint recovers, which is a lesser wrong than no pool at all.
+    try {
+      const rows = await collectPages(
+        client,
+        poolRetireRow,
+        '/pools/retiring',
+        Number.POSITIVE_INFINITY,
+        { label: '/pools/retiring' },
+      )
+      // A pool can carry more than one retirement certificate over its life; the last one listed is
+      // its current scheduled epoch.
+      return new Map(rows.map((row) => [row.pool_id, row.epoch]))
+    } catch {
+      return new Map()
+    }
   }
 
   // Off-chain pool metadata, best-effort: a pool without metadata (or a metadata endpoint that

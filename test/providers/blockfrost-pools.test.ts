@@ -15,6 +15,8 @@ const HEX3 = '6b3fda88053dc2cee18a7c2736f032182fcc78a2fe912e869aa4edcd'
 interface PoolScript {
   extendedPages?: Record<string, unknown>[][]
   retiring?: Record<string, unknown>[]
+  /** HTTP status to serve for `/pools/retiring`, e.g. 429 or 500, instead of a body. */
+  retiringStatus?: number
   detail?: Record<string, Record<string, unknown> | { status: number }>
   metadata?: Record<string, Record<string, unknown> | { status: number }>
   /** Records every path fetched, so a test can assert a `/metadata` call was avoided. */
@@ -55,7 +57,10 @@ function providerFor(script: PoolScript): ReturnType<typeof createBlockfrostProv
       return ok({ height: 100, hash: 'ab'.repeat(32), slot: 100, epoch: 42, time: 1_700_000_000 })
     }
     if (p.endsWith('/pools/extended')) return ok((script.extendedPages ?? [])[page - 1] ?? [])
-    if (p.endsWith('/pools/retiring')) return ok(page === 1 ? (script.retiring ?? []) : [])
+    if (p.endsWith('/pools/retiring')) {
+      if (script.retiringStatus !== undefined) return reply({ status: script.retiringStatus })
+      return ok(page === 1 ? (script.retiring ?? []) : [])
+    }
     let m = p.match(/\/pools\/([^/]+)\/metadata$/)
     if (m) return reply(script.metadata?.[decodeURIComponent(m[1] as string)])
     m = p.match(/\/pools\/([^/]+)$/)
@@ -155,6 +160,23 @@ describe('blockfrost pools — getPoolInfo', () => {
 
     expect(pool?.status).toBe('retiring')
     expect(pool?.retiringEpoch).toBe(250)
+  })
+
+  it('still returns the pool when /pools/retiring is unavailable, using certificate-based status', async () => {
+    // The retiring enrichment is best-effort: a 5xx (or rate-limit) on /pools/retiring must not
+    // fail the whole read when /pools/{id} succeeded. Status falls back to the certificate heuristic.
+    const provider = providerFor({
+      detail: { [POOL1]: poolDetail() }, // registration outnumbers retirement -> registered
+      metadata: { [POOL1]: POOL1_META },
+      retiringStatus: 503,
+    })
+
+    const [pool] = await provider.getPoolInfo([POOL1])
+
+    expect(pool?.poolId).toBe(POOL1)
+    expect(pool?.status).toBe('registered')
+    expect(pool?.retiringEpoch).toBeUndefined()
+    expect(pool?.metadata?.ticker).toBe('NUTS')
   })
 
   it('infers retired when retirements are not outnumbered and the pool is not retiring', async () => {

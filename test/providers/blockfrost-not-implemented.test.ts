@@ -16,48 +16,13 @@ function testProvider() {
 }
 
 /**
- * The capabilities this PR deliberately does not cover: assets, governance, pools, full
- * transaction/reward history, and resolving an arbitrary UTxO by reference. Each answers
- * `NotImplementedError` (501) rather than a generic error or a silently empty result — see
- * issue #4's status comment for what a follow-up PR should pick up.
+ * The capabilities this PR deliberately does not cover: full transaction/reward history and
+ * resolving an arbitrary UTxO by reference. Each answers `NotImplementedError` (501) rather than a
+ * generic error or a silently empty result — see issue #4's status comment for what a follow-up PR
+ * should pick up. Asset, governance, and pool reads used to live here; they are real as of this PR
+ * and are covered by their own suites.
  */
 describe('blockfrost provider — capabilities not yet implemented', () => {
-  it('getTokenMetadata', async () => {
-    const provider = testProvider()
-    await expect(provider.getTokenMetadata(['abc'])).rejects.toBeInstanceOf(NotImplementedError)
-  })
-
-  it('getDrepInfo', async () => {
-    const provider = testProvider()
-    await expect(provider.getDrepInfo(['drep1abc'])).rejects.toBeInstanceOf(NotImplementedError)
-  })
-
-  it('getDrepList', async () => {
-    const provider = testProvider()
-    await expect(provider.getDrepList({ limit: 10, offset: 0 })).rejects.toBeInstanceOf(
-      NotImplementedError,
-    )
-  })
-
-  it('getProposals', async () => {
-    const provider = testProvider()
-    await expect(provider.getProposals({ limit: 10, offset: 0 })).rejects.toBeInstanceOf(
-      NotImplementedError,
-    )
-  })
-
-  it('getPoolInfo', async () => {
-    const provider = testProvider()
-    await expect(provider.getPoolInfo(['pool1abc'])).rejects.toBeInstanceOf(NotImplementedError)
-  })
-
-  it('getPoolList', async () => {
-    const provider = testProvider()
-    await expect(provider.getPoolList({ limit: 10, offset: 0 })).rejects.toBeInstanceOf(
-      NotImplementedError,
-    )
-  })
-
   it('getTxHistory', async () => {
     const provider = testProvider()
     await expect(provider.getTxHistory('stake_test1abc')).rejects.toBeInstanceOf(

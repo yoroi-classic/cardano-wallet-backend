@@ -129,6 +129,11 @@ helm lint charts/cardano-wallet-backend
 helm template cardano-wallet-backend charts/cardano-wallet-backend
 ```
 
+Chart releases are published as OCI artifacts to
+`oci://ghcr.io/yoroi-classic/charts/cardano-wallet-backend` when a chart version reaches `main`.
+New GHCR packages are private by default; see the chart README for the one-time public visibility
+setup, authenticated and anonymous pinned installation examples, and configuration.
+
 See `charts/cardano-wallet-backend/README.md` for local install and secret configuration.
 
 ## Configuration

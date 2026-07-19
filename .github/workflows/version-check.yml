@@ -27,12 +27,28 @@ jobs:
       - name: Check version bump
         run: |
           base="origin/${{ github.base_ref }}"
-          if git cat-file -e "$base:scripts/check-version-bump.mjs" 2>/dev/null; then
+          if git cat-file -e "$base:scripts/check-version-bump.mjs" 2>/dev/null \
+            && git cat-file -e "$base:scripts/version-utils.mjs" 2>/dev/null; then
             git show "$base:scripts/check-version-bump.mjs" > "$RUNNER_TEMP/check-version-bump.mjs"
+            git show "$base:scripts/version-utils.mjs" > "$RUNNER_TEMP/version-utils.mjs"
             node "$RUNNER_TEMP/check-version-bump.mjs"
           else
-            echo "base branch has no checker yet, running the PR copy this once"
+            echo "base branch has no shared checker yet, running the PR copy this once"
             node scripts/check-version-bump.mjs
+          fi
+        env:
+          BASE_REF: origin/${{ github.base_ref }}
+      - name: Check Helm chart version bump
+        run: |
+          base="origin/${{ github.base_ref }}"
+          if git cat-file -e "$base:scripts/check-chart-version-bump.mjs" 2>/dev/null \
+            && git cat-file -e "$base:scripts/version-utils.mjs" 2>/dev/null; then
+            git show "$base:scripts/check-chart-version-bump.mjs" > "$RUNNER_TEMP/check-chart-version-bump.mjs"
+            git show "$base:scripts/version-utils.mjs" > "$RUNNER_TEMP/version-utils.mjs"
+            node "$RUNNER_TEMP/check-chart-version-bump.mjs"
+          else
+            echo "base branch has no shared chart checker yet, running the PR copy this once"
+            node scripts/check-chart-version-bump.mjs
           fi
         env:
           BASE_REF: origin/${{ github.base_ref }}

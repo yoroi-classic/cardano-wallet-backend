@@ -11,6 +11,7 @@ interface Call {
   method?: string
   body?: string | Uint8Array
   contentType?: string
+  headers?: Record<string, string>
 }
 
 function fakeFetch(response: {
@@ -18,6 +19,7 @@ function fakeFetch(response: {
   status?: number
   json?: () => Promise<unknown>
   text?: () => Promise<string>
+  headers?: { get(name: string): string | null }
   throws?: unknown
 }): { fetchImpl: FetchLike; calls: Call[] } {
   const calls: Call[] = []
@@ -27,11 +29,13 @@ function fakeFetch(response: {
       method: init?.method,
       body: init?.body,
       contentType: init?.headers?.['content-type'],
+      headers: init?.headers,
     })
     if (response.throws) throw response.throws
     return {
       ok: response.ok ?? true,
       status: response.status ?? 200,
+      headers: response.headers,
       json: response.json ?? (async () => ({})),
       text: response.text ?? (async () => ''),
     }
@@ -146,6 +150,13 @@ describe('koios getAccountUtxos', () => {
       _stake_addresses: [STAKE],
       _extended: true,
     })
+    expect(calls[0]?.url).toBe(
+      `${BASE}/account_utxos?order=tx_hash.asc,tx_index.asc&limit=1000&offset=0`,
+    )
+    expect(calls[0]?.headers).toMatchObject({
+      prefer: 'count=exact',
+    })
+    expect(calls[0]?.headers).not.toHaveProperty('range')
   })
 
   it('maps a datum hash and reference script when present', async () => {
@@ -177,6 +188,254 @@ describe('koios getAccountUtxos', () => {
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
     await expect(provider.getAccountUtxos(STAKE)).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+
+  it('collects every row when Koios returns 206 Content-Range pages', async () => {
+    const rows = Array.from({ length: 1_501 }, (_, index) => ({
+      ...ROW,
+      tx_hash: index.toString(16).padStart(64, '0'),
+      tx_index: index % 4,
+      value: index === 1_500 ? '900719925474099312345' : String(index + 1),
+      asset_list:
+        index === 1_500
+          ? [
+              {
+                policy_id: 'a'.repeat(56),
+                asset_name: '414243',
+                quantity: '900719925474099398765',
+              },
+            ]
+          : null,
+    }))
+    const calls: Call[] = []
+    const fetchImpl: FetchLike = async (url, init) => {
+      calls.push({ url, method: init?.method, body: init?.body, headers: init?.headers })
+      const offset = new URL(url).searchParams.get('offset')
+      if (offset === '0') {
+        return {
+          ok: true,
+          status: 206,
+          headers: { get: (name) => (name === 'content-range' ? '0-999/1501' : null) },
+          json: async () => rows.slice(0, 1_000),
+          text: async () => '',
+        }
+      }
+      if (offset === '1000') {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: (name) => (name === 'content-range' ? '1000-1500/1501' : null) },
+          json: async () => rows.slice(1_000),
+          text: async () => '',
+        }
+      }
+      throw new Error(`unexpected offset: ${offset}`)
+    }
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const utxos = await provider.getAccountUtxos(STAKE)
+
+    expect(utxos).toHaveLength(1_501)
+    expect(calls.map((call) => new URL(call.url).searchParams.get('offset'))).toEqual(['0', '1000'])
+    expect(utxos[1_500]).toMatchObject({
+      value: '900719925474099312345',
+      assets: [{ quantity: '900719925474099398765' }],
+    })
+  })
+
+  it('fails closed when a 206 response omits Content-Range', async () => {
+    const { fetchImpl } = fakeFetch({ status: 206, json: async () => [ROW] })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    await expect(provider.getAccountUtxos(STAKE)).rejects.toThrow(
+      'koios omitted Content-Range from a partial response',
+    )
+  })
+
+  it('rejects a 200 response whose Content-Range total is unknown', async () => {
+    const { fetchImpl } = fakeFetch({
+      status: 200,
+      headers: { get: (name) => (name === 'content-range' ? '0-999/*' : null) },
+      json: async () => [ROW],
+    })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    await expect(provider.getAccountUtxos(STAKE)).rejects.toThrow(
+      'koios returned invalid Content-Range',
+    )
+  })
+
+  it('fails closed when a full-sized response does not prove it is complete', async () => {
+    const { fetchImpl } = fakeFetch({
+      status: 200,
+      json: async () => Array.from({ length: 1_000 }, () => ROW),
+    })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    await expect(provider.getAccountUtxos(STAKE)).rejects.toThrow(
+      'koios returned a full page without Content-Range',
+    )
+  })
+
+  it('rejects duplicate outputs in a complete headerless response', async () => {
+    const { fetchImpl } = fakeFetch({ status: 200, json: async () => [ROW, ROW] })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    await expect(provider.getAccountUtxos(STAKE)).rejects.toThrow(
+      'koios returned a duplicate row across pages',
+    )
+  })
+
+  it('fails closed when a later page overlaps the first page', async () => {
+    const fetchImpl: FetchLike = async (url) => {
+      const offset = new URL(url).searchParams.get('offset')
+      return offset === '0'
+        ? {
+            ok: true,
+            status: 206,
+            headers: { get: (name) => (name === 'content-range' ? '0-0/2' : null) },
+            json: async () => [ROW],
+            text: async () => '',
+          }
+        : {
+            ok: true,
+            status: 206,
+            headers: { get: (name) => (name === 'content-range' ? '0-0/2' : null) },
+            json: async () => [ROW],
+            text: async () => '',
+          }
+    }
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    await expect(provider.getAccountUtxos(STAKE)).rejects.toThrow(
+      'koios returned a non-contiguous page',
+    )
+  })
+
+  it('fails closed when contiguous page metadata repeats an output', async () => {
+    const fetchImpl: FetchLike = async (url) => {
+      const first = new URL(url).searchParams.get('offset') === '0'
+      return {
+        ok: true,
+        status: first ? 206 : 200,
+        headers: {
+          get: (name) => (name === 'content-range' ? (first ? '0-0/2' : '1-1/2') : null),
+        },
+        json: async () => [ROW],
+        text: async () => '',
+      }
+    }
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    await expect(provider.getAccountUtxos(STAKE)).rejects.toThrow(
+      'koios returned a duplicate row across pages',
+    )
+  })
+
+  it('restarts the whole snapshot after a duplicate page and accepts a fresh result', async () => {
+    const calls: string[] = []
+    let snapshot = 1
+    const fresh = { ...ROW, tx_hash: 'bb22' }
+    const fetchImpl: FetchLike = async (url) => {
+      const offset = String(new URL(url).searchParams.get('offset'))
+      calls.push(offset)
+      if (snapshot === 1 && offset === '0') {
+        return {
+          ok: true,
+          status: 206,
+          headers: { get: (name) => (name === 'content-range' ? '0-0/2' : null) },
+          json: async () => [ROW],
+          text: async () => '',
+        }
+      }
+      if (snapshot === 1) {
+        snapshot = 2
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: (name) => (name === 'content-range' ? '1-1/2' : null) },
+          json: async () => [ROW],
+          text: async () => '',
+        }
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (name) => (name === 'content-range' ? '0-0/1' : null) },
+        json: async () => [fresh],
+        text: async () => '',
+      }
+    }
+    const provider = createKoiosProvider({
+      baseUrl: BASE,
+      fetchImpl,
+      readAttempts: 2,
+      retryBackoffMs: 0,
+    })
+
+    await expect(provider.getAccountUtxos(STAKE)).resolves.toEqual([
+      expect.objectContaining({ txHash: 'bb22' }),
+    ])
+    expect(calls).toEqual(['0', '1', '0'])
+  })
+
+  it('fails closed when a complete status still reports rows remaining', async () => {
+    const { fetchImpl } = fakeFetch({
+      status: 200,
+      headers: { get: (name) => (name === 'content-range' ? '0-0/2' : null) },
+      json: async () => [ROW],
+    })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    await expect(provider.getAccountUtxos(STAKE)).rejects.toThrow(
+      'koios returned an incomplete successful response',
+    )
+  })
+
+  it('rejects a Content-Range whose total does not extend past its end', async () => {
+    const { fetchImpl } = fakeFetch({
+      status: 206,
+      headers: { get: (name) => (name === 'content-range' ? '0-1/1' : null) },
+      json: async () => [ROW, { ...ROW, tx_hash: 'bb22' }],
+    })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    await expect(provider.getAccountUtxos(STAKE)).rejects.toThrow(
+      'koios returned contradictory Content-Range',
+    )
+  })
+
+  it('rejects a total that changes between pages', async () => {
+    const fetchImpl: FetchLike = async (url) => {
+      const first = new URL(url).searchParams.get('offset') === '0'
+      return {
+        ok: true,
+        status: 206,
+        headers: {
+          get: (name) => (name === 'content-range' ? (first ? '0-0/2' : '1-1/3') : null),
+        },
+        json: async () => [first ? ROW : { ...ROW, tx_hash: 'bb22' }],
+        text: async () => '',
+      }
+    }
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    await expect(provider.getAccountUtxos(STAKE)).rejects.toThrow(
+      'koios changed the paged result total',
+    )
+  })
+
+  it('rejects an aggregate above the row safety bound', async () => {
+    const { fetchImpl } = fakeFetch({
+      status: 206,
+      headers: { get: (name) => (name === 'content-range' ? '0-0/100001' : null) },
+      json: async () => [ROW],
+    })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    await expect(provider.getAccountUtxos(STAKE)).rejects.toThrow(
+      'koios paged result exceeds 100000 rows',
+    )
   })
 })
 

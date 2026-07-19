@@ -129,6 +129,11 @@ helm lint charts/cardano-wallet-backend
 helm template cardano-wallet-backend charts/cardano-wallet-backend
 ```
 
+Chart releases are published as OCI artifacts to
+`oci://ghcr.io/yoroi-classic/charts/cardano-wallet-backend` when a chart version reaches `main`.
+New GHCR packages are private by default; see the chart README for the one-time public visibility
+setup, authenticated and anonymous pinned installation examples, and configuration.
+
 See `charts/cardano-wallet-backend/README.md` for local install and secret configuration.
 
 ## Configuration
@@ -222,6 +227,7 @@ npm run test:coverage  # unit and API contract tests with coverage thresholds
 npm run test:integration  # live preprod integration smoke test
 npm run audit:prod     # production dependency audit
 npm run docker:build   # Docker image build check
+npm run docker:smoke   # start the built image and verify its /health contract
 npm run check:ci       # local mirror of the baseline CI gate
 ```
 

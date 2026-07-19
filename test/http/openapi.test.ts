@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { openapi } from '../../src/http/openapi.js'
 import { buildServer } from '../../src/http/server.js'
 import { createNftcdnSigner } from '../../src/media/nftcdn.js'
+import type { ProtocolParams } from '../../src/domain/types/chain.js'
 import type { ChainProvider } from '../../src/providers/provider.js'
 import { fakeProvider } from '../support/fake-provider.js'
 
@@ -142,6 +143,41 @@ describe('real responses validate against the schemas the spec publishes', () =>
 
     expect(res.statusCode).toBe(200)
     expect(validate('Tip', res.body)).toEqual([])
+  })
+
+  it('GET /v1/chain/protocol-params', async () => {
+    const params: ProtocolParams = {
+      epoch: 199,
+      minFeeA: 44,
+      minFeeB: 155_381,
+      maxTxSize: 16_384,
+      maxBlockBodySize: 90_112,
+      keyDeposit: '9999999999999999999',
+      poolDeposit: '9999999999999999997',
+      minPoolCost: '9999999999999999993',
+      coinsPerUtxoByte: '9999999999999999989',
+      maxValueSize: 5000,
+      collateralPercent: 150,
+      maxCollateralInputs: 3,
+      priceMem: 0.0577,
+      priceStep: 0.0000721,
+      maxTxExMem: '9999999999999999987',
+      maxTxExSteps: '9999999999999999983',
+      protocolVersion: { major: 9, minor: 0 },
+      costModels: {
+        PlutusV1: [100, -200],
+        PlutusV2: [300],
+        PlutusV3: { '0': 400, '1': -500 },
+      },
+    }
+    const res = await get({ getProtocolParams: async () => params }, '/v1/chain/protocol-params')
+
+    expect(res.statusCode).toBe(200)
+    expect(validate('ProtocolParams', res.body)).toEqual([])
+    expect(res.body).toEqual(params)
+    // Protocol quantities can exceed Number.MAX_SAFE_INTEGER and must remain exact digit strings.
+    expect((res.body as { keyDeposit: string }).keyDeposit).toBe('9999999999999999999')
+    expect((res.body as { maxTxExSteps: string }).maxTxExSteps).toBe('9999999999999999983')
   })
 
   it('GET /v1/account/{stake}/state', async () => {

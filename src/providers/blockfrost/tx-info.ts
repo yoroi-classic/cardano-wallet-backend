@@ -382,20 +382,24 @@ export async function addressSetTxHistory(
     advanceCursor(client, cursor, afterBlock),
   )
 
-  // Complete the boundary block: keep pulling pages only from addresses that might still hold
-  // transactions inside it, recomputing the boundary each round. Terminates because every extra page
-  // an address fetches is strictly newer (ascending order), so it either crosses the boundary or the
-  // address exhausts; the per-address `LIST_MAX_PAGES` bound is the final backstop.
+  // Settle the oldest page: keep pulling pages only from addresses that might still hold transactions
+  // relevant to it, recomputing the boundary each round. Two reasons an address still needs pages:
+  //  - No post-cursor transaction has surfaced yet (`boundaryBlock` undefined). A full first page can
+  //    be entirely transactions in the `afterBlock` block itself — `from=afterBlock` is inclusive, so
+  //    those come back but are cut by the exclusive `> afterBlock` filter, leaving the address with no
+  //    kept rows. It must keep advancing (its real post-cursor history is on a later page) rather than
+  //    be mistaken for exhausted, or the whole read would wrongly return empty.
+  //  - The boundary is known, but this address's newest kept transaction still sits inside it, so it
+  //    may hold more of that block.
+  // Terminates because every extra page is strictly newer (ascending order): an address either crosses
+  // the boundary, produces its first post-cursor transaction, or exhausts; `LIST_MAX_PAGES` backstops.
   for (;;) {
     const { boundaryBlock } = mergePage(cursors)
-    if (boundaryBlock === undefined) return []
-    const needing = cursors.filter(
-      (cursor) =>
-        !cursor.done &&
-        cursor.full &&
-        (cursor.rows.length === 0 ||
-          cursor.rows[cursor.rows.length - 1]!.block_height <= boundaryBlock),
-    )
+    const needing = cursors.filter((cursor) => {
+      if (cursor.done || !cursor.full) return false
+      if (boundaryBlock === undefined || cursor.rows.length === 0) return true
+      return cursor.rows[cursor.rows.length - 1]!.block_height <= boundaryBlock
+    })
     if (needing.length === 0) break
     await mapWithConcurrency(needing, addressFanout, (cursor) =>
       advanceCursor(client, cursor, afterBlock),

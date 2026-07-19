@@ -575,6 +575,36 @@ describe('blockfrost getTxHistoryByAddresses', () => {
     expect(history.map((t) => t.txHash)).toEqual(['new'])
   })
 
+  it('keeps advancing when a full first page is entirely afterBlock-block transactions', async () => {
+    // The cursor block (42) holds a full page of this address's transactions. With from=afterBlock
+    // inclusive, page 1 comes back packed with block-42 rows, every one cut by the exclusive `> 42`
+    // filter, so the address contributes no kept rows on its first page. Its real post-cursor history
+    // is on page 2, so the walk must advance rather than conclude there is nothing after the cursor
+    // and return empty.
+    const cursorRows: AddrTxRow[] = Array.from({ length: 100 }, (_, i) => ({
+      tx_hash: `at42_${i}`,
+      tx_index: i,
+      block_height: 42,
+      block_time: 42,
+    }))
+    const laterRows: AddrTxRow[] = [
+      { tx_hash: 'after_a', tx_index: 0, block_height: 43, block_time: 43 },
+      { tx_hash: 'after_b', tx_index: 0, block_height: 44, block_time: 44 },
+      { tx_hash: 'after_c', tx_index: 0, block_height: 45, block_time: 45 },
+    ]
+    const txs: Record<string, TxDef> = {}
+    for (const r of laterRows) txs[r.tx_hash] = { blockHash: 'hl', blockHeight: r.block_height }
+    const { provider: p } = provider({
+      addressTxs: { addr_a: [...cursorRows, ...laterRows] },
+      blocks: { hl: 7 },
+      txs,
+    })
+
+    const history = await p.getTxHistoryByAddresses(['addr_a'], 42)
+
+    expect(history.map((t) => t.txHash)).toEqual(['after_a', 'after_b', 'after_c'])
+  })
+
   it('returns an empty array without any request for an empty address set', async () => {
     let called = false
     const fetchImpl: FetchLike = async () => {

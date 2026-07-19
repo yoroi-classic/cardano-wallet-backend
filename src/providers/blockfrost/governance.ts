@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { MalformedUpstreamError, ProviderError } from '../../domain/errors.js'
+import { ProviderError } from '../../domain/errors.js'
 import {
   type DrepInfo,
   type DrepListParams,
@@ -47,16 +47,11 @@ const GOVERNANCE_TYPE: Record<(typeof BF_GOVERNANCE_TYPES)[number], ProposalType
   treasury_withdrawals: 'TreasuryWithdrawals',
 }
 
-// Only the two governance knobs this driver reads out of `/epochs/latest/parameters`. Both are
-// lovelace/count values Blockfrost types as nullable strings.
+// The one governance knob this driver reads out of `/epochs/latest/parameters`: the current DRep
+// registration deposit. Blockfrost's DRep endpoints do not echo the deposit an individual DRep
+// actually paid (Koios does), so the protocol's current value stands in for it; see getDrepInfo.
 const govParamsRow = z.object({
-  // The current DRep registration deposit. Blockfrost's DRep endpoints do not echo the deposit an
-  // individual DRep actually paid (Koios does), so the protocol's current value stands in for it;
-  // see the note in getDrepInfo.
   drep_deposit: numeric.nullish(),
-  // How many epochs a governance action stays open. A proposal's own proposed epoch is not exposed
-  // by Blockfrost, so it is derived as `expiration - gov_action_lifetime`; see mapProposal.
-  gov_action_lifetime: numeric.nullish(),
 })
 
 const drepMetaAnchor = z.object({
@@ -203,13 +198,11 @@ function proposalStatus(row: z.infer<typeof proposalRow>): {
 }
 
 export function createGovernanceMethods(client: BlockfrostClient): GovernanceCapability {
-  // The two governance protocol params, read once per request that needs them.
-  async function governanceParams(): Promise<{ drepDeposit: string; govActionLifetime?: number }> {
+  // The current DRep registration deposit, read once per request that needs it.
+  async function governanceParams(): Promise<{ drepDeposit: string }> {
     const row = await client.get(govParamsRow, '/epochs/latest/parameters')
     return {
       drepDeposit: row.drep_deposit == null ? '0' : String(row.drep_deposit),
-      govActionLifetime:
-        row.gov_action_lifetime == null ? undefined : Number(row.gov_action_lifetime),
     }
   }
 
@@ -262,19 +255,13 @@ export function createGovernanceMethods(client: BlockfrostClient): GovernanceCap
 
   function mapProposal(
     row: z.infer<typeof proposalRow>,
-    govActionLifetime: number | undefined,
     meta: { title?: string; abstract?: string; metadataUrl?: string; metadataHash?: string },
   ): Proposal {
-    // Blockfrost exposes no proposed epoch, only the expiration epoch and how many epochs an action
-    // stays open, so the proposed epoch is `expiration - gov_action_lifetime`. The lifetime is a
-    // required parameter on any governance-enabled network; a proposal existing without it is a
-    // genuinely broken upstream, and it fails loudly here rather than reporting a wrong epoch.
-    if (govActionLifetime === undefined) {
-      throw new MalformedUpstreamError(
-        'blockfrost /epochs/latest/parameters returned no gov_action_lifetime; ' +
-          'cannot derive a proposal proposed epoch',
-      )
-    }
+    // `proposedEpoch` is deliberately left absent. Blockfrost exposes no proposed epoch, only the
+    // expiration epoch and the *current* `gov_action_lifetime`, and `expiration - lifetime` would
+    // be wrong for any proposal submitted while the parameter held a different value. An absent
+    // optional field is the honest answer; deriving one from the wrong-era parameter is not. See
+    // the note on Proposal.proposedEpoch.
     const { status, decidedEpoch } = proposalStatus(row)
     return {
       proposalId: row.id,
@@ -282,7 +269,6 @@ export function createGovernanceMethods(client: BlockfrostClient): GovernanceCap
       index: row.cert_index,
       type: GOVERNANCE_TYPE[row.governance_type],
       status,
-      proposedEpoch: Math.max(0, row.expiration - govActionLifetime),
       expiryEpoch: row.expiration,
       ...(decidedEpoch === undefined ? {} : { decidedEpoch }),
       deposit: String(row.deposit),
@@ -357,13 +343,14 @@ export function createGovernanceMethods(client: BlockfrostClient): GovernanceCap
 
       // Newest first, so a governance browser opens on what is happening now. `order=desc` reverses
       // Blockfrost's chronological default, which the paginator then walks far enough to cover the
-      // requested window. The lifetime param is fetched alongside, once, for every proposal's epoch.
-      const [params, list] = await Promise.all([
-        governanceParams(),
-        collectPages(client, proposalListRow, '/governance/proposals?order=desc', offset + limit, {
-          label: '/governance/proposals',
-        }),
-      ])
+      // requested window.
+      const list = await collectPages(
+        client,
+        proposalListRow,
+        '/governance/proposals?order=desc',
+        offset + limit,
+        { label: '/governance/proposals' },
+      )
       const page = list.slice(offset, offset + limit)
       if (page.length === 0) return []
 
@@ -379,7 +366,7 @@ export function createGovernanceMethods(client: BlockfrostClient): GovernanceCap
           `/governance/proposals/${item.tx_hash}/${item.cert_index}`,
         )
         const meta = await proposalAnchor(item.tx_hash, item.cert_index)
-        return mapProposal(detail, params.govActionLifetime, meta)
+        return mapProposal(detail, meta)
       })
     },
   }

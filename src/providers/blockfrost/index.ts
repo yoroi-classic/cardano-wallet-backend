@@ -1,3 +1,5 @@
+import { noCache, type Cache } from '../../cache/index.js'
+import { TIP_CACHE_KEY, TIP_TTL_MS } from '../cached.js'
 import type { ChainProvider } from '../provider.js'
 import { createAccountMethods } from './account.js'
 import { createAddressMethods } from './addresses.js'
@@ -9,6 +11,15 @@ import { createPoolMethods } from './pools.js'
 import { createTxMethods } from './tx.js'
 
 export type { BlockfrostConfig, FetchLike, RetryEvent } from './client.js'
+
+export interface BlockfrostProviderOptions extends BlockfrostConfig {
+  /**
+   * The process cache. Mirrors `KoiosProviderOptions.cache`: most caching happens in `withCache`,
+   * outside this provider, but the pool ranking cannot be reached from there (its expensive part is
+   * the internal registered-set scan, not the result), so the pool module takes the cache directly.
+   */
+  cache?: Cache
+}
 
 /**
  * The Blockfrost provider: one shared client (auth via the `project_id` header, timeout, error
@@ -27,17 +38,26 @@ export type { BlockfrostConfig, FetchLike, RetryEvent } from './client.js'
  * history by address). Those may be landing in a parallel PR — see the account/addresses capability
  * modules and issue #4's status comment for exactly what is left.
  */
-export function createBlockfrostProvider(config: BlockfrostConfig): ChainProvider {
+export function createBlockfrostProvider(options: BlockfrostProviderOptions): ChainProvider {
+  const { cache = noCache, ...config } = options
   const client = createBlockfrostClient(config)
+
+  const chain = createChainMethods(client)
+
+  // The epoch, from the same cached tip and TTL the rest of the service reads the tip through, so
+  // the pool ranking is keyed on the epoch everyone else believes in rather than a second one that
+  // could disagree at a boundary. Same wiring as the Koios provider.
+  const currentEpoch = async (): Promise<number> =>
+    (await cache.read(TIP_CACHE_KEY, TIP_TTL_MS, () => chain.getTip())).epoch
 
   return {
     name: 'blockfrost',
-    ...createChainMethods(client),
+    ...chain,
     ...createAccountMethods(client),
     ...createAddressMethods(client),
     ...createAssetMethods(client),
     ...createGovernanceMethods(client),
-    ...createPoolMethods(client),
+    ...createPoolMethods(client, { cache, currentEpoch }),
     ...createTxMethods(client),
   }
 }

@@ -250,7 +250,7 @@ const PROPOSAL_ANCHOR = {
 }
 
 describe('blockfrost governance — getProposals', () => {
-  it('maps a page newest-first, deriving proposedEpoch from expiration and gov_action_lifetime', async () => {
+  it('maps a page newest-first, leaving proposedEpoch absent rather than fabricating it', async () => {
     const provider = providerFor({
       proposalListPages: [
         [{ id: GOV_ID, tx_hash: TX1, cert_index: 1, governance_type: 'info_action' }],
@@ -267,7 +267,7 @@ describe('blockfrost governance — getProposals', () => {
       index: 1,
       type: 'InfoAction',
       status: 'open',
-      proposedEpoch: 90, // 120 - 30
+      // No proposedEpoch: Blockfrost cannot source it, so it is left absent (see #3).
       expiryEpoch: 120,
       deposit: '100000000000',
       returnAddress: 'stake_test1urd3hs7rlxwwdzthe6hj026dmyt3y0heuulctscyydh2kgck6nkmz',
@@ -276,6 +276,7 @@ describe('blockfrost governance — getProposals', () => {
       metadataUrl: 'https://abc.xyz/gov.json',
       metadataHash: 'ffa226f3863aca006172d559cf46bb8b883a47233962ae2fc94c158d7de6fa81',
     })
+    expect(proposal?.proposedEpoch).toBeUndefined()
     // No vote tallies: Blockfrost has no vote-summary endpoint.
     expect(proposal?.drepVotes).toBeUndefined()
   })

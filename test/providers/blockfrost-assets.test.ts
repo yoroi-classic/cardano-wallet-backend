@@ -209,6 +209,35 @@ describe('blockfrost assets — happy path', () => {
     expect(token?.name).toBeUndefined()
   })
 
+  it('joins chunked CIP-25 name and description rather than discarding them', async () => {
+    // CIP-25 splits any value over 64 bytes across an array of strings; Blockfrost passes the
+    // decoded metadata through as-is. A driver that only read plain strings would drop the name
+    // (resolving the asset as `none`) and lose the description.
+    const chunked = {
+      ...CIP25_ROW,
+      onchain_metadata: {
+        name: ['A very long collectible name that the minter ', 'had to split across two chunks'],
+        description: [
+          'This description is also longer than sixty-four ',
+          'bytes, so it is chunked',
+        ],
+        image: ['ipfs://', 'Qmchunkedimage'],
+      },
+    }
+    const provider = providerFor({ [SUBJECT_CIP25]: chunked })
+
+    const [token] = await provider.getTokenMetadata([SUBJECT_CIP25])
+
+    expect(token?.source).toBe('cip25')
+    expect(token?.name).toBe(
+      'A very long collectible name that the minter had to split across two chunks',
+    )
+    expect(token?.description).toBe(
+      'This description is also longer than sixty-four bytes, so it is chunked',
+    )
+    expect(token?.image).toBe('ipfs://Qmchunkedimage')
+  })
+
   it('omits an unknown subject (404) and preserves caller order for the rest', async () => {
     const provider = providerFor({
       [SUBJECT_REGISTRY]: REGISTRY_ROW,

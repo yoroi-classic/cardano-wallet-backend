@@ -33,9 +33,8 @@ describe('blockfrost governance (integration)', () => {
       expect(proposal.proposalId).toMatch(/^gov_action1[0-9a-z]+$/)
       expect(proposal.txHash).toMatch(/^[0-9a-f]{64}$/)
       expect(PROPOSAL_TYPES).toContain(proposal.type)
-      expect(proposal.proposedEpoch).toBeLessThanOrEqual(
-        proposal.expiryEpoch ?? proposal.proposedEpoch,
-      )
+      // Blockfrost exposes no proposed epoch, so it is left absent rather than fabricated.
+      expect(proposal.proposedEpoch).toBeUndefined()
       expect(BigInt(proposal.deposit)).toBeGreaterThanOrEqual(0n)
     }
   })

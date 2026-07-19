@@ -174,13 +174,18 @@ function mapTokenMetadata(subject: string, row: z.infer<typeof assetRow>): Token
   if (onchain != null) {
     const standard = row.onchain_metadata_standard
     const isCip68 = typeof standard === 'string' && standard.toLowerCase().startsWith('cip68')
-    const name = asString(onchain.name)
-    const description = asString(onchain.description)
+    // name and description, like image, may arrive chunked: CIP-25 splits any value over 64 bytes
+    // across an array of strings, and Blockfrost passes the decoded metadata through verbatim.
+    // Join the chunks rather than discarding a split field, which would otherwise resolve the asset
+    // as `none` or strip its display text.
+    const name = cip25String(onchain.name)
+    const description = cip25String(onchain.description)
     const image = cip25String(onchain.image) ?? cip25String(onchain.logo)
 
     if (isCip68) {
       const ticker = asString(onchain.ticker)
-      const url = asString(onchain.url)
+      // A url can exceed 64 bytes and be chunked the same way name/image can.
+      const url = cip25String(onchain.url)
       const decimals = toDecimals(onchain.decimals)
       if (name || ticker || description || url || image || decimals != null) {
         return { ...base, source: 'cip68', name, ticker, description, decimals, url, image }

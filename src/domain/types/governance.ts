@@ -97,8 +97,16 @@ export interface Proposal {
   index: number
   type: ProposalType
   status: ProposalStatus
-  /** The epoch it was proposed in, and the one it expires in if nothing happens. */
-  proposedEpoch: number
+  /**
+   * The epoch it was proposed in, and the one it expires in if nothing happens.
+   *
+   * `proposedEpoch` is optional because not every provider can source it. Koios reports it
+   * directly; Blockfrost exposes no proposed epoch and only the current `gov_action_lifetime`
+   * parameter, which cannot be used to derive a historical proposal's epoch (the parameter can
+   * change between the proposal and now). Rather than fabricate a value from the wrong-era
+   * parameter, a provider that cannot source it leaves it absent.
+   */
+  proposedEpoch?: number
   expiryEpoch?: number
   /** Whichever of ratified/enacted/dropped/expired actually happened, if any. */
   decidedEpoch?: number

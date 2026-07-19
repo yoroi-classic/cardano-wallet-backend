@@ -14,8 +14,11 @@ const HEX3 = '6b3fda88053dc2cee18a7c2736f032182fcc78a2fe912e869aa4edcd'
 
 interface PoolScript {
   extendedPages?: Record<string, unknown>[][]
+  retiring?: Record<string, unknown>[]
   detail?: Record<string, Record<string, unknown> | { status: number }>
   metadata?: Record<string, Record<string, unknown> | { status: number }>
+  /** Records every path fetched, so a test can assert a `/metadata` call was avoided. */
+  seen?: string[]
 }
 
 function ok(body: unknown): {
@@ -44,9 +47,15 @@ function providerFor(script: PoolScript): ReturnType<typeof createBlockfrostProv
   const fetchImpl: FetchLike = async (url) => {
     const u = new URL(url)
     const p = u.pathname
+    script.seen?.push(p)
     const page = Number(u.searchParams.get('page') ?? '1')
 
+    // The pool list keys its ranking cache on the current epoch, read from the tip.
+    if (p.endsWith('/blocks/latest')) {
+      return ok({ height: 100, hash: 'ab'.repeat(32), slot: 100, epoch: 42, time: 1_700_000_000 })
+    }
     if (p.endsWith('/pools/extended')) return ok((script.extendedPages ?? [])[page - 1] ?? [])
+    if (p.endsWith('/pools/retiring')) return ok(page === 1 ? (script.retiring ?? []) : [])
     let m = p.match(/\/pools\/([^/]+)\/metadata$/)
     if (m) return reply(script.metadata?.[decodeURIComponent(m[1] as string)])
     m = p.match(/\/pools\/([^/]+)$/)
@@ -97,13 +106,9 @@ const POOL1_META = {
 function extended(
   poolId: string,
   activeStake: string,
-  ticker: string | null,
+  metadata: Record<string, unknown> | null = null,
 ): Record<string, unknown> {
-  return {
-    pool_id: poolId,
-    active_stake: activeStake,
-    metadata: ticker === null ? null : { ticker },
-  }
+  return { pool_id: poolId, active_stake: activeStake, metadata }
 }
 
 describe('blockfrost pools — getPoolInfo', () => {
@@ -137,7 +142,22 @@ describe('blockfrost pools — getPoolInfo', () => {
     })
   })
 
-  it('infers retired when retirements are not outnumbered by registrations', async () => {
+  it('distinguishes a scheduled future retirement as retiring, with its epoch', async () => {
+    // registration.length == retirement.length, so the certificate heuristic alone would say
+    // "retired"; the /pools/retiring listing corrects it to "retiring" and supplies the epoch.
+    const provider = providerFor({
+      detail: { [POOL1]: poolDetail({ registration: ['a'], retirement: ['b'] }) },
+      metadata: { [POOL1]: { status: 404 } },
+      retiring: [{ pool_id: POOL1, epoch: 250 }],
+    })
+
+    const [pool] = await provider.getPoolInfo([POOL1])
+
+    expect(pool?.status).toBe('retiring')
+    expect(pool?.retiringEpoch).toBe(250)
+  })
+
+  it('infers retired when retirements are not outnumbered and the pool is not retiring', async () => {
     const provider = providerFor({
       detail: { [POOL1]: poolDetail({ registration: ['a'], retirement: ['b'] }) },
       metadata: { [POOL1]: { status: 404 } },
@@ -146,6 +166,7 @@ describe('blockfrost pools — getPoolInfo', () => {
     const [pool] = await provider.getPoolInfo([POOL1])
 
     expect(pool?.status).toBe('retired')
+    expect(pool?.retiringEpoch).toBeUndefined()
     expect(pool?.metadata).toBeUndefined()
   })
 
@@ -176,9 +197,9 @@ describe('blockfrost pools — getPoolList', () => {
     const provider = providerFor({
       extendedPages: [
         [
-          extended(POOL2, '1000000000', 'BBB'),
-          extended(POOL1, '5000000000', 'AAA'),
-          extended(POOL3, '3000000000', 'CCC'),
+          extended(POOL2, '1000000000'),
+          extended(POOL1, '5000000000'),
+          extended(POOL3, '3000000000'),
         ],
       ],
       detail: {
@@ -186,7 +207,6 @@ describe('blockfrost pools — getPoolList', () => {
         [POOL3]: poolDetail({ pool_id: POOL3, hex: HEX3, active_stake: '2999999999' }),
         [POOL2]: poolDetail({ pool_id: POOL2, hex: HEX2, active_stake: '999999999' }),
       },
-      metadata: { [POOL1]: { status: 404 }, [POOL2]: { status: 404 }, [POOL3]: { status: 404 } },
     })
 
     const pools = await provider.getPoolList({ limit: 3, offset: 0 })
@@ -196,17 +216,36 @@ describe('blockfrost pools — getPoolList', () => {
     expect(pools.map((p) => p.activeStake)).toEqual(['5000000000', '3000000000', '1000000000'])
   })
 
+  it('uses the metadata inline in /pools/extended without a separate /metadata call', async () => {
+    const seen: string[] = []
+    const provider = providerFor({
+      seen,
+      extendedPages: [[extended(POOL1, '5000000000', POOL1_META)]],
+      detail: { [POOL1]: poolDetail({ pool_id: POOL1, hex: HEX1, active_stake: '5000000000' }) },
+      // Deliberately no metadata entry: a /metadata request would throw "no answer".
+    })
+
+    const [pool] = await provider.getPoolList({ limit: 1, offset: 0 })
+
+    expect(pool?.metadata).toEqual({
+      name: 'Stake Nuts',
+      ticker: 'NUTS',
+      homepage: 'https://stakentus.com/',
+      description: 'The best pool ever',
+    })
+    expect(seen.some((p) => p.endsWith(`/pools/${POOL1}/metadata`))).toBe(false)
+  })
+
   it('honors offset and limit', async () => {
     const provider = providerFor({
       extendedPages: [
         [
-          extended(POOL1, '5000000000', 'AAA'),
-          extended(POOL3, '3000000000', 'CCC'),
-          extended(POOL2, '1000000000', 'BBB'),
+          extended(POOL1, '5000000000'),
+          extended(POOL3, '3000000000'),
+          extended(POOL2, '1000000000'),
         ],
       ],
       detail: { [POOL3]: poolDetail({ pool_id: POOL3, hex: HEX3, active_stake: '3000000000' }) },
-      metadata: { [POOL3]: { status: 404 } },
     })
 
     const pools = await provider.getPoolList({ limit: 1, offset: 1 })
@@ -218,13 +257,12 @@ describe('blockfrost pools — getPoolList', () => {
     const provider = providerFor({
       extendedPages: [
         [
-          extended(POOL1, '5000000000', 'NUTS'),
-          extended(POOL2, '1000000000', 'HODL'),
+          extended(POOL1, '5000000000', { ticker: 'NUTS' }),
+          extended(POOL2, '1000000000', { ticker: 'HODL' }),
           extended(POOL3, '3000000000', null),
         ],
       ],
       detail: { [POOL1]: poolDetail({ pool_id: POOL1, hex: HEX1, active_stake: '5000000000' }) },
-      metadata: { [POOL1]: POOL1_META },
     })
 
     const pools = await provider.getPoolList({ limit: 10, offset: 0, ticker: 'nut' })
@@ -235,13 +273,12 @@ describe('blockfrost pools — getPoolList', () => {
 
   it('scans every extended page before ranking, so a high-stake pool on a later page wins', async () => {
     const page1 = Array.from({ length: 100 }, (_v, i) =>
-      extended(`pool1p1n${i}`.padEnd(20, '0'), '100', null),
+      extended(`pool1p1n${i}`.padEnd(20, '0'), '100'),
     )
-    const bigPool = extended(POOL1, '9000000000', 'TOP')
+    const bigPool = extended(POOL1, '9000000000')
     const provider = providerFor({
       extendedPages: [page1, [bigPool]],
       detail: { [POOL1]: poolDetail({ pool_id: POOL1, hex: HEX1, active_stake: '9000000000' }) },
-      metadata: { [POOL1]: { status: 404 } },
     })
 
     const pools = await provider.getPoolList({ limit: 1, offset: 0 })

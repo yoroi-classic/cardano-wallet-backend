@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { noCache, type Cache } from '../../cache/index.js'
 import type {
   PoolInfo,
   PoolListParams,
@@ -15,15 +16,39 @@ import { numeric } from './schema.js'
 // by the client's shared rate limiter. Same shape as filterUsedAddresses.
 const POOL_LOOKUP_CONCURRENCY = 10
 
+/**
+ * The ranking is the epoch snapshot the pools are ordered by, so it is keyed on the epoch and not a
+ * clock. This TTL is only a memory bound: it has to outlive an epoch (five days) so the entry
+ * survives exactly as long as its key is current, and no longer. Identical to the Koios driver.
+ */
+const RANKING_TTL_MS = 6 * 24 * 60 * 60 * 1000
+
+/**
+ * A served page, cached briefly. This is the part that is not epoch-fixed: a hydrated pool carries
+ * `liveStake`, `saturation` and `liveDelegators`, which drift continuously, so caching them for
+ * five days would show stale figures on the one screen where they matter. Ninety seconds of drift
+ * is imperceptible; re-hydrating a page on every request is not, because each pool is two upstream
+ * calls with no batch form. Same values and reasoning as the Koios driver.
+ */
+const PAGE_TTL_MS = 90_000
+const PAGE_STALE_IF_ERROR_MS = 10 * 60_000
+
 // A well-formed pool id, used as the map key hydration joins on and (from the extended list) as an
-// opaque ranking cursor. A shape check, not a full bech32 decode: what matters is that it is a
-// comparable pool id and not an empty string or a fragment of an error message. Caller-supplied ids
-// are decoded properly, checksum and all, at the HTTP boundary.
+// opaque ranking cursor. A shape check, not a full bech32 decode.
 const poolIdBech32 = z.string().regex(/^pool1[0-9a-z]+$/)
 
 // Counts are whole and non-negative; a fractional delegator or a negative block count is upstream
 // junk, routed to MalformedUpstreamError rather than let out through PoolInfo.
 const count = z.number().int().nonnegative()
+
+// The off-chain metadata fields, shared by the `/pools/{id}/metadata` endpoint and the copy the
+// extended list carries inline. The extended list also carries `url`/`hash`, which are not mapped.
+const poolMetaFields = z.object({
+  ticker: z.string().nullish(),
+  name: z.string().nullish(),
+  homepage: z.string().nullish(),
+  description: z.string().nullish(),
+})
 
 /** `pool` (Blockfrost OpenAPI spec, `/pools/{pool_id}`), projected to the fields we map. */
 const poolRow = z.object({
@@ -42,28 +67,30 @@ const poolRow = z.object({
   margin_cost: z.number().min(0).max(1),
   fixed_cost: numeric.nullish(),
   // The registration and retirement certificate histories. Blockfrost's pool object carries no
-  // status enum, so the current lifecycle is inferred from these; see poolStatus.
+  // status enum, so the current lifecycle is inferred from these plus the retiring set; see
+  // poolStatus.
   registration: z.array(z.string()),
   retirement: z.array(z.string()),
 })
 
-const poolMetadataRow = z.object({
-  ticker: z.string().nullish(),
-  name: z.string().nullish(),
-  homepage: z.string().nullish(),
-  description: z.string().nullish(),
-})
+const poolMetadataRow = poolMetaFields
 
-/** One row of `pool_list_extended` (`/pools/extended`), projected to what the ranking and the
- * ticker filter need. The extended list carries the pool's metadata inline, so the ticker filter
- * needs no per-pool round trip. */
+/** One row of `pool_list_extended` (`/pools/extended`), projected to what the ranking, the ticker
+ * filter, and hydration need. The extended list carries the pool's metadata inline, so neither the
+ * filter nor hydration needs a separate `/metadata` round trip for a listed pool. */
 const poolExtendedRow = z.object({
   pool_id: poolIdBech32,
   active_stake: numeric.nullish(),
-  metadata: z.object({ ticker: z.string().nullish() }).nullish(),
+  metadata: poolMetaFields.nullish(),
 })
 
 type PoolExtendedRow = z.infer<typeof poolExtendedRow>
+
+/** One row of `pool_list_retire` (`/pools/retiring`): a pool with a scheduled future retirement. */
+const poolRetireRow = z.object({
+  pool_id: poolIdBech32,
+  epoch: count,
+})
 
 function activeStakeOf(row: PoolExtendedRow): bigint {
   return row.active_stake == null ? 0n : BigInt(row.active_stake)
@@ -80,20 +107,23 @@ function byActiveStakeDesc(a: PoolExtendedRow, b: PoolExtendedRow): number {
 }
 
 /**
- * Current lifecycle, inferred from the certificate histories.
+ * Current lifecycle.
  *
- * Blockfrost's pool object exposes no status enum and no retirement epoch (Koios exposes both), so
- * the state is read from the counts: a pool with more registrations than retirements has a live
- * registration not yet retired, otherwise its last registration has been retired. What this cannot
- * see is a filed-but-not-yet-effective retirement, so `retiring` is not distinguished from
- * `retired`, and `retiringEpoch` is always absent. A follow-up wanting exact parity would cross-
- * reference `/pools/retiring`.
+ * Blockfrost's pool object exposes no status enum and no retirement epoch (Koios exposes both). A
+ * pool with a scheduled future retirement is named by `/pools/retiring` along with the epoch it
+ * retires in, so `retiringEpoch` present means the pool is `retiring`. Otherwise the state is read
+ * from the certificate counts: more registrations than retirements means a live registration not
+ * yet retired, otherwise the last registration has been retired.
  */
-function poolStatus(row: z.infer<typeof poolRow>): PoolStatus {
+function poolStatus(row: z.infer<typeof poolRow>, retiringEpoch: number | undefined): PoolStatus {
+  if (retiringEpoch !== undefined) return 'retiring'
   return row.registration.length > row.retirement.length ? 'registered' : 'retired'
 }
 
-function mapPoolMetadata(m: z.infer<typeof poolMetadataRow>): PoolMetadata | undefined {
+function mapPoolMetadata(
+  m: z.infer<typeof poolMetaFields> | null | undefined,
+): PoolMetadata | undefined {
+  if (!m) return undefined
   const md: PoolMetadata = {}
   if (m.name != null) md.name = m.name
   if (m.ticker != null) md.ticker = m.ticker
@@ -102,13 +132,16 @@ function mapPoolMetadata(m: z.infer<typeof poolMetadataRow>): PoolMetadata | und
   return Object.keys(md).length > 0 ? md : undefined
 }
 
-function mapPoolInfo(row: z.infer<typeof poolRow>, metadata: PoolMetadata | undefined): PoolInfo {
+function mapPoolInfo(
+  row: z.infer<typeof poolRow>,
+  metadata: PoolMetadata | undefined,
+  retiringEpoch: number | undefined,
+): PoolInfo {
   return {
     poolId: row.pool_id,
     poolIdHex: row.hex,
-    status: poolStatus(row),
-    // Blockfrost exposes no retirement epoch; see poolStatus.
-    retiringEpoch: undefined,
+    status: poolStatus(row, retiringEpoch),
+    retiringEpoch,
     margin: row.margin_cost,
     fixedCost: String(row.fixed_cost ?? 0),
     pledge: String(row.declared_pledge ?? 0),
@@ -123,24 +156,52 @@ function mapPoolInfo(row: z.infer<typeof poolRow>, metadata: PoolMetadata | unde
   }
 }
 
-export function createPoolMethods(client: BlockfrostClient): PoolCapability {
-  // Hydrate a set of pool ids with full pool info plus best-effort off-chain metadata, preserving
-  // input order. An unknown id answers 404 -> `undefined` -> absent, so the result is never longer
-  // than the input. One paced, bounded-concurrency pair of reads per pool.
-  async function poolInfoByIds(poolIds: string[]): Promise<PoolInfo[]> {
-    if (poolIds.length === 0) return []
-    const mapped = await mapWithConcurrency(poolIds, POOL_LOOKUP_CONCURRENCY, async (id) => {
-      const row = await client.getOrUndefined(poolRow, `/pools/${encodeURIComponent(id)}`)
-      if (row === undefined) return undefined
-      const metadata = await poolMetadata(id)
-      return mapPoolInfo(row, metadata)
-    })
-    return mapped.filter((pool): pool is PoolInfo => pool !== undefined)
+export interface PoolMethodDeps {
+  /** Cache for the epoch-keyed ranking and for served pages. Defaults to none. */
+  cache?: Cache
+  /**
+   * The current epoch, from the same cached tip the rest of the service uses. The ranking is keyed
+   * on it, so it must be the epoch everyone else believes in. Absent means "serve it uncached".
+   */
+  currentEpoch?: () => Promise<number>
+}
+
+export function createPoolMethods(
+  client: BlockfrostClient,
+  deps: PoolMethodDeps = {},
+): PoolCapability {
+  const cache = deps.cache ?? noCache
+
+  /**
+   * The epoch to key the cache on, or `undefined` if we could not find out. The epoch is a cache
+   * key and nothing else, so a failure to read it must not become a failure to serve the pool list.
+   */
+  async function cacheEpoch(): Promise<number | undefined> {
+    if (deps.currentEpoch === undefined) return undefined
+    try {
+      return await deps.currentEpoch()
+    } catch {
+      return undefined
+    }
+  }
+
+  // The pools with a scheduled future retirement, keyed to the epoch each retires in. A small list
+  // (a handful of pools), read once per uncached page so `retiring` can be told from `retired`.
+  async function retiringPools(): Promise<Map<string, number>> {
+    const rows = await collectPages(
+      client,
+      poolRetireRow,
+      '/pools/retiring',
+      Number.POSITIVE_INFINITY,
+      { label: '/pools/retiring' },
+    )
+    // A pool can carry more than one retirement certificate over its life; the last one listed is
+    // its current scheduled epoch.
+    return new Map(rows.map((row) => [row.pool_id, row.epoch]))
   }
 
   // Off-chain pool metadata, best-effort: a pool without metadata (or a metadata endpoint that
-  // misbehaves) still resolves, it just has no ticker/name. A pool that registered no metadata
-  // answers 404 -> `undefined`.
+  // misbehaves) still resolves. A pool that registered no metadata answers 404 -> `undefined`.
   async function poolMetadata(poolId: string): Promise<PoolMetadata | undefined> {
     try {
       const row = await client.getOrUndefined(
@@ -153,51 +214,103 @@ export function createPoolMethods(client: BlockfrostClient): PoolCapability {
     }
   }
 
+  // Hydrate a set of pool ids with full pool info plus off-chain metadata, preserving input order.
+  // An unknown id answers 404 -> `undefined` -> absent, so the result is never longer than the
+  // input. When `inlineMetadata` already holds a pool's metadata (the list path, from
+  // `/pools/extended`), no `/metadata` call is made for it; otherwise one is, best-effort.
+  async function poolInfoByIds(
+    poolIds: string[],
+    retiring: Map<string, number>,
+    inlineMetadata?: Map<string, PoolMetadata | undefined>,
+  ): Promise<PoolInfo[]> {
+    if (poolIds.length === 0) return []
+    const mapped = await mapWithConcurrency(poolIds, POOL_LOOKUP_CONCURRENCY, async (id) => {
+      const row = await client.getOrUndefined(poolRow, `/pools/${encodeURIComponent(id)}`)
+      if (row === undefined) return undefined
+      const metadata = inlineMetadata?.has(id) ? inlineMetadata.get(id) : await poolMetadata(id)
+      return mapPoolInfo(row, metadata, retiring.get(id))
+    })
+    return mapped.filter((pool): pool is PoolInfo => pool !== undefined)
+  }
+
+  /**
+   * The whole registered set, id + stake + inline metadata, ordered by active stake (largest
+   * first). Cached on the epoch, not a clock, because that is what `active_stake` is: the ledger's
+   * reward snapshot, fixed for five days and then moving all at once.
+   *
+   * The ranking is ticker-independent, so it is cached once per epoch and the ticker filter is
+   * applied to the cached set afterwards. That is safe where caching per-ticker would not be: one
+   * key per epoch, rather than an unbounded key space of user-supplied search terms.
+   */
+  async function rankedPools(epoch: number | undefined): Promise<PoolExtendedRow[]> {
+    const scan = async (): Promise<PoolExtendedRow[]> =>
+      (
+        await collectPages(client, poolExtendedRow, '/pools/extended', Number.POSITIVE_INFINITY, {
+          label: '/pools/extended',
+        })
+      ).sort(byActiveStakeDesc)
+
+    if (epoch === undefined) return scan()
+    return cache.read(`pools:ranking:${epoch}`, RANKING_TTL_MS, scan)
+  }
+
+  async function servePage(
+    { limit, offset, ticker }: PoolListParams,
+    epoch: number | undefined,
+  ): Promise<PoolInfo[]> {
+    const ranked = await rankedPools(epoch)
+    // Ticker filter honored on the inline metadata (Blockfrost's extended list carries it; Koios
+    // has to join it), so no per-pool round trip is needed to filter. Case-insensitive substring,
+    // matching Koios's `ilike`.
+    const needle = ticker?.toLowerCase()
+    const filtered =
+      needle === undefined
+        ? ranked
+        : ranked.filter((row) => {
+            const t = row.metadata?.ticker
+            return typeof t === 'string' && t.toLowerCase().includes(needle)
+          })
+
+    const page = filtered.slice(offset, offset + limit)
+    const retiring = await retiringPools()
+    const inlineMetadata = new Map(page.map((row) => [row.pool_id, mapPoolMetadata(row.metadata)]))
+    const hydrated = await poolInfoByIds(
+      page.map((row) => row.pool_id),
+      retiring,
+      inlineMetadata,
+    )
+
+    // One snapshot, one truth: expose the active stake the ranking actually used, not the value
+    // re-read during hydration, so a page sorted by active stake cannot go out with its own
+    // activeStake values contradicting that order across an epoch boundary. Same reasoning as the
+    // Koios driver.
+    const rankedStake = new Map(page.map((row) => [row.pool_id, String(row.active_stake ?? 0)]))
+    return hydrated.map((pool) => ({
+      ...pool,
+      activeStake: rankedStake.get(pool.poolId) ?? pool.activeStake,
+    }))
+  }
+
   return {
-    getPoolInfo(poolIds: string[]): Promise<PoolInfo[]> {
-      return poolInfoByIds(poolIds)
+    async getPoolInfo(poolIds: string[]): Promise<PoolInfo[]> {
+      if (poolIds.length === 0) return []
+      const retiring = await retiringPools()
+      // No inline metadata for an arbitrary lookup, so each pool's metadata is fetched best-effort.
+      return poolInfoByIds(poolIds, retiring)
     },
 
     async getPoolList({ limit, offset, ticker }: PoolListParams): Promise<PoolInfo[]> {
       if (limit <= 0) return []
 
-      // Neutral ordering: registered pools by active stake, largest first, no promotional ranking.
-      // The sort cannot be pushed upstream (Blockfrost's list is not stake-ordered), so the whole
-      // registered set is read light — id, stake, and the inline ticker only — then sorted here and
-      // just the requested page hydrated with full pool info, the same two-phase shape the Koios
-      // driver uses. `/pools/extended` lists active pools, so the page is registered by construction.
-      const extended = await collectPages(
-        client,
-        poolExtendedRow,
-        '/pools/extended',
-        Number.POSITIVE_INFINITY,
-        { label: '/pools/extended' },
+      // The served page, cached briefly and served stale rather than failing. Page one is what
+      // nearly every client asks for, so this is the difference between one full ranking scan plus a
+      // hydration fan-out every ninety seconds and one on every request. Keyed on the epoch as well
+      // as the page, so the ranking underneath cannot change without the key changing with it.
+      const epoch = await cacheEpoch()
+      const key = `pools:page:${epoch ?? 'none'}:${ticker ?? ''}:${offset}:${limit}`
+      return cache.read(key, { ttlMs: PAGE_TTL_MS, staleIfErrorMs: PAGE_STALE_IF_ERROR_MS }, () =>
+        servePage({ limit, offset, ticker }, epoch),
       )
-
-      // Ticker filter honored on the inline metadata, so no per-pool round trip is needed to filter
-      // (Blockfrost's list carries the ticker; Koios has to join it). Case-insensitive substring,
-      // matching Koios's `ilike`.
-      const needle = ticker?.toLowerCase()
-      const filtered =
-        needle === undefined
-          ? extended
-          : extended.filter((row) => {
-              const t = row.metadata?.ticker
-              return typeof t === 'string' && t.toLowerCase().includes(needle)
-            })
-
-      const page = filtered.sort(byActiveStakeDesc).slice(offset, offset + limit)
-      const hydrated = await poolInfoByIds(page.map((row) => row.pool_id))
-
-      // One snapshot, one truth: expose the active stake the ranking actually used, not the value
-      // re-read during hydration, so a page sorted by active stake cannot go out with its own
-      // activeStake values contradicting that order across an epoch boundary. Same reasoning as the
-      // Koios driver.
-      const rankedStake = new Map(page.map((row) => [row.pool_id, String(row.active_stake ?? 0)]))
-      return hydrated.map((pool) => ({
-        ...pool,
-        activeStake: rankedStake.get(pool.poolId) ?? pool.activeStake,
-      }))
     },
   }
 }

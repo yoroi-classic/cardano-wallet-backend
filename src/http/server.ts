@@ -4,6 +4,7 @@ import Fastify, { type FastifyInstance, type FastifyBaseLogger } from 'fastify'
 import { isAppError } from '../domain/errors.js'
 import type { ChainProvider } from '../providers/provider.js'
 import type { NftcdnSigner } from '../media/nftcdn.js'
+import type { PriceProvider } from '../prices/index.js'
 import type { RemoteConfig } from '../remote-config/index.js'
 import { serializeRequest } from './logging.js'
 import { routeRegistrars, type RouteDeps } from './routes/index.js'
@@ -27,6 +28,11 @@ export interface BuildServerOptions {
   nftcdn?: NftcdnSigner
   /** Remote config for the clients. Absent means /v1/config answers 503. */
   remoteConfig?: RemoteConfig
+  /**
+   * Price and market data. Absent means every /v1/price/* route answers the 501 it always has;
+   * see RouteDeps.priceProvider.
+   */
+  priceProvider?: PriceProvider
   /** Fastify logger option. False (default) keeps tests quiet. */
   logger?: boolean | { level: string }
   /**
@@ -146,6 +152,7 @@ export async function buildServer(opts: BuildServerOptions): Promise<FastifyInst
     info: opts.info ?? DEFAULT_INFO,
     ...(opts.nftcdn === undefined ? {} : { nftcdn: opts.nftcdn }),
     ...(opts.remoteConfig === undefined ? {} : { remoteConfig: opts.remoteConfig }),
+    ...(opts.priceProvider === undefined ? {} : { priceProvider: opts.priceProvider }),
   }
   for (const register of routeRegistrars) {
     register(app, opts.provider, deps)

@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { openapi } from '../../src/http/openapi.js'
 import { buildServer } from '../../src/http/server.js'
 import { createNftcdnSigner } from '../../src/media/nftcdn.js'
+import type { ProtocolParams } from '../../src/domain/types/chain.js'
 import type { ChainProvider } from '../../src/providers/provider.js'
 import { fakeProvider } from '../support/fake-provider.js'
 
@@ -37,6 +38,7 @@ function validate(schemaName: string, value: unknown): string[] {
 const STAKE = bech32.encode('stake_test', bech32.toWords(new Uint8Array(29)), 1023)
 const ADDR = (fill: number): string =>
   bech32.encode('addr_test', bech32.toWords(new Uint8Array(57).fill(fill)), 1023)
+const ADDR_VKH = bech32.encode('addr_vkh', bech32.toWords(new Uint8Array(28).fill(3)), 1023)
 const TX_HASH = 'ab'.repeat(32)
 const POLICY = 'a'.repeat(56)
 const POOL = 'pool1wn6a6f23ctq06udwhw27ravdpd6zcr7jlut3yez0wzdackz3222'
@@ -142,6 +144,41 @@ describe('real responses validate against the schemas the spec publishes', () =>
 
     expect(res.statusCode).toBe(200)
     expect(validate('Tip', res.body)).toEqual([])
+  })
+
+  it('GET /v1/chain/protocol-params', async () => {
+    const params: ProtocolParams = {
+      epoch: 199,
+      minFeeA: 44,
+      minFeeB: 155_381,
+      maxTxSize: 16_384,
+      maxBlockBodySize: 90_112,
+      keyDeposit: '9999999999999999999',
+      poolDeposit: '9999999999999999997',
+      minPoolCost: '9999999999999999993',
+      coinsPerUtxoByte: '9999999999999999989',
+      maxValueSize: 5000,
+      collateralPercent: 150,
+      maxCollateralInputs: 3,
+      priceMem: 0.0577,
+      priceStep: 0.0000721,
+      maxTxExMem: '9999999999999999987',
+      maxTxExSteps: '9999999999999999983',
+      protocolVersion: { major: 9, minor: 0 },
+      costModels: {
+        PlutusV1: [100, -200],
+        PlutusV2: [300],
+        PlutusV3: { '0': 400, '1': -500 },
+      },
+    }
+    const res = await get({ getProtocolParams: async () => params }, '/v1/chain/protocol-params')
+
+    expect(res.statusCode).toBe(200)
+    expect(validate('ProtocolParams', res.body)).toEqual([])
+    expect(res.body).toEqual(params)
+    // Protocol quantities can exceed Number.MAX_SAFE_INTEGER and must remain exact digit strings.
+    expect((res.body as { keyDeposit: string }).keyDeposit).toBe('9999999999999999999')
+    expect((res.body as { maxTxExSteps: string }).maxTxExSteps).toBe('9999999999999999983')
   })
 
   it('GET /v1/account/{stake}/state', async () => {
@@ -296,13 +333,59 @@ describe('real responses validate against the schemas the spec publishes', () =>
 
   it('POST /v1/addresses/filter-used', async () => {
     const res = await post(
-      { filterUsedAddresses: async (a: string[]) => a.slice(0, 1) },
+      {
+        filterUsedAddresses: async (a: string[]) => a.slice(0, 1),
+        filterUsedPaymentCredentials: async (credentials: string[]) => credentials,
+      },
       '/v1/addresses/filter-used',
-      { addresses: [ADDR(1), ADDR(2)] },
+      { addresses: [ADDR(1), ADDR(2), ADDR_VKH] },
     )
 
     expect(res.statusCode).toBe(200)
-    expect(res.body).toEqual([ADDR(1)])
+    expect(res.body).toEqual([ADDR(1), ADDR_VKH])
+  })
+
+  // A real Byron address (see test/domain/byron-address.test.ts for provenance), so this also
+  // stands as evidence the route accepts the format the OpenAPI description now claims it does.
+  const BYRON_ADDR = 'Ae2tdPwUPEZFRbyhz3cpfC2CumGzNkFBN2L42rcUc2yjQpEkxDbkPodpMAi'
+
+  it('POST /v1/addresses/utxos', async () => {
+    const utxo = {
+      txHash: TX_HASH,
+      outputIndex: 0,
+      address: BYRON_ADDR,
+      value: '2000000',
+      assets: [{ policyId: POLICY, assetName: '414243', quantity: '5' }],
+    }
+    const res = await post({ getUtxosByAddresses: async () => [utxo] }, '/v1/addresses/utxos', {
+      addresses: [BYRON_ADDR],
+    })
+
+    expect(res.statusCode).toBe(200)
+    eachMatches('Utxo', res.body)
+  })
+
+  it('POST /v1/addresses/txs', async () => {
+    const tx = {
+      txHash: TX_HASH,
+      block: 1_000,
+      blockHash: 'bb'.repeat(32),
+      slot: 5_000,
+      epoch: 10,
+      blockTime: 1_700_000_000,
+      fee: '170000',
+      inputs: [{ address: BYRON_ADDR, value: '1000000', assets: [] }],
+      outputs: [],
+      withdrawals: [],
+      certificates: [{ kind: 'other' as const, index: 0 }],
+    }
+    const res = await post({ getTxHistoryByAddresses: async () => [tx] }, '/v1/addresses/txs', {
+      addresses: [BYRON_ADDR],
+      after: 999,
+    })
+
+    expect(res.statusCode).toBe(200)
+    eachMatches('WalletTransaction', res.body)
   })
 
   it('POST /v1/tx/submit', async () => {
@@ -460,7 +543,7 @@ describe('real responses validate against the schemas the spec publishes', () =>
   // 501 is the same error envelope as everything else, so an adapter needs no special case.
   it.each([
     ['GET', '/v1/price/ada?currencies=USD', undefined],
-    ['POST', '/v1/price/tokens', { subjects: ['aa'] }],
+    ['POST', '/v1/price/tokens', { subjects: [POLICY] }],
   ])('%s %s answers the documented 501 envelope', async (method, url, payload) => {
     const res = await call({}, method as 'GET' | 'POST', url, payload)
 

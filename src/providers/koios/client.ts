@@ -15,6 +15,9 @@ export type FetchLike = (
 ) => Promise<{
   ok: boolean
   status: number
+  headers?: {
+    get(name: string): string | null
+  }
   json: () => Promise<unknown>
   text: () => Promise<string>
 }>
@@ -82,11 +85,20 @@ interface RequestInit {
   method?: 'GET' | 'POST'
   body?: string | Uint8Array
   contentType?: string
+  headers?: Record<string, string>
 }
 
 const DEFAULT_READ_ATTEMPTS = 3
 const DEFAULT_BACKOFF_MS = 150
 const DEFAULT_TIMEOUT_MS = 10_000
+const KOIOS_PAGE_SIZE = 1_000
+const KOIOS_MAX_PAGED_ROWS = 100_000
+
+interface ResponseWithMetadata {
+  data: unknown
+  status: number
+  contentRange: string | null
+}
 
 /**
  * Endpoints that are slow upstream, and how long to give them.
@@ -106,7 +118,7 @@ const DEFAULT_TIMEOUT_MS = 10_000
  * `/epoch_params`) keep the 10s default, because for them a 15s wait is already a broken upstream.
  */
 const HEAVY_TIMEOUT_MS = 15_000
-const HEAVY_PATHS = [
+export const HEAVY_PATHS = [
   '/pool_info',
   '/pool_list',
   '/tx_info',
@@ -115,9 +127,14 @@ const HEAVY_PATHS = [
   '/drep_metadata',
   '/account_utxos',
   '/account_txs',
+  // Address-keyed row assembly, the same weight as their account-keyed siblings above: a wallet
+  // with no stake credential reads its UTxOs and history here, and both walk every matching page.
+  '/address_utxos',
+  '/address_txs',
+  '/credential_txs',
 ]
 
-const timeoutFor = (path: string, base: number, heavy: number): number =>
+export const timeoutFor = (path: string, base: number, heavy: number): number =>
   HEAVY_PATHS.some((heavyPath) => path.startsWith(heavyPath)) ? heavy : base
 
 /**
@@ -158,6 +175,25 @@ export interface KoiosClient {
   batch<T>(schema: z.ZodType<T>, path: string, body: unknown): Promise<T>
 
   /**
+   * A paged batch read. Koios/PostgREST caps large result sets and answers partial requests with
+   * `Content-Range`; this walks explicit `limit`/`offset` pages until the exact total is
+   * satisfied. Koios's RPC POST endpoints ignore the HTTP `Range` request header, so query
+   * parameters are deliberately used even though table GET endpoints support that header.
+   *
+   * Koios does not expose a snapshot token spanning separate HTTP requests. Stable ordering,
+   * totals, range continuity and optional row keys detect the observable forms of mid-read
+   * churn, but cannot turn several upstream requests into a database-atomic snapshot. Account
+   * callers therefore still refresh current state rather than treating one read as a durable
+   * checkpoint.
+   */
+  batchAllPages<Row>(
+    rowSchema: z.ZodType<Row>,
+    path: string,
+    body: unknown,
+    rowKey?: (row: Row) => string,
+  ): Promise<Row[]>
+
+  /**
    * A batch read over more items than fit in one request body: pack them into as few requests as
    * the byte budget allows, run those, and concatenate the rows.
    *
@@ -175,6 +211,23 @@ export interface KoiosClient {
     path: string,
     items: Item[],
     toBody: (chunk: Item[]) => unknown,
+  ): Promise<Row[]>
+
+  /**
+   * The body-budget packing under batchAll, exposed so a read that does more than one request per
+   * chunk can inherit it. Pack `items` into as few request bodies as the byte budget allows, run
+   * `send` on each body concurrently, and concatenate the rows. If upstream rejects a body with a
+   * 413 that names a smaller limit, that limit is adopted for the life of this client, the items
+   * are repacked, and the whole run is attempted once more.
+   *
+   * `send` turns a built request body into rows, so a caller can wrap paging or extra behaviour
+   * around each chunk and still get the packing and the 413 adaptation for free. This is how the
+   * address-set reads page each chunk without duplicating the limit-learning batchAll owns.
+   */
+  packAdaptively<Row, Item>(
+    items: Item[],
+    toBody: (chunk: Item[]) => unknown,
+    send: (body: unknown) => Promise<Row[]>,
   ): Promise<Row[]>
 
   /** The current request-body budget in bytes. Lowered if upstream ever says it is smaller. */
@@ -209,9 +262,12 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
   const delay =
     config.delayImpl ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)))
 
-  async function request(path: string, init: RequestInit = {}): Promise<unknown> {
+  async function requestWithMetadata(
+    path: string,
+    init: RequestInit = {},
+  ): Promise<ResponseWithMetadata> {
     const url = `${baseUrl}${path}`
-    const headers: Record<string, string> = { accept: 'application/json' }
+    const headers: Record<string, string> = { accept: 'application/json', ...init.headers }
     if (config.token) headers.authorization = `Bearer ${config.token}`
     if (init.contentType) headers['content-type'] = init.contentType
 
@@ -240,13 +296,21 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
     }
 
     try {
-      return await res.json()
+      return {
+        data: await res.json(),
+        status: res.status,
+        contentRange: res.headers?.get('content-range') ?? null,
+      }
     } catch (cause) {
       if (cause instanceof Error && cause.name === 'TimeoutError') {
         throw new ProviderTimeoutError(`koios response timed out: ${path}`, cause)
       }
       throw new MalformedUpstreamError(`koios returned invalid json for ${path}`, cause)
     }
+  }
+
+  async function request(path: string, init: RequestInit = {}): Promise<unknown> {
+    return (await requestWithMetadata(path, init)).data
   }
 
   function parse<T>(schema: z.ZodType<T>, data: unknown, path: string): T {
@@ -321,6 +385,64 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
     })
   }
 
+  function parseContentRange(
+    value: string,
+    path: string,
+  ): { start: number; end: number; total: number } | { total: 0 } {
+    if (value === '*/0') return { total: 0 }
+
+    const match = /^(\d+)-(\d+)\/(\d+)$/.exec(value)
+    if (!match) {
+      throw new MalformedUpstreamError(`koios returned invalid Content-Range for ${path}`)
+    }
+
+    const start = Number(match[1])
+    const end = Number(match[2])
+    const total = Number(match[3])
+    if (
+      !Number.isSafeInteger(start) ||
+      !Number.isSafeInteger(end) ||
+      !Number.isSafeInteger(total) ||
+      start < 0 ||
+      end < start ||
+      total <= end
+    ) {
+      throw new MalformedUpstreamError(`koios returned contradictory Content-Range for ${path}`)
+    }
+    return { start, end, total }
+  }
+
+  /**
+   * Pack `items` into body-budget chunks, run `send` on each chunk's body concurrently, and
+   * concatenate the rows. If a run fails with a 413 naming a smaller limit than we packed to, adopt
+   * it, repack, and run once more. Only once: a second 413 after taking upstream's own number is a
+   * problem another attempt will not fix.
+   *
+   * The 413 adaptation lives here so every body-budget read inherits it. batchAll sends one plain
+   * batch per chunk; the address-set reads page each chunk. Both pack the same way and learn a
+   * tighter cap the same way, because both hand their per-chunk work to `send`.
+   */
+  async function packAdaptively<Row, Item>(
+    items: Item[],
+    toBody: (chunk: Item[]) => unknown,
+    send: (body: unknown) => Promise<Row[]>,
+  ): Promise<Row[]> {
+    const run = async (): Promise<Row[]> => {
+      const chunks = packBySize(items, toBody, bodyLimit)
+      const perChunk = await Promise.all(chunks.map((chunk) => send(toBody(chunk))))
+      return perChunk.flat()
+    }
+
+    try {
+      return await run()
+    } catch (err) {
+      const said = limitFrom413(err)
+      if (said === undefined || said >= bodyLimit) throw err
+      bodyLimit = said
+      return run()
+    }
+  }
+
   return {
     get<T>(schema: z.ZodType<T>, path: string): Promise<T> {
       return read(path, async () => parse(schema, await request(path), path))
@@ -338,6 +460,100 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
 
     batch,
 
+    batchAllPages<Row>(
+      rowSchema: z.ZodType<Row>,
+      path: string,
+      body: unknown,
+      rowKey?: (row: Row) => string,
+    ): Promise<Row[]> {
+      return read(path, async () => {
+        const rows: Row[] = []
+        const seenKeys = new Set<string>()
+        let expectedStart = 0
+        let expectedTotal: number | undefined
+
+        const appendPage = (page: Row[]): void => {
+          if (rowKey !== undefined) {
+            for (const row of page) {
+              const key = rowKey(row)
+              if (seenKeys.has(key)) {
+                // Never put the key in the error. Callers use wallet identifiers as keys, and
+                // upstream failures flow through normal logs.
+                throw new MalformedUpstreamError(
+                  `koios returned a duplicate row across pages for ${path}`,
+                )
+              }
+              seenKeys.add(key)
+            }
+          }
+          rows.push(...page)
+        }
+
+        for (;;) {
+          const separator = path.includes('?') ? '&' : '?'
+          const pagePath = `${path}${separator}limit=${KOIOS_PAGE_SIZE}&offset=${expectedStart}`
+          const response = await requestWithMetadata(pagePath, {
+            method: 'POST',
+            body: JSON.stringify(body),
+            contentType: 'application/json',
+            headers: {
+              prefer: 'count=exact',
+            },
+          })
+          const page = parse(z.array(rowSchema), response.data, path)
+
+          if (response.contentRange === null) {
+            if (response.status === 206 || expectedStart !== 0) {
+              throw new MalformedUpstreamError(
+                `koios omitted Content-Range from a partial response for ${path}`,
+              )
+            }
+            if (page.length >= KOIOS_PAGE_SIZE) {
+              throw new MalformedUpstreamError(
+                `koios returned a full page without Content-Range for ${path}`,
+              )
+            }
+            appendPage(page)
+            return rows
+          }
+
+          const range = parseContentRange(response.contentRange, path)
+          if (!('start' in range)) {
+            if (expectedStart !== 0 || page.length !== 0) {
+              throw new MalformedUpstreamError(
+                `koios returned rows for an empty Content-Range on ${path}`,
+              )
+            }
+            return []
+          }
+
+          if (range.start !== expectedStart || page.length !== range.end - range.start + 1) {
+            throw new MalformedUpstreamError(`koios returned a non-contiguous page for ${path}`)
+          }
+          if (expectedTotal !== undefined && range.total !== expectedTotal) {
+            throw new MalformedUpstreamError(`koios changed the paged result total for ${path}`)
+          }
+          expectedTotal = range.total
+          if (expectedTotal > KOIOS_MAX_PAGED_ROWS) {
+            throw new MalformedUpstreamError(
+              `koios paged result exceeds ${KOIOS_MAX_PAGED_ROWS} rows for ${path}`,
+            )
+          }
+
+          appendPage(page)
+          expectedStart = range.end + 1
+          if (expectedStart === expectedTotal) return rows
+          if (response.status !== 206) {
+            throw new MalformedUpstreamError(
+              `koios returned an incomplete successful response for ${path}`,
+            )
+          }
+        }
+      })
+    },
+
+    packAdaptively,
+
     async batchAll<Row, Item>(
       rowSchema: z.ZodType<Row>,
       path: string,
@@ -345,28 +561,9 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
       toBody: (chunk: Item[]) => unknown,
     ): Promise<Row[]> {
       if (items.length === 0) return []
-
-      const send = async (): Promise<Row[]> => {
-        const chunks = packBySize(items, toBody, bodyLimit)
-        const perChunk = await Promise.all(
-          chunks.map((chunk) => batch(z.array(rowSchema), path, toBody(chunk))),
-        )
-        return perChunk.flat()
-      }
-
-      try {
-        return await send()
-      } catch (err) {
-        // A 413 is not retried as a transient failure, and rightly so: the same body will be
-        // rejected by every instance. But if upstream named a *smaller* limit than we packed to,
-        // that is not a failure to retry, it is a fact to learn. Lower the budget, repack, and go
-        // once more. Only once: a second 413 after adopting upstream's own number means something
-        // is wrong that another attempt will not fix.
-        const said = limitFrom413(err)
-        if (said === undefined || said >= bodyLimit) throw err
-        bodyLimit = said
-        return send()
-      }
+      // One plain batch per chunk. The packing and the 413 limit-learning live in packAdaptively,
+      // shared with the address-set reads so a smaller upstream body cap is learned in one place.
+      return packAdaptively(items, toBody, (body) => batch(z.array(rowSchema), path, body))
     },
 
     get bodyLimit(): number {

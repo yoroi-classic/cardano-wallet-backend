@@ -57,6 +57,21 @@ describe('loadConfig — happy path', () => {
     expect(config.provider).toBe('blockfrost')
     expect(config.blockfrost.projectId).toBe('proj_id')
   })
+
+  it('leaves coingeckoApiKey unset by default', () => {
+    const config = loadConfig({})
+    expect(config.coingeckoApiKey).toBeUndefined()
+  })
+
+  it('honors an explicit COINGECKO_API_KEY', () => {
+    const config = loadConfig({ COINGECKO_API_KEY: 'my-key' })
+    expect(config.coingeckoApiKey).toBe('my-key')
+  })
+
+  it('treats an empty COINGECKO_API_KEY as absent', () => {
+    const config = loadConfig({ COINGECKO_API_KEY: '' })
+    expect(config.coingeckoApiKey).toBeUndefined()
+  })
 })
 
 describe('loadConfig — unhappy path', () => {

@@ -2,6 +2,7 @@ import type { FastifyBaseLogger, FastifyInstance } from 'fastify'
 import { createMemoryCache, noCache, type Cache } from './cache/index.js'
 import { loadConfig } from './config/index.js'
 import { createNftcdnSigner } from './media/nftcdn.js'
+import { createPriceProvider } from './prices/index.js'
 import { createRemoteConfig } from './remote-config/index.js'
 import { createProvider } from './providers/factory.js'
 import { buildServer } from './http/server.js'
@@ -88,12 +89,19 @@ async function main(): Promise<void> {
       ? undefined
       : createRemoteConfig({ url: config.configUrl, cache })
 
+  // Unlike NFTCDN and remote config, this is not gated on any configuration: CoinGecko and
+  // GeckoTerminal both answer at their free tier with no credential at all, so a real deployment
+  // always has price wired. It shares the one process cache too, for the same reason the provider
+  // and remote config do (see providers/factory.ts's note on createProvider).
+  const priceProvider = createPriceProvider({ coingeckoApiKey: config.coingeckoApiKey, cache })
+
   const app = await buildServer({
     provider,
     logger: { level: config.logLevel },
     info: { version, network: config.network, provider: provider.name },
     ...(nftcdn === undefined ? {} : { nftcdn }),
     ...(remoteConfig === undefined ? {} : { remoteConfig }),
+    priceProvider,
     corsOrigins: config.corsOrigins,
     rateLimit: config.rateLimit,
   })
@@ -113,6 +121,7 @@ async function main(): Promise<void> {
         // The subdomain, never the key. This line goes to a log that outlives the process.
         media: config.nftcdn === undefined ? 'disabled' : `nftcdn:${config.nftcdn.subdomain}`,
         remoteConfig: config.configUrl ?? 'disabled',
+        price: config.coingeckoApiKey === undefined ? 'coingecko:anonymous' : 'coingecko:keyed',
       },
       `cardano-wallet-backend listening on ${config.host}:${config.port}`,
     )

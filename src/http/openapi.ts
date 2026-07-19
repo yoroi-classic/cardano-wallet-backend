@@ -84,19 +84,19 @@ const COMMON_ERRORS = {
 } as const
 
 /**
- * Every price endpoint carries this warning, because the shape below is a promise and the
- * behaviour today is a 501, and a client author needs to know both.
+ * Every price endpoint carries this warning: what it returns, and what it refuses to.
  */
-const PRICE_NOT_IMPLEMENTED =
-  '**NOT IMPLEMENTED YET. This endpoint answers `501`.** The path, the request and the response ' +
-  'shape are final, so an adapter can be written against them now and will start working the day ' +
-  'a market-data provider is wired behind them, with no client change.\n\n' +
+const PRICE_DESCRIPTION =
+  'Sourced from CoinGecko (ADA fiat price and history) and GeckoTerminal (native-token price and ' +
+  'history, in ADA). Price is the one domain in this API with no on-chain source, so a real ' +
+  'market-data provider sits behind it rather than Koios or Blockfrost.\n\n' +
   '**It never returns a price of zero, null, or a placeholder, and it never will.** A wallet ' +
   'handed a `0` renders a portfolio worth $0.00, and the user cannot tell "the market crashed" ' +
-  'from "the backend is unfinished". One of those is a reason to panic-sell. On a 501, render ' +
-  '"price unavailable".\n\n' +
-  'Price is the one domain here with no on-chain source: the chain does not know what ADA is ' +
-  'worth in dollars. It needs a market-data provider, and that choice is still open.'
+  'from "the data didn\'t arrive". One of those is a reason to panic-sell. If the upstream ' +
+  'provider fails, this answers `502`/`504`, never a guessed number.\n\n' +
+  'A deployment with no price provider wired (a bare test harness; never a real deployment, since ' +
+  'neither upstream needs a credential to work) answers `501` instead, with the same guarantee: ' +
+  'still never a fake price.'
 
 const jsonBody = (schema: object) => ({ content: { 'application/json': { schema } } })
 
@@ -125,11 +125,16 @@ export const openapi = {
     { name: 'service', description: 'Liveness and status' },
     { name: 'chain', description: 'Tip and protocol parameters' },
     { name: 'account', description: 'Stake-account state, UTxOs, and history' },
-    { name: 'addresses', description: 'Address discovery' },
+    {
+      name: 'addresses',
+      description:
+        'Address discovery, and reads keyed by an address set for wallets with no ' +
+        'resolvable stake credential (Byron, enterprise, pointer).',
+    },
     { name: 'assets', description: 'Native token and NFT metadata' },
     { name: 'pools', description: 'Stake pools' },
     { name: 'governance', description: 'DReps and governance actions' },
-    { name: 'price', description: 'Price and market data. Reserved; every endpoint answers 501.' },
+    { name: 'price', description: 'Price and market data, from CoinGecko and GeckoTerminal.' },
     { name: 'tx', description: 'Submit, status, and output lookups' },
   ],
 
@@ -263,7 +268,11 @@ export const openapi = {
         summary: 'Which of these addresses have been seen on chain',
         description:
           'Drives address discovery (the gap-limit scan). Returns the used subset, in the order ' +
-          'you sent them.',
+          'you sent them.\n\n' +
+          'Accepts bech32 payment addresses (base, pointer, enterprise), Byron base58 addresses, ' +
+          'and bech32 `addr_vkh` payment-key hashes, mixed freely in one call. Payment-key hashes ' +
+          'are queried as credentials, not interpreted as full addresses. Each entry is validated ' +
+          'independently, so a mixed batch is only rejected if one entry is malformed.',
         requestBody: jsonBody({
           type: 'object',
           required: ['addresses'],
@@ -280,6 +289,82 @@ export const openapi = {
           '200': jsonResponse('The used subset, in input order', {
             type: 'array',
             items: { type: 'string' },
+          }),
+          ...COMMON_ERRORS,
+        },
+      },
+    },
+
+    '/v1/addresses/utxos': {
+      post: {
+        tags: ['addresses'],
+        operationId: 'getUtxosByAddresses',
+        summary: 'Every UTxO controlled by a set of addresses, in one call',
+        description:
+          'The address-keyed sibling of /v1/account/{stakeAddress}/utxos, for wallets whose ' +
+          'addresses carry no resolvable stake credential: Byron, enterprise, and pointer ' +
+          'addresses are all on that side of the line. A base Shelley wallet, which can derive ' +
+          'a stake key from any of its addresses, should prefer the account endpoint instead: ' +
+          'it reads the whole wallet in one call rather than needing every address enumerated.' +
+          '\n\n' +
+          'Accepts the same address formats as filter-used, mixed freely.\n\nNever cached.',
+        requestBody: jsonBody({
+          type: 'object',
+          required: ['addresses'],
+          properties: {
+            addresses: {
+              type: 'array',
+              items: { type: 'string' },
+              minItems: 1,
+              maxItems: 1000,
+            },
+          },
+        }),
+        responses: {
+          '200': jsonResponse('UTxOs across the given addresses', {
+            type: 'array',
+            items: { $ref: '#/components/schemas/Utxo' },
+          }),
+          ...COMMON_ERRORS,
+        },
+      },
+    },
+
+    '/v1/addresses/txs': {
+      post: {
+        tags: ['addresses'],
+        operationId: 'getTxHistoryByAddresses',
+        summary: 'Transaction history for a set of addresses, oldest first',
+        description:
+          'The address-keyed sibling of /v1/account/{stakeAddress}/txs, for the same wallets ' +
+          '/v1/addresses/utxos serves. A transaction touching more than one of the given ' +
+          'addresses (a self-transfer within the same wallet, most commonly) appears exactly ' +
+          'once, not once per matching address.\n\n' +
+          'Page forward with `after`, set to the `block` of the last transaction you saw, the ' +
+          'same cursor the account endpoint uses. A page is never cut through the middle of a ' +
+          'block.\n\nAccepts the same address formats as filter-used, mixed freely.\n\n' +
+          'Never cached.',
+        requestBody: jsonBody({
+          type: 'object',
+          required: ['addresses'],
+          properties: {
+            addresses: {
+              type: 'array',
+              items: { type: 'string' },
+              minItems: 1,
+              maxItems: 1000,
+            },
+            after: {
+              type: 'integer',
+              minimum: 0,
+              description: 'Return transactions in blocks after this height.',
+            },
+          },
+        }),
+        responses: {
+          '200': jsonResponse('Transactions across the given addresses, oldest first', {
+            type: 'array',
+            items: { $ref: '#/components/schemas/WalletTransaction' },
           }),
           ...COMMON_ERRORS,
         },
@@ -692,7 +777,7 @@ export const openapi = {
         tags: ['price'],
         operationId: 'getAdaPrice',
         summary: 'ADA price, in each requested currency',
-        description: PRICE_NOT_IMPLEMENTED,
+        description: PRICE_DESCRIPTION,
         parameters: [
           {
             name: 'currencies',
@@ -715,7 +800,7 @@ export const openapi = {
         tags: ['price'],
         operationId: 'getAdaPriceHistory',
         summary: 'ADA price history, as candles',
-        description: PRICE_NOT_IMPLEMENTED,
+        description: PRICE_DESCRIPTION,
         parameters: [
           {
             name: 'range',
@@ -740,7 +825,7 @@ export const openapi = {
         tags: ['price'],
         operationId: 'getTokenActivity',
         summary: 'Price and activity for a batch of native tokens',
-        description: PRICE_NOT_IMPLEMENTED,
+        description: PRICE_DESCRIPTION,
         requestBody: jsonBody({
           type: 'object',
           required: ['subjects'],
@@ -765,7 +850,7 @@ export const openapi = {
         tags: ['price'],
         operationId: 'getTokenPriceHistory',
         summary: 'Price history for one native token, as candles',
-        description: PRICE_NOT_IMPLEMENTED,
+        description: PRICE_DESCRIPTION,
         requestBody: jsonBody({
           type: 'object',
           required: ['subject'],
@@ -888,7 +973,9 @@ export const openapi = {
       ),
       UpstreamTimeout: jsonResponse('The chain data source did not answer in time', ERROR_RESPONSE),
       NotImplemented: jsonResponse(
-        'Reserved but not built yet. Never a fake value: render the field as unavailable.',
+        'No price provider is configured for this deployment. The price routes are live and their ' +
+          'contract is final; this is the answer only when the deployment has wired no market-data ' +
+          'provider. Never a fake value: render the field as unavailable.',
         ERROR_RESPONSE,
       ),
       FeatureUnavailable: jsonResponse(

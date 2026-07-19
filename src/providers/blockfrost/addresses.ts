@@ -1,7 +1,9 @@
 import { z } from 'zod'
+import type { Utxo, WalletTransaction } from '../../domain/types/transactions.js'
 import type { AddressCapability } from '../capabilities/addresses.js'
 import type { BlockfrostClient } from './client.js'
 import { mapWithConcurrency } from './concurrency.js'
+import { notImplemented } from './not-implemented.js'
 
 // How many address lookups this driver keeps in flight at once. Blockfrost answers "used" as a
 // per-address 200/404, so a wallet restore turns into one request per address; a modest ceiling
@@ -36,6 +38,25 @@ export function createAddressMethods(client: BlockfrostClient): AddressCapabilit
         },
       )
       return addresses.filter((_address, i) => checks[i] === true)
+    },
+
+    // The three below are async so notImplemented()'s synchronous throw becomes a rejected
+    // promise rather than escaping the call before a caller's `await` sees it. See the note in
+    // assets.ts. These landed on the capability interface after this driver's first slice; they
+    // are the address-set reads Koios serves and Blockfrost has not been wired for yet (see #4).
+    async filterUsedPaymentCredentials(_paymentCredentials: string[]): Promise<string[]> {
+      return notImplemented('filterUsedPaymentCredentials')
+    },
+
+    async getUtxosByAddresses(_addresses: string[]): Promise<Utxo[]> {
+      return notImplemented('getUtxosByAddresses')
+    },
+
+    async getTxHistoryByAddresses(
+      _addresses: string[],
+      _afterBlock?: number,
+    ): Promise<WalletTransaction[]> {
+      return notImplemented('getTxHistoryByAddresses')
     },
   }
 }

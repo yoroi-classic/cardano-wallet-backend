@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createBlockfrostProvider, type FetchLike } from '../../src/providers/blockfrost/index.js'
-import { MalformedUpstreamError, ProviderError } from '../../src/domain/errors.js'
+import { MalformedUpstreamError } from '../../src/domain/errors.js'
 
 const BASE = 'https://cardano-preprod.blockfrost.io/api/v0'
 const PROJECT_ID = 'preprodTestProjectId'
@@ -147,14 +147,17 @@ describe('blockfrost getUtxosByAddresses', () => {
     await expect(p.getUtxosByAddresses(['addr_a'])).rejects.toBeInstanceOf(MalformedUpstreamError)
   })
 
-  it('rejects an address holding more utxos than the scan bound', async () => {
-    // A fake that never returns a short page: every page is full, so the walk hits its bound and the
-    // boundary probe still finds more.
+  it('pages through a legitimately large address rather than failing at a wallet-sized cap', async () => {
+    // 6,000 UTxOs across 60 full pages, then a short page: an exchange- or script-sized address that
+    // the old 5,000-UTxO cap would have rejected. It must return the whole set.
+    const total = 6000
     const fetchImpl: FetchLike = async (rawUrl) => {
       const url = new URL(rawUrl)
       const count = Number(url.searchParams.get('count') ?? '100')
-      const rows = Array.from({ length: count }, (_, i) =>
-        utxo({ address: 'addr_a', tx_hash: `${i}`.padStart(64, '0') }),
+      const pageNo = Number(url.searchParams.get('page') ?? '1')
+      const offset = (pageNo - 1) * count
+      const rows = Array.from({ length: Math.max(0, Math.min(count, total - offset)) }, (_v, i) =>
+        utxo({ address: 'addr_a', tx_hash: `${offset + i}`.padStart(64, '0') }),
       )
       return { ok: true, status: 200, json: async () => rows, text: async () => '' }
     }
@@ -165,6 +168,8 @@ describe('blockfrost getUtxosByAddresses', () => {
       burstSize: 100000,
     })
 
-    await expect(p.getUtxosByAddresses(['addr_a'])).rejects.toBeInstanceOf(ProviderError)
+    const utxos = await p.getUtxosByAddresses(['addr_a'])
+
+    expect(utxos).toHaveLength(total)
   })
 })

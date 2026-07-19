@@ -19,10 +19,14 @@ const ADDRESS_LOOKUP_CONCURRENCY = 10
 // connection per address at once.
 const ADDRESS_UTXO_CONCURRENCY = 10
 
-// Blockfrost's own documented maximum per utxo page, and a defensive page bound matching the
-// account-utxo scan: 5,000 utxos on a single address is a runaway, not a wallet.
+// Blockfrost's own documented maximum per utxo page. Unlike a wallet's own stake account, an
+// address given here can be an arbitrary one — an exchange or script address with a very large
+// UTxO set — so this walk pages through everything rather than capping at a wallet-sized bound.
 const UTXO_PAGE_SIZE = 100
-const UTXO_MAX_PAGES = 50
+// A runaway guard only, set far above any real address (one million UTxOs), so a broken upstream
+// that never returns a short page cannot loop forever. It is not a functional limit: a legitimately
+// large address pages to completion well under it.
+const UTXO_MAX_PAGES = 10_000
 
 // A minimal projection of `address_content` (Blockfrost OpenAPI spec, `/addresses/{address}`).
 // We only need to know whether the address exists at all, so this is a light shape check
@@ -59,10 +63,10 @@ function mapUtxo(row: z.infer<typeof addressUtxoRow>, queriedAddress: string): U
 }
 
 /**
- * Every UTxO controlled by one address, walked page by page. A never-used address answers 404,
- * meaning it controls nothing rather than being an error. A full final page triggers the same
- * boundary probe the account-utxo scan uses, so an address ending exactly on a page boundary is
- * told apart from one genuinely past the scan bound.
+ * Every UTxO controlled by one address, walked page by page until a short page ends it. A never-used
+ * address answers 404, meaning it controls nothing rather than being an error. The whole set is
+ * returned however large it is; the page ceiling is only a runaway guard against an upstream that
+ * never shortens a page, not a limit on a real address.
  */
 async function fetchAddressUtxos(client: BlockfrostClient, address: string): Promise<Utxo[]> {
   const path = `/addresses/${encodeURIComponent(address)}/utxos`
@@ -78,13 +82,10 @@ async function fetchAddressUtxos(client: BlockfrostClient, address: string): Pro
     if (pageRows.length < UTXO_PAGE_SIZE) return rows.map((row) => mapUtxo(row, address))
   }
 
-  const probe = await client.getOrUndefined(
-    z.array(addressUtxoRow),
-    `${path}?count=${UTXO_PAGE_SIZE}&page=${UTXO_MAX_PAGES + 1}`,
-  )
-  if (probe === undefined || probe.length === 0) return rows.map((row) => mapUtxo(row, address))
+  // Only reachable if an address returns a million UTxOs without ever shortening a page, which no
+  // real address does; surfacing it loudly beats looping without end against a misbehaving upstream.
   throw new ProviderError(
-    `blockfrost address utxos exceed this provider's ${UTXO_MAX_PAGES * UTXO_PAGE_SIZE}-utxo scan bound`,
+    `blockfrost address utxos exceed this provider's ${UTXO_MAX_PAGES * UTXO_PAGE_SIZE}-utxo runaway guard`,
   )
 }
 

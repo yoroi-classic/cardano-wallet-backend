@@ -158,38 +158,38 @@ async function fetchCertificates(
   tx: z.infer<typeof txContentRow>,
 ): Promise<TxCertificate[]> {
   const path = (suffix: string): string => `/txs/${encodeURIComponent(hash)}/${suffix}`
-  const certs: TxCertificate[] = []
 
-  const push = (index: number, kind: CertificateKind): void => {
-    certs.push({ kind, index })
-  }
+  // Read the stake registrations apart from the index-only kinds: only this resource carries the
+  // registration/deregistration flag that decides its normalized kind.
+  const stakeCerts = (): Promise<TxCertificate[]> =>
+    client.get(z.array(stakeCertRow), path('stakes')).then((rows) =>
+      rows.map<TxCertificate>((row) => ({
+        kind: row.registration ? 'stake_registration' : 'stake_deregistration',
+        index: row.cert_index,
+      })),
+    )
 
-  if (tx.stake_cert_count > 0) {
-    const rows = await client.get(z.array(stakeCertRow), path('stakes'))
-    for (const row of rows) {
-      push(row.cert_index, row.registration ? 'stake_registration' : 'stake_deregistration')
-    }
-  }
-  if (tx.delegation_count > 0) {
-    const rows = await client.get(z.array(certIndexRow), path('delegations'))
-    for (const row of rows) push(row.cert_index, 'stake_delegation')
-  }
-  if (tx.mir_cert_count > 0) {
-    const rows = await client.get(z.array(certIndexRow), path('mirs'))
-    for (const row of rows) push(row.cert_index, 'move_instantaneous_rewards')
-  }
-  if (tx.pool_update_count > 0) {
-    const rows = await client.get(z.array(certIndexRow), path('pool_updates'))
-    for (const row of rows) push(row.cert_index, 'pool_registration')
-  }
-  if (tx.pool_retire_count > 0) {
-    const rows = await client.get(z.array(certIndexRow), path('pool_retires'))
-    for (const row of rows) push(row.cert_index, 'pool_retirement')
-  }
+  const indexCerts =
+    (suffix: string, kind: CertificateKind): (() => Promise<TxCertificate[]>) =>
+    () =>
+      client
+        .get(z.array(certIndexRow), path(suffix))
+        .then((rows) => rows.map<TxCertificate>((row) => ({ kind, index: row.cert_index })))
 
+  // Only the sub-resources whose count is non-zero are read, and those are read concurrently — each
+  // is an independent request, still paced by the shared limiter. A plain payment (every count zero)
+  // issues no certificate request at all.
+  const fetches: Promise<TxCertificate[]>[] = []
+  if (tx.stake_cert_count > 0) fetches.push(stakeCerts())
+  if (tx.delegation_count > 0) fetches.push(indexCerts('delegations', 'stake_delegation')())
+  if (tx.mir_cert_count > 0) fetches.push(indexCerts('mirs', 'move_instantaneous_rewards')())
+  if (tx.pool_update_count > 0) fetches.push(indexCerts('pool_updates', 'pool_registration')())
+  if (tx.pool_retire_count > 0) fetches.push(indexCerts('pool_retires', 'pool_retirement')())
+
+  const groups = await Promise.all(fetches)
   // Certificate index is unique within a transaction across every kind, so ordering by it puts the
   // certificates back in their on-chain order regardless of which sub-resource each came from.
-  return certs.sort((a, b) => a.index - b.index)
+  return groups.flat().sort((a, b) => a.index - b.index)
 }
 
 interface HydratedTx {
@@ -281,42 +281,84 @@ const addressTxRow = z.object({
 type AddressTxRow = z.infer<typeof addressTxRow>
 
 /**
- * Every thin transaction row for one address, oldest first. `afterBlock` is pushed to Blockfrost as
- * an inclusive `from` filter to trim the walk; the exclusive `> afterBlock` cut that matches Koios's
- * cursor semantics is applied by the caller once all addresses are merged. A never-seen address
- * answers 404, which means "no history", not an error.
+ * One address's incremental paging state. Rows are accumulated oldest-first; `full` records whether
+ * the last page came back at the page limit (so more may exist), and `done` latches once the address
+ * is exhausted or a 404 says it was never seen.
  */
-async function fetchAddressTxRows(
-  client: BlockfrostClient,
-  address: string,
-  afterBlock: number | undefined,
-): Promise<AddressTxRow[]> {
-  const path = `/addresses/${encodeURIComponent(address)}/transactions`
-  const from = afterBlock === undefined ? '' : `&from=${afterBlock}`
-  const rows: AddressTxRow[] = []
+interface AddressCursor {
+  address: string
+  page: number
+  rows: AddressTxRow[]
+  full: boolean
+  done: boolean
+}
 
-  for (let page = 1; page <= LIST_MAX_PAGES; page += 1) {
-    const pageRows = await client.getOrUndefined(
-      z.array(addressTxRow),
-      `${path}?count=${LIST_PAGE_SIZE}&page=${page}&order=asc${from}`,
-    )
-    if (pageRows === undefined) return []
-    rows.push(...pageRows)
-    if (pageRows.length < LIST_PAGE_SIZE) return rows
+/**
+ * Fetch one more page for an address and fold it into the cursor, applying the exclusive `> afterBlock`
+ * cut as rows arrive. `afterBlock` is pushed to Blockfrost as an inclusive `from` bound so old history
+ * is never fetched in the first place; the exact `>` cut trims the one boundary block `from` still
+ * includes. A never-seen address answers 404, which is "no history", not an error, and latches `done`.
+ */
+async function advanceCursor(
+  client: BlockfrostClient,
+  cursor: AddressCursor,
+  afterBlock: number | undefined,
+): Promise<void> {
+  if (cursor.done) return
+  cursor.page += 1
+  const from = afterBlock === undefined ? '' : `&from=${afterBlock}`
+  const pageRows = await client.getOrUndefined(
+    z.array(addressTxRow),
+    `/addresses/${encodeURIComponent(cursor.address)}/transactions?count=${LIST_PAGE_SIZE}&page=${cursor.page}&order=asc${from}`,
+  )
+  if (pageRows === undefined) {
+    cursor.done = true
+    return
   }
-  return rows
+  for (const row of pageRows) {
+    if (afterBlock === undefined || row.block_height > afterBlock) cursor.rows.push(row)
+  }
+  cursor.full = pageRows.length === LIST_PAGE_SIZE
+  if (!cursor.full) cursor.done = true
+  if (cursor.page >= LIST_MAX_PAGES) cursor.done = true
+}
+
+/**
+ * Merge every cursor's rows into the oldest-first page: dedup by tx hash (a self-transfer touching
+ * several addresses appears once), then take `HISTORY_PAGE_SIZE` and extend to the whole boundary
+ * block so the next `afterBlock` cursor cannot skip the rest of it. Returns the page rows and the
+ * boundary block, or `undefined` for the boundary when nothing matched.
+ */
+function mergePage(cursors: AddressCursor[]): { page: AddressTxRow[]; boundaryBlock?: number } {
+  const byHash = new Map<string, AddressTxRow>()
+  for (const cursor of cursors) {
+    for (const row of cursor.rows) if (!byHash.has(row.tx_hash)) byHash.set(row.tx_hash, row)
+  }
+  if (byHash.size === 0) return { page: [] }
+
+  const sorted = [...byHash.values()].sort(
+    (a, b) => a.block_height - b.block_height || a.tx_index - b.tx_index,
+  )
+  let end = Math.min(HISTORY_PAGE_SIZE, sorted.length)
+  const boundaryBlock = sorted[end - 1]?.block_height
+  while (end < sorted.length && sorted[end]?.block_height === boundaryBlock) end += 1
+  return { page: sorted.slice(0, end), boundaryBlock }
 }
 
 /**
  * Transaction history for a set of addresses, oldest first, hydrated into full WalletTransactions.
  *
  * Shared by the stake-account history (which first enumerates its addresses) and the direct
- * address-set history, so the ordering, dedup, and paging contract is defined once. Each address's
- * thin rows are fetched under a bounded fan-out, merged, cut exclusively at `afterBlock`, and
- * collapsed to one row per tx hash — a transaction touching several of the addresses (a self-transfer)
- * would otherwise occupy more than one page slot. The page is taken oldest first and extended to
- * include every transaction sharing its last block, so the next `afterBlock` cursor cannot skip the
- * rest of that block.
+ * address-set history, so the ordering, dedup, and paging contract is defined once.
+ *
+ * The cost is bounded by the page size, not by total history. Only the first page of each address is
+ * fetched up front; the merged page's boundary block is then completed by pulling further pages *only*
+ * from the addresses whose newest fetched transaction still sits inside that block (so it might hold
+ * more of it). Because `HISTORY_PAGE_SIZE` is below the request page size, every transaction in the
+ * oldest page arrives in that first page per address, so the boundary block is settled after the first
+ * round and completion touches at most the few addresses that crowd it — an active address with tens
+ * of thousands of transactions costs one request, not one per hundred. `afterBlock` is pushed to
+ * Blockfrost as a `from` bound, so history at or before the cursor is never fetched at all.
  */
 export async function addressSetTxHistory(
   client: BlockfrostClient,
@@ -327,27 +369,41 @@ export async function addressSetTxHistory(
 ): Promise<WalletTransaction[]> {
   if (addresses.length === 0) return []
 
-  const perAddress = await mapWithConcurrency(addresses, addressFanout, (address) =>
-    fetchAddressTxRows(client, address, afterBlock),
+  const cursors: AddressCursor[] = addresses.map((address) => ({
+    address,
+    page: 0,
+    rows: [],
+    full: false,
+    done: false,
+  }))
+
+  // First page of every address, under a bounded fan-out.
+  await mapWithConcurrency(cursors, addressFanout, (cursor) =>
+    advanceCursor(client, cursor, afterBlock),
   )
 
-  // Dedup by tx hash while enforcing the exclusive `> afterBlock` cut. First occurrence wins; the
-  // rows for one transaction are identical across the addresses it touched.
-  const byHash = new Map<string, AddressTxRow>()
-  for (const row of perAddress.flat()) {
-    if (afterBlock !== undefined && row.block_height <= afterBlock) continue
-    if (!byHash.has(row.tx_hash)) byHash.set(row.tx_hash, row)
+  // Complete the boundary block: keep pulling pages only from addresses that might still hold
+  // transactions inside it, recomputing the boundary each round. Terminates because every extra page
+  // an address fetches is strictly newer (ascending order), so it either crosses the boundary or the
+  // address exhausts; the per-address `LIST_MAX_PAGES` bound is the final backstop.
+  for (;;) {
+    const { boundaryBlock } = mergePage(cursors)
+    if (boundaryBlock === undefined) return []
+    const needing = cursors.filter(
+      (cursor) =>
+        !cursor.done &&
+        cursor.full &&
+        (cursor.rows.length === 0 ||
+          cursor.rows[cursor.rows.length - 1]!.block_height <= boundaryBlock),
+    )
+    if (needing.length === 0) break
+    await mapWithConcurrency(needing, addressFanout, (cursor) =>
+      advanceCursor(client, cursor, afterBlock),
+    )
   }
-  if (byHash.size === 0) return []
 
-  const sorted = [...byHash.values()].sort(
-    (a, b) => a.block_height - b.block_height || a.tx_index - b.tx_index,
-  )
-  let end = Math.min(HISTORY_PAGE_SIZE, sorted.length)
-  const boundaryBlock = sorted[end - 1]?.block_height
-  while (end < sorted.length && sorted[end]?.block_height === boundaryBlock) end += 1
-  const hashes = sorted.slice(0, end).map((row) => row.tx_hash)
-
+  const { page } = mergePage(cursors)
+  const hashes = page.map((row) => row.tx_hash)
   return hydrateTransactions(client, hashes, hydrateFanout)
 }
 

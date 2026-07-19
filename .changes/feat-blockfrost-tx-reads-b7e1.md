@@ -22,3 +22,8 @@
   wallet can use `filterUsedAddresses` with its derived addresses instead.
 - Blockfrost reward history omits treasury and reserve (MIR) rewards, which Blockfrost surfaces on a
   separate resource without an earned epoch; member, leader, and deposit-refund rewards are covered.
+- A transaction's `certificates` list is partial under Blockfrost: stake (de)registration, stake
+  delegation, MIR, and pool registration/retirement certificates are reported, but Conway governance
+  certificates (vote delegation, DRep registration/update/deregistration, committee auth/resign) are
+  not, because `tx_content` carries no count for them and this API version has no per-transaction
+  resource that lists them. The Koios provider reports these; parity here is a follow-up.

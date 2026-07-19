@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createBlockfrostProvider, type FetchLike } from '../../src/providers/blockfrost/index.js'
-import { MalformedUpstreamError } from '../../src/domain/errors.js'
+import { MalformedUpstreamError, ProviderError } from '../../src/domain/errors.js'
 
 const BASE = 'https://cardano-preprod.blockfrost.io/api/v0'
 const PROJECT_ID = 'preprodTestProjectId'
@@ -126,6 +126,20 @@ describe('blockfrost getUtxosByRef', () => {
 
     await expect(p.getUtxosByRef([])).resolves.toEqual([])
     expect(called).toBe(false)
+  })
+
+  it('surfaces a non-404 upstream failure rather than swallowing it', async () => {
+    const fetchImpl: FetchLike = async () => ({
+      ok: false,
+      status: 500,
+      json: async () => ({}),
+      text: async () => '',
+    })
+    const p = createBlockfrostProvider({ baseUrl: BASE, projectId: PROJECT_ID, fetchImpl })
+
+    await expect(p.getUtxosByRef([`${HASH_A}#0`, `${HASH_B}#0`])).rejects.toBeInstanceOf(
+      ProviderError,
+    )
   })
 
   it('throws MalformedUpstreamError when a resolved output has no lovelace unit', async () => {

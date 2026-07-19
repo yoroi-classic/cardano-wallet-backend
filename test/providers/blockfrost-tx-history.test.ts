@@ -63,8 +63,13 @@ const defaultOutput = {
  * addresses and per-address transaction lists the way the real API does, so an off-by-one in either
  * walk shows up here. It records every path so dedup and gating can be asserted.
  */
-function buildFake(config: FakeConfig): { fetchImpl: FetchLike; callsTo: (re: RegExp) => number } {
+function buildFake(config: FakeConfig): {
+  fetchImpl: FetchLike
+  callsTo: (re: RegExp) => number
+  urls: () => string[]
+} {
   const calls: string[] = []
+  const urls: string[] = []
 
   function page<T>(rows: T[], url: URL): T[] {
     const count = Number(url.searchParams.get('count') ?? '100')
@@ -100,6 +105,7 @@ function buildFake(config: FakeConfig): { fetchImpl: FetchLike; callsTo: (re: Re
     const url = new URL(rawUrl)
     const path = url.pathname
     calls.push(path)
+    urls.push(rawUrl)
     const ok = (body: unknown) => ({
       ok: true,
       status: 200,
@@ -127,7 +133,11 @@ function buildFake(config: FakeConfig): { fetchImpl: FetchLike; callsTo: (re: Re
     if ((m = path.match(/\/addresses\/([^/]+)\/transactions$/))) {
       const rows = config.addressTxs?.[m[1]!]
       if (rows === undefined) return notFound()
-      return ok(page(rows, url))
+      // Honour the `from` block bound the driver pushes down, so a test can prove old history is
+      // never fetched: `from` is inclusive on block height.
+      const from = url.searchParams.get('from')
+      const filtered = from === null ? rows : rows.filter((r) => r.block_height >= Number(from))
+      return ok(page(filtered, url))
     }
     if ((m = path.match(/\/txs\/([^/]+)\/utxos$/))) {
       const def = config.txs?.[m[1]!]
@@ -181,11 +191,15 @@ function buildFake(config: FakeConfig): { fetchImpl: FetchLike; callsTo: (re: Re
     throw new Error(`fake has no route for ${path}`)
   }
 
-  return { fetchImpl, callsTo: (re) => calls.filter((c) => re.test(c)).length }
+  return {
+    fetchImpl,
+    callsTo: (re: RegExp) => calls.filter((c) => re.test(c)).length,
+    urls: () => [...urls],
+  }
 }
 
 function provider(config: FakeConfig, opts: Record<string, unknown> = {}) {
-  const { fetchImpl, callsTo } = buildFake(config)
+  const { fetchImpl, callsTo, urls } = buildFake(config)
   return {
     provider: createBlockfrostProvider({
       baseUrl: BASE,
@@ -194,6 +208,7 @@ function provider(config: FakeConfig, opts: Record<string, unknown> = {}) {
       ...opts,
     }),
     callsTo,
+    urls,
   }
 }
 
@@ -388,6 +403,40 @@ describe('blockfrost getTxHistory — hydration parity', () => {
     expect(callsTo(/\/pool_retires$/)).toBe(0)
     expect(callsTo(/\/delegations$/)).toBe(1)
   })
+
+  it('keeps the request count bounded by address count, not by total history depth', async () => {
+    // Twenty addresses, each with hundreds of transactions. The transaction-list cost must scale
+    // with the number of addresses (one page each), not with how deep each address's history runs.
+    const addressCount = 20
+    const perAddress = 300
+    const addresses = Array.from({ length: addressCount }, (_, i) => `addr_${i}`)
+    const addressTxs: Record<string, AddrTxRow[]> = {}
+    const txs: Record<string, TxDef> = {}
+    for (let a = 0; a < addressCount; a += 1) {
+      const rows: AddrTxRow[] = []
+      // Non-overlapping block ranges per address, so the oldest page comes cleanly from one address
+      // and the boundary block holds a single transaction.
+      for (let i = 0; i < perAddress; i += 1) {
+        const block = a * 10000 + i + 1
+        const hash = `t_${a}_${i}`
+        rows.push({ tx_hash: hash, tx_index: 0, block_height: block, block_time: i })
+        txs[hash] = { blockHash: 'hz', blockHeight: block, index: 0 }
+      }
+      addressTxs[`addr_${a}`] = rows
+    }
+    const { provider: p, callsTo } = provider({
+      accountAddresses: { [STAKE]: addresses },
+      addressTxs,
+      blocks: { hz: 3 },
+      txs,
+    })
+
+    const history = await p.getTxHistory(STAKE)
+
+    expect(history).toHaveLength(HISTORY_PAGE_SIZE)
+    // Exactly one transaction-list page per address: 20, not 20 x (300/100) = 60.
+    expect(callsTo(/\/transactions/)).toBe(addressCount)
+  })
 })
 
 describe('blockfrost getTxHistoryByAddresses', () => {
@@ -407,8 +456,11 @@ describe('blockfrost getTxHistoryByAddresses', () => {
     expect(callsTo(/\/txs\/aa$/)).toBe(1)
   })
 
-  it('reads across more than one page of an address transaction list', async () => {
-    const rows = Array.from({ length: 150 }, (_, i) => ({
+  it('stops after the first page when it already holds the oldest page (bounded request count)', async () => {
+    // An address with thousands of transactions. Because the page cut (HISTORY_PAGE_SIZE) is below
+    // the request page size, the oldest page is fully contained in the first request, so the driver
+    // must not walk the rest of the history: it reads exactly one transactions page.
+    const rows = Array.from({ length: 5000 }, (_, i) => ({
       tx_hash: `${i}`.padStart(64, '0'),
       tx_index: 0,
       block_height: i + 1,
@@ -416,14 +468,65 @@ describe('blockfrost getTxHistoryByAddresses', () => {
     }))
     const txs: Record<string, TxDef> = {}
     for (const r of rows) txs[r.tx_hash] = { blockHash: 'hx', blockHeight: r.block_height }
-    const { provider: p } = provider({ addressTxs: { addr_a: rows }, blocks: { hx: 2 }, txs })
+    const { provider: p, callsTo } = provider({
+      addressTxs: { addr_a: rows },
+      blocks: { hx: 2 },
+      txs,
+    })
 
     const history = await p.getTxHistoryByAddresses(['addr_a'])
 
-    // 150 rows span two pages; the page cut is HISTORY_PAGE_SIZE, oldest-first, so the first 50.
     expect(history).toHaveLength(HISTORY_PAGE_SIZE)
     expect(history[0]?.block).toBe(1)
     expect(history[HISTORY_PAGE_SIZE - 1]?.block).toBe(HISTORY_PAGE_SIZE)
+    // The whole 5000-transaction history is never materialized: one list page, and only the page's
+    // own transactions are detailed.
+    expect(callsTo(/\/transactions/)).toBe(1)
+    expect(callsTo(/\/txs\/[^/]+$/)).toBe(HISTORY_PAGE_SIZE)
+  })
+
+  it('pushes afterBlock down as a from bound so old history is never fetched', async () => {
+    const rows = Array.from({ length: 200 }, (_, i) => ({
+      tx_hash: `${i}`.padStart(64, '0'),
+      tx_index: 0,
+      block_height: i + 1,
+      block_time: i,
+    }))
+    const txs: Record<string, TxDef> = {}
+    for (const r of rows) txs[r.tx_hash] = { blockHash: 'hx', blockHeight: r.block_height }
+    const { provider: p, urls } = provider({ addressTxs: { addr_a: rows }, blocks: { hx: 2 }, txs })
+
+    const history = await p.getTxHistoryByAddresses(['addr_a'], 150)
+
+    // Every transactions request carries from=150, and the oldest returned transaction is past it.
+    const txListUrls = urls().filter((u) => u.includes('/transactions'))
+    expect(txListUrls.length).toBeGreaterThan(0)
+    for (const u of txListUrls) expect(u).toContain('from=150')
+    expect(history[0]?.block).toBe(151)
+  })
+
+  it('completes the boundary block from an address whose first page ends inside it', async () => {
+    // One address holds 120 transactions all in a single block, so its first page of 100 does not
+    // contain the whole block. The boundary is that block, so the driver must fetch its second page
+    // to pull in the remaining transactions rather than truncating the block.
+    const rows = Array.from({ length: 120 }, (_, i) => ({
+      tx_hash: `c${i}`,
+      tx_index: i,
+      block_height: 42,
+      block_time: 1,
+    }))
+    const txs: Record<string, TxDef> = {}
+    for (const r of rows) txs[r.tx_hash] = { blockHash: 'hb', blockHeight: 42, index: r.tx_index }
+    const { provider: p, callsTo } = provider({
+      addressTxs: { addr_a: rows },
+      blocks: { hb: 6 },
+      txs,
+    })
+
+    const history = await p.getTxHistoryByAddresses(['addr_a'])
+
+    expect(history).toHaveLength(120)
+    expect(callsTo(/\/transactions/)).toBe(2)
   })
 
   it('extends the page past HISTORY_PAGE_SIZE to include the whole boundary block', async () => {

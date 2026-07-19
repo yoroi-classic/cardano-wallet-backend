@@ -1,14 +1,14 @@
 /**
  * Price and market data.
  *
- * The shapes are defined and the routes are reserved, but nothing serves them yet: every endpoint
- * answers `501 NOT_IMPLEMENTED`. See src/http/routes/price.ts for why that is deliberate rather
- * than lazy.
+ * These are the normalized shapes served under `/v1/price/*`, sourced from CoinGecko (ADA fiat
+ * price and history) and GeckoTerminal (native-token price and history, in ADA). See
+ * src/prices/index.ts for the provider and src/http/routes/price.ts for why a route with no
+ * provider wired answers `501 NOT_IMPLEMENTED` rather than a fake number.
  *
  * Price is the one domain in this service with no on-chain source. Neither Koios nor Blockfrost
  * nor a node we run ourselves knows what ADA is worth in dollars, because that fact does not
- * exist on the chain. It has to come from a market data provider, and choosing one is a decision
- * about cost, licensing and trust that has not been made.
+ * exist on the chain. It has to come from a market data provider.
  */
 
 /** A fiat or crypto currency code, e.g. `USD`, `JPY`, `BTC`. */
@@ -37,6 +37,16 @@ export interface Ohlc {
 /** The windows a client may ask for activity over. */
 export const PRICE_WINDOWS = ['24h', '7d', '30d'] as const
 export type PriceWindow = (typeof PRICE_WINDOWS)[number]
+
+/**
+ * The ranges a client may ask a price chart to cover.
+ *
+ * Shared between the ADA history route and the token history route (and their provider
+ * implementations), so there is exactly one list of valid ranges rather than two copies that can
+ * drift apart.
+ */
+export const PRICE_RANGES = ['1d', '1w', '1m', '6m', '1y', 'all'] as const
+export type PriceRange = (typeof PRICE_RANGES)[number]
 
 /** Recent market activity for one native token, priced in ADA. */
 export interface TokenActivity {

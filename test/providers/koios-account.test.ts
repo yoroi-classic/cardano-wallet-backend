@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { createKoiosProvider, type FetchLike } from '../../src/providers/koios/index.js'
 import { KOIOS_BODY_LIMIT_BYTES } from '../../src/providers/koios/schema.js'
 import { BadRequestError, MalformedUpstreamError, ProviderError } from '../../src/domain/errors.js'
@@ -708,6 +708,87 @@ describe('koios filterUsedAddresses', () => {
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
     await expect(provider.filterUsedAddresses(['a'])).rejects.toBeInstanceOf(ProviderError)
+  })
+})
+
+describe('koios filterUsedPaymentCredentials', () => {
+  it('splits non-empty groups to identify the exact used credential subset', async () => {
+    const a = '01'.repeat(28)
+    const b = '02'.repeat(28)
+    const c = '03'.repeat(28)
+    const calls: Call[] = []
+    const used = new Set([b, c])
+    const fetchImpl: FetchLike = async (url, init) => {
+      calls.push({ url, method: init?.method, body: init?.body })
+      const body = JSON.parse(String(init?.body)) as { _payment_credentials: string[] }
+      const hasUsed = body._payment_credentials.some((credential) => used.has(credential))
+      return {
+        ok: true,
+        status: 200,
+        json: async () =>
+          hasUsed ? [{ tx_hash: 'aa', block_height: 1, block_time: 2, epoch_no: 3 }] : [],
+        text: async () => '',
+      }
+    }
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.filterUsedPaymentCredentials([a, b, c])).resolves.toEqual([b, c])
+    expect(calls.every((call) => call.url === `${BASE}/credential_txs?limit=1`)).toBe(true)
+    expect(calls.map((call) => JSON.parse(String(call.body))._payment_credentials)).toEqual([
+      [a, b, c],
+      [a, b],
+      [a],
+      [b],
+      [c],
+    ])
+  })
+
+  it('returns empty without calling upstream for an empty credential list', async () => {
+    const { fetchImpl, calls } = fakeFetch({ json: async () => [] })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.filterUsedPaymentCredentials([])).resolves.toEqual([])
+    expect(calls).toHaveLength(0)
+  })
+
+  it('bounds the initial Koios OR-query before recursively probing matches', async () => {
+    const credentials = Array.from({ length: 11 }, (_, i) =>
+      i.toString(16).padStart(2, '0').repeat(28),
+    )
+    const { fetchImpl, calls } = fakeFetch({ json: async () => [] })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.filterUsedPaymentCredentials(credentials)).resolves.toEqual([])
+    expect(calls.map((call) => JSON.parse(String(call.body))._payment_credentials.length)).toEqual([
+      5, 5, 1,
+    ])
+  })
+
+  it('bounds concurrent initial credential probes', async () => {
+    const credentials = Array.from({ length: 50 }, (_, i) =>
+      i.toString(16).padStart(2, '0').repeat(28),
+    )
+    let active = 0
+    let peak = 0
+    let release: (() => void) | undefined
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const fetchImpl: FetchLike = async () => {
+      active += 1
+      peak = Math.max(peak, active)
+      await gate
+      active -= 1
+      return { ok: true, status: 200, json: async () => [], text: async () => '' }
+    }
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const request = provider.filterUsedPaymentCredentials(credentials)
+    await vi.waitFor(() => expect(active).toBe(4))
+    release?.()
+
+    await expect(request).resolves.toEqual([])
+    expect(peak).toBe(4)
   })
 })
 

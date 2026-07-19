@@ -38,6 +38,7 @@ function validate(schemaName: string, value: unknown): string[] {
 const STAKE = bech32.encode('stake_test', bech32.toWords(new Uint8Array(29)), 1023)
 const ADDR = (fill: number): string =>
   bech32.encode('addr_test', bech32.toWords(new Uint8Array(57).fill(fill)), 1023)
+const ADDR_VKH = bech32.encode('addr_vkh', bech32.toWords(new Uint8Array(28).fill(3)), 1023)
 const TX_HASH = 'ab'.repeat(32)
 const POLICY = 'a'.repeat(56)
 const POOL = 'pool1wn6a6f23ctq06udwhw27ravdpd6zcr7jlut3yez0wzdackz3222'
@@ -332,13 +333,59 @@ describe('real responses validate against the schemas the spec publishes', () =>
 
   it('POST /v1/addresses/filter-used', async () => {
     const res = await post(
-      { filterUsedAddresses: async (a: string[]) => a.slice(0, 1) },
+      {
+        filterUsedAddresses: async (a: string[]) => a.slice(0, 1),
+        filterUsedPaymentCredentials: async (credentials: string[]) => credentials,
+      },
       '/v1/addresses/filter-used',
-      { addresses: [ADDR(1), ADDR(2)] },
+      { addresses: [ADDR(1), ADDR(2), ADDR_VKH] },
     )
 
     expect(res.statusCode).toBe(200)
-    expect(res.body).toEqual([ADDR(1)])
+    expect(res.body).toEqual([ADDR(1), ADDR_VKH])
+  })
+
+  // A real Byron address (see test/domain/byron-address.test.ts for provenance), so this also
+  // stands as evidence the route accepts the format the OpenAPI description now claims it does.
+  const BYRON_ADDR = 'Ae2tdPwUPEZFRbyhz3cpfC2CumGzNkFBN2L42rcUc2yjQpEkxDbkPodpMAi'
+
+  it('POST /v1/addresses/utxos', async () => {
+    const utxo = {
+      txHash: TX_HASH,
+      outputIndex: 0,
+      address: BYRON_ADDR,
+      value: '2000000',
+      assets: [{ policyId: POLICY, assetName: '414243', quantity: '5' }],
+    }
+    const res = await post({ getUtxosByAddresses: async () => [utxo] }, '/v1/addresses/utxos', {
+      addresses: [BYRON_ADDR],
+    })
+
+    expect(res.statusCode).toBe(200)
+    eachMatches('Utxo', res.body)
+  })
+
+  it('POST /v1/addresses/txs', async () => {
+    const tx = {
+      txHash: TX_HASH,
+      block: 1_000,
+      blockHash: 'bb'.repeat(32),
+      slot: 5_000,
+      epoch: 10,
+      blockTime: 1_700_000_000,
+      fee: '170000',
+      inputs: [{ address: BYRON_ADDR, value: '1000000', assets: [] }],
+      outputs: [],
+      withdrawals: [],
+      certificates: [{ kind: 'other' as const, index: 0 }],
+    }
+    const res = await post({ getTxHistoryByAddresses: async () => [tx] }, '/v1/addresses/txs', {
+      addresses: [BYRON_ADDR],
+      after: 999,
+    })
+
+    expect(res.statusCode).toBe(200)
+    eachMatches('WalletTransaction', res.body)
   })
 
   it('POST /v1/tx/submit', async () => {

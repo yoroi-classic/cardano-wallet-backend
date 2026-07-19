@@ -118,7 +118,7 @@ interface ResponseWithMetadata {
  * `/epoch_params`) keep the 10s default, because for them a 15s wait is already a broken upstream.
  */
 const HEAVY_TIMEOUT_MS = 15_000
-const HEAVY_PATHS = [
+export const HEAVY_PATHS = [
   '/pool_info',
   '/pool_list',
   '/tx_info',
@@ -127,9 +127,14 @@ const HEAVY_PATHS = [
   '/drep_metadata',
   '/account_utxos',
   '/account_txs',
+  // Address-keyed row assembly, the same weight as their account-keyed siblings above: a wallet
+  // with no stake credential reads its UTxOs and history here, and both walk every matching page.
+  '/address_utxos',
+  '/address_txs',
+  '/credential_txs',
 ]
 
-const timeoutFor = (path: string, base: number, heavy: number): number =>
+export const timeoutFor = (path: string, base: number, heavy: number): number =>
   HEAVY_PATHS.some((heavyPath) => path.startsWith(heavyPath)) ? heavy : base
 
 /**
@@ -206,6 +211,23 @@ export interface KoiosClient {
     path: string,
     items: Item[],
     toBody: (chunk: Item[]) => unknown,
+  ): Promise<Row[]>
+
+  /**
+   * The body-budget packing under batchAll, exposed so a read that does more than one request per
+   * chunk can inherit it. Pack `items` into as few request bodies as the byte budget allows, run
+   * `send` on each body concurrently, and concatenate the rows. If upstream rejects a body with a
+   * 413 that names a smaller limit, that limit is adopted for the life of this client, the items
+   * are repacked, and the whole run is attempted once more.
+   *
+   * `send` turns a built request body into rows, so a caller can wrap paging or extra behaviour
+   * around each chunk and still get the packing and the 413 adaptation for free. This is how the
+   * address-set reads page each chunk without duplicating the limit-learning batchAll owns.
+   */
+  packAdaptively<Row, Item>(
+    items: Item[],
+    toBody: (chunk: Item[]) => unknown,
+    send: (body: unknown) => Promise<Row[]>,
   ): Promise<Row[]>
 
   /** The current request-body budget in bytes. Lowered if upstream ever says it is smaller. */
@@ -390,6 +412,37 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
     return { start, end, total }
   }
 
+  /**
+   * Pack `items` into body-budget chunks, run `send` on each chunk's body concurrently, and
+   * concatenate the rows. If a run fails with a 413 naming a smaller limit than we packed to, adopt
+   * it, repack, and run once more. Only once: a second 413 after taking upstream's own number is a
+   * problem another attempt will not fix.
+   *
+   * The 413 adaptation lives here so every body-budget read inherits it. batchAll sends one plain
+   * batch per chunk; the address-set reads page each chunk. Both pack the same way and learn a
+   * tighter cap the same way, because both hand their per-chunk work to `send`.
+   */
+  async function packAdaptively<Row, Item>(
+    items: Item[],
+    toBody: (chunk: Item[]) => unknown,
+    send: (body: unknown) => Promise<Row[]>,
+  ): Promise<Row[]> {
+    const run = async (): Promise<Row[]> => {
+      const chunks = packBySize(items, toBody, bodyLimit)
+      const perChunk = await Promise.all(chunks.map((chunk) => send(toBody(chunk))))
+      return perChunk.flat()
+    }
+
+    try {
+      return await run()
+    } catch (err) {
+      const said = limitFrom413(err)
+      if (said === undefined || said >= bodyLimit) throw err
+      bodyLimit = said
+      return run()
+    }
+  }
+
   return {
     get<T>(schema: z.ZodType<T>, path: string): Promise<T> {
       return read(path, async () => parse(schema, await request(path), path))
@@ -499,6 +552,8 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
       })
     },
 
+    packAdaptively,
+
     async batchAll<Row, Item>(
       rowSchema: z.ZodType<Row>,
       path: string,
@@ -506,28 +561,9 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
       toBody: (chunk: Item[]) => unknown,
     ): Promise<Row[]> {
       if (items.length === 0) return []
-
-      const send = async (): Promise<Row[]> => {
-        const chunks = packBySize(items, toBody, bodyLimit)
-        const perChunk = await Promise.all(
-          chunks.map((chunk) => batch(z.array(rowSchema), path, toBody(chunk))),
-        )
-        return perChunk.flat()
-      }
-
-      try {
-        return await send()
-      } catch (err) {
-        // A 413 is not retried as a transient failure, and rightly so: the same body will be
-        // rejected by every instance. But if upstream named a *smaller* limit than we packed to,
-        // that is not a failure to retry, it is a fact to learn. Lower the budget, repack, and go
-        // once more. Only once: a second 413 after adopting upstream's own number means something
-        // is wrong that another attempt will not fix.
-        const said = limitFrom413(err)
-        if (said === undefined || said >= bodyLimit) throw err
-        bodyLimit = said
-        return send()
-      }
+      // One plain batch per chunk. The packing and the 413 limit-learning live in packAdaptively,
+      // shared with the address-set reads so a smaller upstream body cap is learned in one place.
+      return packAdaptively(items, toBody, (body) => batch(z.array(rowSchema), path, body))
     },
 
     get bodyLimit(): number {

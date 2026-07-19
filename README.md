@@ -227,6 +227,7 @@ npm run test:coverage  # unit and API contract tests with coverage thresholds
 npm run test:integration  # live preprod integration smoke test
 npm run audit:prod     # production dependency audit
 npm run docker:build   # Docker image build check
+npm run docker:smoke   # start the built image and verify its /health contract
 npm run check:ci       # local mirror of the baseline CI gate
 ```
 

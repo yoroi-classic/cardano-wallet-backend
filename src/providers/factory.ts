@@ -1,6 +1,7 @@
 import { createMemoryCache, noCache, type Cache } from '../cache/index.js'
 import type { AppConfig } from '../config/index.js'
 import { ConfigError } from '../domain/errors.js'
+import { createBlockfrostProvider } from './blockfrost/index.js'
 import { withCache } from './cached.js'
 import { createKoiosProvider, type RetryEvent } from './koios/index.js'
 import type { ChainProvider } from './provider.js'
@@ -26,7 +27,22 @@ function createDriver(config: AppConfig, deps: ProviderDeps, cache: Cache): Chai
         onRetry: deps.onRetry,
         cache,
       })
-    case 'blockfrost':
+    case 'blockfrost': {
+      // loadConfig refuses to produce a config with PROVIDER=blockfrost and no project id, so
+      // reaching here with one absent means a caller built an AppConfig by hand (a test, most
+      // likely) rather than through the loader. Trim and re-check the same way loadConfig does: a
+      // blank or whitespace-only project id is no credential at all, and letting it through would
+      // hand the client an empty `project_id` header rather than failing loudly here.
+      const projectId = config.blockfrost.projectId?.trim()
+      if (projectId === undefined || projectId.length === 0) {
+        throw new ConfigError('BLOCKFROST_PROJECT_ID is required to build a blockfrost provider')
+      }
+      return createBlockfrostProvider({
+        baseUrl: config.blockfrost.url,
+        projectId,
+        onRetry: deps.onRetry,
+      })
+    }
     case 'dingo':
       throw new ConfigError(`provider "${config.provider}" is not wired up yet`)
     default: {
@@ -38,9 +54,9 @@ function createDriver(config: AppConfig, deps: ProviderDeps, cache: Cache): Chai
 }
 
 /**
- * Build the active chain provider from config, wrapped in the response cache. Only Koios is
- * wired today; the Blockfrost and Dingo drivers slot in here as they land, behind the same
- * interface, and they inherit the caching because it wraps the interface rather than the driver.
+ * Build the active chain provider from config, wrapped in the response cache. Koios and
+ * Blockfrost are wired today; the Dingo driver slots in here as it lands, behind the same
+ * interface, and it inherits the caching because it wraps the interface rather than the driver.
  *
  * The cache is created here so there is exactly **one** of it, and so a unit test that builds a
  * driver directly gets no caching and its upstream call counts mean what they look like.

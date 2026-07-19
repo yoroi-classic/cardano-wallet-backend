@@ -215,7 +215,11 @@ export const openapi = {
         summary: 'Every UTxO the account controls, in one call',
         description:
           'The whole wallet, not one address. Includes native assets and inline datums, which ' +
-          'the Midnight escrow path depends on.\n\nNever cached.',
+          'the Midnight escrow path depends on.\n\n' +
+          'Provider-specific limit: when served by the Blockfrost provider, an account holding ' +
+          'more than 5,000 UTxOs (far outside any real wallet) answers `502 UPSTREAM_ERROR` ' +
+          'rather than a silently truncated set; exactly 5,000 is returned in full. Other ' +
+          'providers, including Koios, do not impose this bound.\n\nNever cached.',
         parameters: [{ $ref: '#/components/parameters/StakeAddress' }],
         responses: {
           '200': jsonResponse('UTxOs', {

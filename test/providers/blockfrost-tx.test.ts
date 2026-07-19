@@ -1,11 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createBlockfrostProvider, type FetchLike } from '../../src/providers/blockfrost/index.js'
-import {
-  BadRequestError,
-  MalformedUpstreamError,
-  NotImplementedError,
-  ProviderError,
-} from '../../src/domain/errors.js'
+import { BadRequestError, MalformedUpstreamError, ProviderError } from '../../src/domain/errors.js'
 
 const BASE = 'https://cardano-preprod.blockfrost.io/api/v0'
 const PROJECT_ID = 'preprodTestProjectId'
@@ -106,13 +101,5 @@ describe('blockfrost tx — unhappy path', () => {
     const { provider } = testProvider({ [`/txs/${TX_HASH}`]: [{ status: 500 }] })
 
     await expect(provider.getTxStatus(TX_HASH)).rejects.toBeInstanceOf(ProviderError)
-  })
-
-  it('getUtxosByRef is not implemented yet', async () => {
-    const { provider } = testProvider({})
-
-    await expect(provider.getUtxosByRef([`${TX_HASH}#0`])).rejects.toBeInstanceOf(
-      NotImplementedError,
-    )
   })
 })

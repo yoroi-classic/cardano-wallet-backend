@@ -55,7 +55,7 @@ The summary:
 | ------ | ----------------------------- | ---------------------------------------------------------------------------- |
 | GET    | `/health`                     | liveness, no upstream call                                                   |
 | GET    | `/v1/openapi.json`            | OpenAPI 3.1 contract for this running build                                  |
-| GET    | `/v1/status`                  | `{ version, network, provider, chain, behindSeconds, tip }`                  |
+| GET    | `/v1/status`                  | `{ version, network, provider, serverTime, chain, behindSeconds, tip }`      |
 | GET    | `/v1/config`                  | client remote config (feature flags, dApp list), served from our own fork    |
 | GET    | `/v1/chain/tip`               | `{ block, slot, epoch, hash, blockTime }`                                    |
 | GET    | `/v1/chain/protocol-params`   | normalized protocol parameters incl. cost models                             |
@@ -112,6 +112,19 @@ balancer asking "is this process alive" must not be told no merely because Koios
 it does reach upstream and reports `chain: "ok" | "stale" | "down"`. It answers `200` even when
 the chain source is unreachable, so a client can tell "the backend is down" (a network error)
 apart from "the backend is up, its data source is not" (a maintenance notice).
+Every state includes `serverTime`, an exact Unix timestamp in milliseconds captured when the
+response is constructed, so browser clients do not need access to the HTTP `Date` header.
+
+```json
+{
+  "version": "0.7.1",
+  "network": "preprod",
+  "provider": "koios",
+  "serverTime": 1784674800123,
+  "chain": "down",
+  "tip": null
+}
+```
 
 ## Running it
 

@@ -581,11 +581,13 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
       options?: PagedBatchOptions<Row>,
     ): Promise<Row[]> {
       const rowKey = options?.rowKey
-      if (options?.verifyConsistency === true && rowKey === undefined) {
+      if (options?.verifyConsistency === true && typeof rowKey !== 'function') {
         // The discriminated type prevents this in TypeScript. Keep a runtime guard for plain
         // JavaScript and untyped callers: an explicitly requested safety check must never degrade
         // silently, and this is a caller contract error rather than a transient upstream failure.
-        throw new TypeError(`koios consistency verification requires a row key for ${path}`)
+        throw new TypeError(
+          `koios consistency verification requires a row-key function for ${path}`,
+        )
       }
 
       return read(path, async () => {

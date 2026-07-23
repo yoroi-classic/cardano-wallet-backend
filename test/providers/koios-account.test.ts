@@ -188,7 +188,10 @@ describe('koios getAccountUtxos', () => {
     expect(calls).toHaveLength(1)
   })
 
-  it('fails before reading when consistency verification has no row key', async () => {
+  it.each([
+    ['missing', { verifyConsistency: true }],
+    ['not a function', { verifyConsistency: true, rowKey: 'not-a-function' }],
+  ])('fails before reading when the consistency row key is %s', async (_description, options) => {
     const { fetchImpl, calls } = fakeFetch({ json: async () => [ROW] })
     const client = createKoiosClient({ baseUrl: BASE, fetchImpl })
 
@@ -196,10 +199,12 @@ describe('koios getAccountUtxos', () => {
       z.object({ tx_hash: z.string(), tx_index: z.number() }),
       '/account_utxos',
       { _stake_addresses: [STAKE] },
-      { verifyConsistency: true } as never,
+      options as never,
     )
 
-    await expect(result).rejects.toThrow('koios consistency verification requires a row key')
+    await expect(result).rejects.toThrow(
+      'koios consistency verification requires a row-key function',
+    )
     expect(calls).toHaveLength(0)
   })
 

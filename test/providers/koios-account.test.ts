@@ -130,7 +130,33 @@ describe('koios getAccountUtxos', () => {
     reference_script: null,
   }
 
-  it('maps a utxo with assets and inline datum (regression)', async () => {
+  function pagedWalkFetch(walks: Array<readonly [typeof ROW, typeof ROW]>): {
+    fetchImpl: FetchLike
+    calls: Call[]
+  } {
+    const calls: Call[] = []
+    const fetchImpl: FetchLike = async (url, init) => {
+      const offset = new URL(url).searchParams.get('offset')
+      const walk = walks[Math.floor(calls.length / 2)]
+      calls.push({ url, method: init?.method, body: init?.body, headers: init?.headers })
+      if (walk === undefined || (offset !== '0' && offset !== '1')) {
+        throw new Error(`unexpected paged request: ${url}`)
+      }
+      const first = offset === '0'
+      return {
+        ok: true,
+        status: first ? 206 : 200,
+        headers: {
+          get: (name) => (name === 'content-range' ? (first ? '0-0/2' : '1-1/2') : null),
+        },
+        json: async () => (first ? [walk[0]] : [walk[1]]),
+        text: async () => '',
+      }
+    }
+    return { fetchImpl, calls }
+  }
+
+  it('maps a utxo and does not repeat a single-page read (regression)', async () => {
     const { fetchImpl, calls } = fakeFetch({ json: async () => [ROW] })
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
@@ -157,6 +183,7 @@ describe('koios getAccountUtxos', () => {
       prefer: 'count=exact',
     })
     expect(calls[0]?.headers).not.toHaveProperty('range')
+    expect(calls).toHaveLength(1)
   })
 
   it('maps a datum hash and reference script when present', async () => {
@@ -236,11 +263,90 @@ describe('koios getAccountUtxos', () => {
     const utxos = await provider.getAccountUtxos(STAKE)
 
     expect(utxos).toHaveLength(1_501)
-    expect(calls.map((call) => new URL(call.url).searchParams.get('offset'))).toEqual(['0', '1000'])
+    expect(calls.map((call) => new URL(call.url).searchParams.get('offset'))).toEqual([
+      '0',
+      '1000',
+      '0',
+      '1000',
+    ])
     expect(utxos[1_500]).toMatchObject({
       value: '900719925474099312345',
       assets: [{ quantity: '900719925474099398765' }],
     })
+  })
+
+  it('detects a same-total spend and creation that shifts a row between pages', async () => {
+    const beforeSpend = { ...ROW, tx_hash: '11' }
+    const shifted = { ...ROW, tx_hash: '22' }
+    const created = { ...ROW, tx_hash: '33' }
+    const { fetchImpl } = pagedWalkFetch([
+      [beforeSpend, created],
+      [shifted, created],
+    ])
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    const result = provider.getAccountUtxos(STAKE)
+
+    await expect(result).rejects.toThrow(
+      'koios changed the paged result between consistency passes',
+    )
+  })
+
+  it('retries both consistency passes after a same-total shift and accepts stable membership', async () => {
+    const beforeSpend = { ...ROW, tx_hash: '11' }
+    const shifted = { ...ROW, tx_hash: '22' }
+    const created = { ...ROW, tx_hash: '33' }
+    const { fetchImpl, calls } = pagedWalkFetch([
+      [beforeSpend, created],
+      [shifted, created],
+      [shifted, created],
+      [shifted, created],
+    ])
+    const provider = createKoiosProvider({
+      baseUrl: BASE,
+      fetchImpl,
+      readAttempts: 2,
+      retryBackoffMs: 0,
+    })
+
+    const utxos = await provider.getAccountUtxos(STAKE)
+
+    expect(utxos.map((utxo) => utxo.txHash)).toEqual(['22', '33'])
+    expect(calls.map((call) => new URL(call.url).searchParams.get('offset'))).toEqual([
+      '0',
+      '1',
+      '0',
+      '1',
+      '0',
+      '1',
+      '0',
+      '1',
+    ])
+  })
+
+  it('fails closed with a sanitized error after consistency retries are exhausted', async () => {
+    const beforeSpend = { ...ROW, tx_hash: 'private-before-spend' }
+    const shifted = { ...ROW, tx_hash: 'private-shifted' }
+    const created = { ...ROW, tx_hash: 'private-created' }
+    const { fetchImpl } = pagedWalkFetch([
+      [beforeSpend, created],
+      [shifted, created],
+      [beforeSpend, created],
+      [shifted, created],
+    ])
+    const provider = createKoiosProvider({
+      baseUrl: BASE,
+      fetchImpl,
+      readAttempts: 2,
+      retryBackoffMs: 0,
+    })
+
+    const result = provider.getAccountUtxos(STAKE)
+
+    await expect(result).rejects.toMatchObject({
+      message: expect.not.stringContaining('private-'),
+    })
+    await expect(result).rejects.toBeInstanceOf(MalformedUpstreamError)
   })
 
   it('fails closed when a 206 response omits Content-Range', async () => {

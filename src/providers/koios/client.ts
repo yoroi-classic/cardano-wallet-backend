@@ -100,6 +100,18 @@ interface ResponseWithMetadata {
   contentRange: string | null
 }
 
+interface PagedBatchResult<Row> {
+  rows: Row[]
+  keys: string[]
+  total: number
+  pageCount: number
+}
+
+interface PagedBatchOptions<Row> {
+  rowKey?: (row: Row) => string
+  verifyConsistency?: boolean
+}
+
 /**
  * Endpoints that are slow upstream, and how long to give them.
  *
@@ -182,15 +194,16 @@ export interface KoiosClient {
    *
    * Koios does not expose a snapshot token spanning separate HTTP requests. Stable ordering,
    * totals, range continuity and optional row keys detect the observable forms of mid-read
-   * churn, but cannot turn several upstream requests into a database-atomic snapshot. Account
-   * callers therefore still refresh current state rather than treating one read as a durable
-   * checkpoint.
+   * churn. Callers that need bounded consistency can request a second walk for keyed results that
+   * span multiple pages; those results are returned only when their ordered membership and total
+   * agree. This still cannot turn several upstream requests into a database-atomic snapshot, so
+   * account callers refresh current state rather than treating one read as a durable checkpoint.
    */
   batchAllPages<Row>(
     rowSchema: z.ZodType<Row>,
     path: string,
     body: unknown,
-    rowKey?: (row: Row) => string,
+    options?: PagedBatchOptions<Row>,
   ): Promise<Row[]>
 
   /**
@@ -412,6 +425,102 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
     return { start, end, total }
   }
 
+  async function walkBatchPages<Row>(
+    rowSchema: z.ZodType<Row>,
+    path: string,
+    body: unknown,
+    rowKey?: (row: Row) => string,
+  ): Promise<PagedBatchResult<Row>> {
+    const rows: Row[] = []
+    const keys: string[] = []
+    const seenKeys = new Set<string>()
+    let expectedStart = 0
+    let expectedTotal: number | undefined
+    let pageCount = 0
+
+    const appendPage = (page: Row[]): void => {
+      if (rowKey !== undefined) {
+        for (const row of page) {
+          const key = rowKey(row)
+          if (seenKeys.has(key)) {
+            // Never put the key in the error. Callers use wallet identifiers as keys, and
+            // upstream failures flow through normal logs.
+            throw new MalformedUpstreamError(
+              `koios returned a duplicate row across pages for ${path}`,
+            )
+          }
+          seenKeys.add(key)
+          keys.push(key)
+        }
+      }
+      rows.push(...page)
+    }
+
+    for (;;) {
+      const separator = path.includes('?') ? '&' : '?'
+      const pagePath = `${path}${separator}limit=${KOIOS_PAGE_SIZE}&offset=${expectedStart}`
+      const response = await requestWithMetadata(pagePath, {
+        method: 'POST',
+        body: JSON.stringify(body),
+        contentType: 'application/json',
+        headers: {
+          prefer: 'count=exact',
+        },
+      })
+      const page = parse(z.array(rowSchema), response.data, path)
+      pageCount += 1
+
+      if (response.contentRange === null) {
+        if (response.status === 206 || expectedStart !== 0) {
+          throw new MalformedUpstreamError(
+            `koios omitted Content-Range from a partial response for ${path}`,
+          )
+        }
+        if (page.length >= KOIOS_PAGE_SIZE) {
+          throw new MalformedUpstreamError(
+            `koios returned a full page without Content-Range for ${path}`,
+          )
+        }
+        appendPage(page)
+        return { rows, keys, total: rows.length, pageCount }
+      }
+
+      const range = parseContentRange(response.contentRange, path)
+      if (!('start' in range)) {
+        if (expectedStart !== 0 || page.length !== 0) {
+          throw new MalformedUpstreamError(
+            `koios returned rows for an empty Content-Range on ${path}`,
+          )
+        }
+        return { rows: [], keys: [], total: 0, pageCount }
+      }
+
+      if (range.start !== expectedStart || page.length !== range.end - range.start + 1) {
+        throw new MalformedUpstreamError(`koios returned a non-contiguous page for ${path}`)
+      }
+      if (expectedTotal !== undefined && range.total !== expectedTotal) {
+        throw new MalformedUpstreamError(`koios changed the paged result total for ${path}`)
+      }
+      expectedTotal = range.total
+      if (expectedTotal > KOIOS_MAX_PAGED_ROWS) {
+        throw new MalformedUpstreamError(
+          `koios paged result exceeds ${KOIOS_MAX_PAGED_ROWS} rows for ${path}`,
+        )
+      }
+
+      appendPage(page)
+      expectedStart = range.end + 1
+      if (expectedStart === expectedTotal) {
+        return { rows, keys, total: expectedTotal, pageCount }
+      }
+      if (response.status !== 206) {
+        throw new MalformedUpstreamError(
+          `koios returned an incomplete successful response for ${path}`,
+        )
+      }
+    }
+  }
+
   /**
    * Pack `items` into body-budget chunks, run `send` on each chunk's body concurrently, and
    * concatenate the rows. If a run fails with a 413 naming a smaller limit than we packed to, adopt
@@ -464,91 +573,30 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
       rowSchema: z.ZodType<Row>,
       path: string,
       body: unknown,
-      rowKey?: (row: Row) => string,
+      options?: PagedBatchOptions<Row>,
     ): Promise<Row[]> {
       return read(path, async () => {
-        const rows: Row[] = []
-        const seenKeys = new Set<string>()
-        let expectedStart = 0
-        let expectedTotal: number | undefined
-
-        const appendPage = (page: Row[]): void => {
-          if (rowKey !== undefined) {
-            for (const row of page) {
-              const key = rowKey(row)
-              if (seenKeys.has(key)) {
-                // Never put the key in the error. Callers use wallet identifiers as keys, and
-                // upstream failures flow through normal logs.
-                throw new MalformedUpstreamError(
-                  `koios returned a duplicate row across pages for ${path}`,
-                )
-              }
-              seenKeys.add(key)
-            }
-          }
-          rows.push(...page)
+        const rowKey = options?.rowKey
+        const first = await walkBatchPages(rowSchema, path, body, rowKey)
+        if (first.pageCount === 1 || rowKey === undefined || options?.verifyConsistency !== true) {
+          return first.rows
         }
 
-        for (;;) {
-          const separator = path.includes('?') ? '&' : '?'
-          const pagePath = `${path}${separator}limit=${KOIOS_PAGE_SIZE}&offset=${expectedStart}`
-          const response = await requestWithMetadata(pagePath, {
-            method: 'POST',
-            body: JSON.stringify(body),
-            contentType: 'application/json',
-            headers: {
-              prefer: 'count=exact',
-            },
-          })
-          const page = parse(z.array(rowSchema), response.data, path)
-
-          if (response.contentRange === null) {
-            if (response.status === 206 || expectedStart !== 0) {
-              throw new MalformedUpstreamError(
-                `koios omitted Content-Range from a partial response for ${path}`,
-              )
-            }
-            if (page.length >= KOIOS_PAGE_SIZE) {
-              throw new MalformedUpstreamError(
-                `koios returned a full page without Content-Range for ${path}`,
-              )
-            }
-            appendPage(page)
-            return rows
-          }
-
-          const range = parseContentRange(response.contentRange, path)
-          if (!('start' in range)) {
-            if (expectedStart !== 0 || page.length !== 0) {
-              throw new MalformedUpstreamError(
-                `koios returned rows for an empty Content-Range on ${path}`,
-              )
-            }
-            return []
-          }
-
-          if (range.start !== expectedStart || page.length !== range.end - range.start + 1) {
-            throw new MalformedUpstreamError(`koios returned a non-contiguous page for ${path}`)
-          }
-          if (expectedTotal !== undefined && range.total !== expectedTotal) {
-            throw new MalformedUpstreamError(`koios changed the paged result total for ${path}`)
-          }
-          expectedTotal = range.total
-          if (expectedTotal > KOIOS_MAX_PAGED_ROWS) {
-            throw new MalformedUpstreamError(
-              `koios paged result exceeds ${KOIOS_MAX_PAGED_ROWS} rows for ${path}`,
-            )
-          }
-
-          appendPage(page)
-          expectedStart = range.end + 1
-          if (expectedStart === expectedTotal) return rows
-          if (response.status !== 206) {
-            throw new MalformedUpstreamError(
-              `koios returned an incomplete successful response for ${path}`,
-            )
-          }
+        // Offset paging has no shared database snapshot. A spend before the next offset and a
+        // creation after it can keep the exact total unchanged while silently shifting one row
+        // past the cursor. Requiring the next ordered membership to agree provides a bounded
+        // consistency check; a mismatch is transient and restarts both walks via read().
+        const second = await walkBatchPages(rowSchema, path, body, rowKey)
+        const sameMembership =
+          first.total === second.total &&
+          first.keys.length === second.keys.length &&
+          first.keys.every((key, index) => key === second.keys[index])
+        if (!sameMembership) {
+          throw new MalformedUpstreamError(
+            `koios changed the paged result between consistency passes for ${path}`,
+          )
         }
+        return second.rows
       })
     },
 

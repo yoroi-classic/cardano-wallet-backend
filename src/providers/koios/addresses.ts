@@ -80,8 +80,9 @@ function pagedBatchAll<Row>(
   toBody: (chunk: string[]) => unknown,
   rowKey?: (row: Row) => string,
 ): Promise<Row[]> {
+  const options = rowKey === undefined ? undefined : { rowKey }
   return koios.packAdaptively(addresses, toBody, (body) =>
-    koios.batchAllPages(rowSchema, path, body, rowKey),
+    koios.batchAllPages(rowSchema, path, body, options),
   )
 }
 

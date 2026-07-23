@@ -163,7 +163,7 @@ describe('blockfrost tx — unhappy path', () => {
     await expect(provider.getTxStatus(TX_HASH)).rejects.toBeInstanceOf(MalformedUpstreamError)
   })
 
-  it('rejects a confirmation count that JavaScript cannot represent exactly', async () => {
+  it("rejects a confirmation count outside JavaScript's safe integer range", async () => {
     const { provider } = testProvider({
       [`/txs/${TX_HASH}`]: [{ block: BLOCK_HASH }],
       [`/blocks/${BLOCK_HASH}`]: [{ confirmations: Number.MAX_SAFE_INTEGER + 1 }],

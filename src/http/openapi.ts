@@ -575,10 +575,19 @@ export const openapi = {
       get: {
         tags: ['tx'],
         operationId: 'getTxStatus',
-        summary: 'Whether a transaction is on chain, and how deep',
+        summary: 'Provider-neutral transaction lifecycle',
         description:
-          '`seen: false` means it is not on chain: still pending, or it never landed. The two are ' +
-          'not distinguishable from here, which is why a client keeps its own pending overlay.\n\n' +
+          '`pending` is a positive mempool observation. `unknown` means the provider cannot ' +
+          'distinguish propagation, eviction, rejection, or expiry; absence is never treated as ' +
+          'terminal evidence. Clients **must retain their pending overlay** for both states. ' +
+          '`confirmed` tells a client to refresh authoritative UTxOs and reconcile the overlay. ' +
+          'Only `rejected` or `expired`, each with a stable sanitized terminal code, permits a ' +
+          'rollback.\n\n' +
+          'Provider limits: Koios exposes only on-chain confirmation depth, so an unconfirmed ' +
+          'hash is `unknown`. Hosted Blockfrost can positively report transactions submitted ' +
+          'through its own mempool as `pending`; a mempool miss is still `unknown`. Neither ' +
+          'provider currently exposes durable proof of rejection or enough signed validity data ' +
+          'after mempool eviction to prove expiry, so neither invents those terminal states.\n\n' +
           'Never cached.',
         parameters: [
           {
@@ -1357,16 +1366,103 @@ export const openapi = {
       },
 
       TxStatus: {
-        type: 'object',
-        required: ['seen', 'confirmations'],
-        properties: {
-          seen: { type: 'boolean', description: 'Whether the transaction is on chain at all.' },
-          confirmations: {
-            type: 'integer',
-            minimum: 0,
-            description: 'Blocks on top. 0 when unseen.',
+        description:
+          'Transaction lifecycle plus the safe action for a wallet pending-UTxO overlay. `seen` ' +
+          'and `confirmations` remain for backwards compatibility.',
+        oneOf: [
+          {
+            type: 'object',
+            additionalProperties: false,
+            required: ['status', 'seen', 'confirmations', 'overlayAction'],
+            properties: {
+              status: { type: 'string', enum: ['unknown', 'pending'] },
+              seen: { type: 'boolean', const: false },
+              confirmations: { type: 'integer', const: 0 },
+              overlayAction: {
+                type: 'string',
+                const: 'retain',
+                description: 'Keep spent inputs hidden and pending change available.',
+              },
+            },
           },
-        },
+          {
+            type: 'object',
+            additionalProperties: false,
+            required: ['status', 'seen', 'confirmations', 'overlayAction'],
+            properties: {
+              status: { type: 'string', const: 'confirmed' },
+              seen: { type: 'boolean', const: true },
+              confirmations: {
+                type: 'integer',
+                minimum: 0,
+                maximum: Number.MAX_SAFE_INTEGER,
+                description: 'Blocks on top; zero when included in the current tip block.',
+              },
+              overlayAction: {
+                type: 'string',
+                const: 'reconcile',
+                description:
+                  'Refresh authoritative current-state UTxOs, then remove the incorporated overlay.',
+              },
+            },
+          },
+          {
+            type: 'object',
+            additionalProperties: false,
+            required: ['status', 'seen', 'confirmations', 'overlayAction', 'terminal'],
+            properties: {
+              status: { type: 'string', const: 'rejected' },
+              seen: { type: 'boolean', const: false },
+              confirmations: { type: 'integer', const: 0 },
+              overlayAction: {
+                type: 'string',
+                const: 'rollback',
+                description: 'Discard the overlay and refresh authoritative current-state UTxOs.',
+              },
+              terminal: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['code', 'reason'],
+                properties: {
+                  code: { type: 'string', const: 'TX_REJECTED' },
+                  reason: {
+                    type: 'string',
+                    const: 'The transaction was definitively rejected.',
+                    description: 'Stable sanitized text, never a raw provider response.',
+                  },
+                },
+              },
+            },
+          },
+          {
+            type: 'object',
+            additionalProperties: false,
+            required: ['status', 'seen', 'confirmations', 'overlayAction', 'terminal'],
+            properties: {
+              status: { type: 'string', const: 'expired' },
+              seen: { type: 'boolean', const: false },
+              confirmations: { type: 'integer', const: 0 },
+              overlayAction: {
+                type: 'string',
+                const: 'rollback',
+                description: 'Discard the overlay and refresh authoritative current-state UTxOs.',
+              },
+              terminal: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['code', 'reason'],
+                properties: {
+                  code: { type: 'string', const: 'TX_EXPIRED' },
+                  reason: {
+                    type: 'string',
+                    const: 'The transaction validity interval expired before confirmation.',
+                    description: 'Stable sanitized text, never a raw provider response.',
+                  },
+                },
+              },
+            },
+          },
+        ],
       },
 
       TokenMetadata: {

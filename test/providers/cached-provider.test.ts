@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { confirmedTxStatus } from '../../src/domain/types/transactions.js'
 import { createMemoryCache } from '../../src/cache/index.js'
 import { withCache } from '../../src/providers/cached.js'
 import type { ChainProvider } from '../../src/providers/provider.js'
@@ -124,7 +125,7 @@ describe('cached provider', () => {
       [
         'getTxStatus',
         (p: ChainProvider) => p.getTxStatus('ab'.repeat(32)),
-        { getTxStatus: vi.fn(async () => ({ seen: true, confirmations: 3 })) },
+        { getTxStatus: vi.fn(async () => confirmedTxStatus(3)) },
       ],
     ])('%s goes upstream on every call', async (_name, call, stub) => {
       const cache = createMemoryCache()

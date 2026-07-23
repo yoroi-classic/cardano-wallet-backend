@@ -1,6 +1,12 @@
 import { z } from 'zod'
-import { BadRequestError } from '../../domain/errors.js'
-import type { ResolvedUtxo, TxStatus } from '../../domain/types/transactions.js'
+import { BadRequestError, MalformedUpstreamError } from '../../domain/errors.js'
+import {
+  confirmedTxStatus,
+  pendingTxStatus,
+  unknownTxStatus,
+  type ResolvedUtxo,
+  type TxStatus,
+} from '../../domain/types/transactions.js'
 import type { TxCapability } from '../capabilities/tx.js'
 import type { BlockfrostClient } from './client.js'
 import { notImplemented } from './not-implemented.js'
@@ -16,7 +22,15 @@ const txRow = z.object({
 
 // A minimal projection of `block_content` (Blockfrost OpenAPI spec, `/blocks/{hash_or_number}`).
 const blockRow = z.object({
-  confirmations: z.number().int().nonnegative(),
+  confirmations: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+})
+
+// Deliberately project only the hash. Blockfrost's mempool response also carries inputs, outputs,
+// validity bounds and other transaction material that this endpoint must neither retain nor return.
+const mempoolRow = z.object({
+  tx: z.object({
+    hash: z.string().regex(/^[0-9a-fA-F]{64}$/),
+  }),
 })
 
 export function createTxMethods(client: BlockfrostClient): TxCapability {
@@ -38,9 +52,23 @@ export function createTxMethods(client: BlockfrostClient): TxCapability {
 
     async getTxStatus(hash: string): Promise<TxStatus> {
       const tx = await client.getOrUndefined(txRow, `/txs/${encodeURIComponent(hash)}`)
-      // Not on chain at all — 404 here is a legitimate answer, not a failure. The transaction
-      // may simply not have propagated yet.
-      if (tx === undefined) return { seen: false, confirmations: 0 }
+      if (tx === undefined) {
+        // The hosted Blockfrost API exposes a positive mempool lookup for transactions submitted
+        // through Blockfrost. A hit proves pending. A miss proves nothing: the transaction might
+        // be propagating elsewhere, might have left the mempool between our two reads, or this may
+        // be a compatible/self-hosted deployment without the hosted mempool index.
+        const mempool = await client.getOrUndefined(
+          mempoolRow,
+          `/mempool/${encodeURIComponent(hash)}`,
+        )
+        if (mempool === undefined) return unknownTxStatus()
+        if (mempool.tx.hash.toLowerCase() !== hash.toLowerCase()) {
+          throw new MalformedUpstreamError(
+            'blockfrost returned mempool content for a different transaction',
+          )
+        }
+        return pendingTxStatus()
+      }
 
       // `tx_content` carries the containing block's hash but not a confirmation count.
       // `block_content` has exactly that field, so this is a second, cheap lookup rather than
@@ -48,7 +76,7 @@ export function createTxMethods(client: BlockfrostClient): TxCapability {
       // with no dependency injected from the provider's chain module the way the Koios pool
       // ranking needs the current epoch.
       const block = await client.get(blockRow, `/blocks/${encodeURIComponent(tx.block)}`)
-      return { seen: true, confirmations: block.confirmations }
+      return confirmedTxStatus(block.confirmations)
     },
 
     // async so notImplemented()'s synchronous throw becomes a rejected promise rather than

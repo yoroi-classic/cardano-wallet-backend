@@ -6,6 +6,13 @@ import { openapi } from '../../src/http/openapi.js'
 import { buildServer } from '../../src/http/server.js'
 import { createNftcdnSigner } from '../../src/media/nftcdn.js'
 import type { ProtocolParams } from '../../src/domain/types/chain.js'
+import {
+  confirmedTxStatus,
+  expiredTxStatus,
+  pendingTxStatus,
+  rejectedTxStatus,
+  unknownTxStatus,
+} from '../../src/domain/types/transactions.js'
 import type { ChainProvider } from '../../src/providers/provider.js'
 import { fakeProvider } from '../support/fake-provider.js'
 
@@ -235,14 +242,38 @@ describe('real responses validate against the schemas the spec publishes', () =>
     eachMatches('WalletTransaction', res.body)
   })
 
-  it('GET /v1/tx/{hash}/status', async () => {
-    const res = await get(
-      { getTxStatus: async () => ({ seen: true, confirmations: 12 }) },
-      `/v1/tx/${TX_HASH}/status`,
-    )
+  it.each([
+    unknownTxStatus(),
+    pendingTxStatus(),
+    confirmedTxStatus(12),
+    rejectedTxStatus(),
+    expiredTxStatus(),
+  ])('GET /v1/tx/{hash}/status validates lifecycle $status', async (status) => {
+    const res = await get({ getTxStatus: async () => status }, `/v1/tx/${TX_HASH}/status`)
 
     expect(res.statusCode).toBe(200)
     expect(validate('TxStatus', res.body)).toEqual([])
+  })
+
+  it('keeps terminal codes paired to their lifecycle state and rejects extra provider fields', () => {
+    expect(
+      validate('TxStatus', {
+        ...rejectedTxStatus(),
+        terminal: {
+          code: 'TX_EXPIRED',
+          reason: 'The transaction validity interval expired before confirmation.',
+        },
+      }),
+    ).not.toEqual([])
+    expect(validate('TxStatus', { ...unknownTxStatus(), rawProviderBody: 'secret' })).not.toEqual(
+      [],
+    )
+    expect(
+      validate('TxStatus', {
+        ...confirmedTxStatus(0),
+        confirmations: Number.MAX_SAFE_INTEGER + 1,
+      }),
+    ).not.toEqual([])
   })
 
   it('POST /v1/assets/info', async () => {

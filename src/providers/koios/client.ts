@@ -107,10 +107,15 @@ interface PagedBatchResult<Row> {
   pageCount: number
 }
 
-interface PagedBatchOptions<Row> {
-  rowKey?: (row: Row) => string
-  verifyConsistency?: boolean
-}
+type PagedBatchOptions<Row> =
+  | {
+      rowKey?: (row: Row) => string
+      verifyConsistency?: false
+    }
+  | {
+      rowKey: (row: Row) => string
+      verifyConsistency: true
+    }
 
 /**
  * Endpoints that are slow upstream, and how long to give them.
@@ -569,14 +574,21 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
 
     batch,
 
-    batchAllPages<Row>(
+    async batchAllPages<Row>(
       rowSchema: z.ZodType<Row>,
       path: string,
       body: unknown,
       options?: PagedBatchOptions<Row>,
     ): Promise<Row[]> {
+      const rowKey = options?.rowKey
+      if (options?.verifyConsistency === true && rowKey === undefined) {
+        // The discriminated type prevents this in TypeScript. Keep a runtime guard for plain
+        // JavaScript and untyped callers: an explicitly requested safety check must never degrade
+        // silently, and this is a caller contract error rather than a transient upstream failure.
+        throw new TypeError(`koios consistency verification requires a row key for ${path}`)
+      }
+
       return read(path, async () => {
-        const rowKey = options?.rowKey
         const first = await walkBatchPages(rowSchema, path, body, rowKey)
         if (first.pageCount === 1 || rowKey === undefined || options?.verifyConsistency !== true) {
           return first.rows

@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
+import { z } from 'zod'
 import { createKoiosProvider, type FetchLike } from '../../src/providers/koios/index.js'
+import { createKoiosClient } from '../../src/providers/koios/client.js'
 import { KOIOS_BODY_LIMIT_BYTES } from '../../src/providers/koios/schema.js'
 import { BadRequestError, MalformedUpstreamError, ProviderError } from '../../src/domain/errors.js'
 
@@ -184,6 +186,21 @@ describe('koios getAccountUtxos', () => {
     })
     expect(calls[0]?.headers).not.toHaveProperty('range')
     expect(calls).toHaveLength(1)
+  })
+
+  it('fails before reading when consistency verification has no row key', async () => {
+    const { fetchImpl, calls } = fakeFetch({ json: async () => [ROW] })
+    const client = createKoiosClient({ baseUrl: BASE, fetchImpl })
+
+    const result = client.batchAllPages(
+      z.object({ tx_hash: z.string(), tx_index: z.number() }),
+      '/account_utxos',
+      { _stake_addresses: [STAKE] },
+      { verifyConsistency: true } as never,
+    )
+
+    await expect(result).rejects.toThrow('koios consistency verification requires a row key')
+    expect(calls).toHaveLength(0)
   })
 
   it('maps a datum hash and reference script when present', async () => {

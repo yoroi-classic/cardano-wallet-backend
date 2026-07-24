@@ -122,4 +122,40 @@ describe('token bucket', () => {
 
     expect(emitTimes.filter((t) => t === 0)).toHaveLength(BURST)
   })
+
+  it('caps a post-stall release at capacity when every expired timer wakes together', async () => {
+    let current = 0
+    let waiters: Array<{ at: number; resolve: () => void }> = []
+    const bucket = createTokenBucket({
+      capacity: BURST,
+      refillIntervalMs: INTERVAL_MS,
+      now: () => current,
+      delay: (ms) =>
+        new Promise<void>((resolve) => {
+          waiters.push({ at: current + ms, resolve })
+        }),
+    })
+    const flush = async (): Promise<void> => {
+      for (let i = 0; i < 100; i += 1) await Promise.resolve()
+    }
+    const emitTimes: number[] = []
+
+    for (let i = 0; i < 20; i += 1) {
+      void bucket.acquire().then(() => emitTimes.push(current))
+    }
+    await flush()
+    expect(emitTimes.filter((t) => t === 0)).toHaveLength(BURST)
+
+    // Simulate a long event-loop stall: jump past every original timer and release all of them
+    // before any continuation can run.
+    current = 100_000
+    const due = waiters
+    waiters = []
+    for (const waiter of due) waiter.resolve()
+    await flush()
+
+    expect(emitTimes.filter((t) => t === current)).toHaveLength(BURST)
+    expect(emitTimes).toHaveLength(BURST * 2)
+    expect(waiters.length).toBeGreaterThan(0)
+  })
 })

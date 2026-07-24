@@ -32,6 +32,14 @@ function shelleyAddress(
   )
 }
 
+function invalidPaddingAddress(): string {
+  const words = bech32.toWords(addressBytes(0, 0, 56, 35))
+  // A 57-byte payload leaves four unused bits in its final 5-bit word. Keep the word count and
+  // decoded payload length unchanged, but set one of those tail bits so byte conversion fails.
+  words[words.length - 1] = words[words.length - 1]! | 1
+  return bech32.encode('addr_test', words, 1023)
+}
+
 // Two structurally valid testnet base addresses (header + payment and stake credentials).
 function addrTest(fill: number): string {
   return shelleyAddress(0, 0, 56, fill)
@@ -292,11 +300,7 @@ describe('filter-used route', () => {
     ['reserved network id', shelleyAddress(0, 2, 56, 32, 'addr_test'), 'unknown'],
     ['mainnet address on a preprod server', shelleyAddress(0, 1, 56, 33), 'preprod'],
     ['testnet address on a mainnet server', shelleyAddress(0, 0, 56, 34), 'mainnet'],
-    [
-      'invalid 5-bit padding',
-      bech32.encode('addr_test', [...bech32.toWords(addressBytes(0, 0, 56, 35)), 31], 1023),
-      'preprod',
-    ],
+    ['same-length payload with non-zero 5-bit tail padding', invalidPaddingAddress(), 'preprod'],
   ])('rejects %s as BAD_REQUEST without calling the provider', async (_kind, address, network) => {
     app = await buildServer({
       provider: providerWith({

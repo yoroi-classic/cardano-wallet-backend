@@ -30,11 +30,25 @@ for (const required of [
   'git push origin "refs/tags/$tag"',
   'git push origin ":refs/tags/$tag"',
   'gh release create "$tag" --verify-tag --target "$RELEASE_SHA"',
-  'gh release delete "$tag" --yes || true',
+  'delete_created_release()',
+  'gh api --include "repos/${GITHUB_REPOSITORY}/releases/tags/$tag"',
+  'for attempt in 1 2 3',
+  'gh release delete "$tag" --yes',
+  'delete_created_release\n            if [ "$tag_created" = true ]; then',
 ]) {
   assert.ok(workflow.includes(required), `release workflow contract missing: ${required}`)
 }
 
+assert.doesNotMatch(
+  workflow,
+  /gh release delete [^\n]*\|\| true/,
+  'release rollback deletion must never be ignored',
+)
+assert.ok(
+  workflow.indexOf('delete_created_release\n') <
+    workflow.indexOf('delete_created_tag\n', workflow.indexOf('delete_created_release\n')),
+  'release rollback must be reconciled before its tag is deleted',
+)
 assert.match(
   workflow,
   /permissions:\n {2}contents: read[\s\S]*?tag:[\s\S]*?permissions:\n {6}contents: write/,

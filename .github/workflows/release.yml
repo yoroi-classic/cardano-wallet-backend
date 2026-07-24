@@ -74,6 +74,44 @@ jobs:
             git push origin ":refs/tags/$tag"
           }
 
+          release_state() {
+            if response="$(gh api --include "repos/${GITHUB_REPOSITORY}/releases/tags/$tag" 2>&1)"; then
+              :
+            fi
+            http_status="$(printf '%s\n' "$response" | awk 'NR == 1 { print $2 }')"
+            case "$http_status" in
+              200) printf '%s\n' exists ;;
+              404) printf '%s\n' absent ;;
+              *)
+                echo "::warning::Could not reconcile release $tag (HTTP status: ${http_status:-unknown})" >&2
+                return 1
+                ;;
+            esac
+          }
+
+          delete_created_release() {
+            for attempt in 1 2 3; do
+              state=unknown
+              if state="$(release_state)" && [ "$state" = absent ]; then
+                return 0
+              fi
+
+              if [ "$state" = exists ] && ! gh release delete "$tag" --yes; then
+                echo "::warning::Release deletion attempt $attempt failed for $tag"
+              fi
+
+              if state="$(release_state)" && [ "$state" = absent ]; then
+                return 0
+              fi
+              if [ "$attempt" -lt 3 ]; then
+                sleep "$attempt"
+              fi
+            done
+
+            echo "::error::Release $tag still exists or could not be reconciled after 3 attempts"
+            return 1
+          }
+
           existing_sha="$(git rev-parse --verify --quiet "refs/tags/${tag}^{commit}" || true)"
           if [ -n "$existing_sha" ] && [ "$existing_sha" != "$RELEASE_SHA" ]; then
             echo "::error::Tag $tag already points to $existing_sha, not $RELEASE_SHA"
@@ -101,7 +139,10 @@ jobs:
           fi
           gh release create "$tag" --verify-tag --target "$RELEASE_SHA" --title "$tag" --generate-notes
           if ! require_current_main; then
-            gh release delete "$tag" --yes || true
+            # Confirm the release is absent before touching its tag. If GitHub is unavailable or
+            # remains inconsistent after retries, fail closed and leave the tag in place so a
+            # rerun cannot mistake an orphaned release for a completed rollback.
+            delete_created_release
             if [ "$tag_created" = true ]; then
               delete_created_tag
             fi

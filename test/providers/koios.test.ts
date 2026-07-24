@@ -215,6 +215,46 @@ describe('koios provider — unhappy path', () => {
     await expect(provider.getTip()).rejects.toBeInstanceOf(MalformedUpstreamError)
   })
 
+  it.each([0, Number.MAX_SAFE_INTEGER])(
+    'accepts tip counters at the safe integer boundary %s',
+    async (value) => {
+      const rows = [
+        {
+          ...TIP_ROWS[0],
+          epoch_no: value,
+          abs_slot: value,
+          block_no: value,
+        },
+      ]
+      const { fetchImpl } = fakeFetch({ json: async () => rows })
+      const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+      await expect(provider.getTip()).resolves.toMatchObject({
+        epoch: value,
+        slot: value,
+        block: value,
+      })
+    },
+  )
+
+  it.each([
+    ['epoch_no', -1],
+    ['epoch_no', 1.5],
+    ['epoch_no', Number.MAX_SAFE_INTEGER + 1],
+    ['abs_slot', -1],
+    ['abs_slot', 1.5],
+    ['abs_slot', Number.MAX_SAFE_INTEGER + 1],
+    ['block_no', -1],
+    ['block_no', 1.5],
+    ['block_no', Number.MAX_SAFE_INTEGER + 1],
+  ] as const)('rejects malformed tip counter %s=%s', async (field, value) => {
+    const rows = [{ ...TIP_ROWS[0], [field]: value }]
+    const { fetchImpl } = fakeFetch({ json: async () => rows })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getTip()).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+
   it('rejects a non-numeric protocol-param value as malformed', async () => {
     const rows = [{ ...EPOCH_PARAM_ROWS[0], key_deposit: 'not-a-number' }]
     const { fetchImpl } = fakeFetch({ json: async () => rows })

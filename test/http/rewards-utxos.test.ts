@@ -4,7 +4,9 @@ import { buildServer } from '../../src/http/server.js'
 import type { ChainProvider } from '../../src/providers/provider.js'
 import { fakeProvider } from '../support/fake-provider.js'
 
-const STAKE = bech32.encode('stake_test', bech32.toWords(new Uint8Array(29)), 1023)
+const STAKE_BYTES = new Uint8Array(29)
+STAKE_BYTES[0] = 0xe0
+const STAKE = bech32.encode('stake_test', bech32.toWords(STAKE_BYTES), 1023)
 const TX = 'a'.repeat(64)
 
 const serve = async (overrides: Partial<ChainProvider>) =>

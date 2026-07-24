@@ -30,6 +30,36 @@ export interface FetchJsonOptions {
   upstream: string
 }
 
+function timeoutCause(cause: unknown, signal: AbortSignal): unknown | undefined {
+  if (cause instanceof Error && cause.name === 'TimeoutError') return cause
+
+  const reason = signal.reason
+  if (signal.aborted && reason instanceof Error && reason.name === 'TimeoutError') return reason
+
+  return undefined
+}
+
+async function drainErrorBody(
+  res: Awaited<ReturnType<FetchLike>>,
+  signal: AbortSignal,
+  upstream: string,
+): Promise<void> {
+  try {
+    await res.text()
+  } catch (cause) {
+    const timeout = timeoutCause(cause, signal)
+    if (timeout !== undefined) {
+      throw new ProviderTimeoutError(`${upstream} response timed out`, timeout)
+    }
+
+    // Error bodies are untrusted and can contain reflected request data. Do not attach either the
+    // body or its read error to the public error object.
+    throw new ProviderError(`${upstream} response body could not be read`, {
+      upstreamStatus: res.status,
+    })
+  }
+}
+
 /**
  * Fetch, validate, and map failures onto this service's error taxonomy.
  *
@@ -48,7 +78,7 @@ export async function fetchJson<T>(
 ): Promise<T> {
   const result = await fetchJsonOrNotFound(url, schema, opts)
   if (result === undefined) {
-    throw new ProviderError(`${opts.upstream} returned 404 for ${url}`, { upstreamStatus: 404 })
+    throw new ProviderError(`${opts.upstream} returned 404`, { upstreamStatus: 404 })
   }
   return result
 }
@@ -67,36 +97,36 @@ export async function fetchJsonOrNotFound<T>(
   schema: z.ZodType<T>,
   opts: FetchJsonOptions,
 ): Promise<T | undefined> {
+  const signal = AbortSignal.timeout(opts.timeoutMs)
   let res: Awaited<ReturnType<FetchLike>>
   try {
     res = await opts.fetchImpl(url, {
       headers: { accept: 'application/json', ...opts.headers },
-      signal: AbortSignal.timeout(opts.timeoutMs),
+      signal,
       // Never follow a redirect: it would forward an api-key header to another origin. See FetchLike.
       redirect: 'error',
     })
   } catch (cause) {
-    if (cause instanceof Error && cause.name === 'TimeoutError') {
-      throw new ProviderTimeoutError(`${opts.upstream} request timed out: ${url}`, cause)
+    const timeout = timeoutCause(cause, signal)
+    if (timeout !== undefined) {
+      throw new ProviderTimeoutError(`${opts.upstream} request timed out`, timeout)
     }
-    throw new ProviderError(`${opts.upstream} request failed: ${url}`, { cause })
+    throw new ProviderError(`${opts.upstream} request failed`)
   }
 
   if (res.status === 404) {
     // A 404 is a normal, high-volume answer here (any token GeckoTerminal has not indexed), so the
     // body must be drained rather than abandoned: an unread body pins the underlying connection and
     // defeats keep-alive reuse, one leaked socket per unindexed token.
-    await res.text().catch(() => '')
+    await drainErrorBody(res, signal, opts.upstream)
     return undefined
   }
 
   if (!res.ok) {
-    const body = await res.text().catch(() => '')
+    await drainErrorBody(res, signal, opts.upstream)
     throw new ProviderError(
-      `${opts.upstream} returned ${res.status} for ${url}${
-        res.status === 429 ? ' (rate limited)' : ''
-      }`,
-      { upstreamStatus: res.status, cause: body.slice(0, 500) },
+      `${opts.upstream} returned ${res.status}${res.status === 429 ? ' (rate limited)' : ''}`,
+      { upstreamStatus: res.status },
     )
   }
 
@@ -107,16 +137,17 @@ export async function fetchJsonOrNotFound<T>(
     // The timeout can fire while the body is still streaming in, after a 200. That is a timeout,
     // not malformed json, and must surface as a 504 like every other timeout (matching the Koios
     // client) rather than being misreported as a 502 the caller cannot retry sensibly.
-    if (cause instanceof Error && cause.name === 'TimeoutError') {
-      throw new ProviderTimeoutError(`${opts.upstream} response timed out: ${url}`, cause)
+    const timeout = timeoutCause(cause, signal)
+    if (timeout !== undefined) {
+      throw new ProviderTimeoutError(`${opts.upstream} response timed out`, timeout)
     }
-    throw new MalformedUpstreamError(`${opts.upstream} returned invalid json for ${url}`, cause)
+    throw new MalformedUpstreamError(`${opts.upstream} returned invalid json`)
   }
 
   const parsed = schema.safeParse(data)
   if (!parsed.success) {
     throw new MalformedUpstreamError(
-      `${opts.upstream} response shape mismatch for ${url}`,
+      `${opts.upstream} response shape mismatch`,
       parsed.error.issues,
     )
   }

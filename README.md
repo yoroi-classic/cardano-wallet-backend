@@ -169,6 +169,10 @@ See `.env.example`. Key values:
 - `CORS_ORIGINS` — `*` (default) or a comma-separated list
 - `RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW_MS` — anonymous free tier, per client IP (default 120/min).
   `0` disables the limiter, which is only correct on a private deployment.
+- `TRUST_PROXY` — comma-separated proxy IP addresses/CIDRs allowed to supply `X-Forwarded-For`.
+  Empty by default, which is correct for the directly exposed Docker port. Set it only when those
+  proxies are the exclusive path to the backend; trusting arbitrary forwarding headers lets a
+  direct caller rotate its apparent IP and evade the anonymous limit.
 - `NFTCDN_SUBDOMAIN` / `NFTCDN_KEY` — optional, both or neither. Enables asset media (below).
 - `PORT`, `HOST`, `LOG_LEVEL`
 

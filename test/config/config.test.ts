@@ -12,6 +12,7 @@ describe('loadConfig — happy path', () => {
     expect(config.port).toBe(3010)
     expect(config.koios.url).toBe('https://preprod.koios.rest/api/v1')
     expect(config.koios.token).toBeUndefined()
+    expect(config.trustedProxies).toEqual([])
   })
 
   it('picks the mainnet Koios url when NETWORK is mainnet', () => {
@@ -72,6 +73,13 @@ describe('loadConfig — happy path', () => {
     const config = loadConfig({ COINGECKO_API_KEY: '' })
     expect(config.coingeckoApiKey).toBeUndefined()
   })
+
+  it('accepts and deduplicates explicit trusted proxy addresses and CIDRs', () => {
+    const config = loadConfig({
+      TRUST_PROXY: '127.0.0.1, 10.0.0.0/8, 2001:db8::/32, 10.0.0.0/8',
+    })
+    expect(config.trustedProxies).toEqual(['127.0.0.1', '10.0.0.0/8', '2001:db8::/32'])
+  })
 })
 
 describe('loadConfig — unhappy path', () => {
@@ -94,6 +102,13 @@ describe('loadConfig — unhappy path', () => {
   it('rejects a malformed BLOCKFROST_URL', () => {
     expect(() => loadConfig({ BLOCKFROST_URL: 'not-a-url' })).toThrow(ConfigError)
   })
+
+  it.each(['*', 'loopback', '10.0.0.0/33', '2001:db8::/129', '10.0.0.1/nope', '10.0.0.1/8/2'])(
+    'rejects malformed TRUST_PROXY entry %s',
+    (entry) => {
+      expect(() => loadConfig({ TRUST_PROXY: entry })).toThrow(ConfigError)
+    },
+  )
 
   it('rejects PROVIDER=blockfrost with no project id', () => {
     expect(() => loadConfig({ PROVIDER: 'blockfrost' })).toThrow(ConfigError)

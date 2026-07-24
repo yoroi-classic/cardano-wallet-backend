@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { isIP } from 'node:net'
 import { ConfigError } from '../domain/errors.js'
 import { DEFAULT_CONFIG_URL } from '../remote-config/index.js'
 
@@ -20,6 +21,8 @@ export interface AppConfig {
   corsOrigins: string[] | '*'
   /** Anonymous free-tier limit, per client IP. `undefined` disables it. */
   rateLimit?: { max: number; windowMs: number }
+  /** Exact proxy IPs/CIDRs allowed to supply the client address. Empty means direct traffic. */
+  trustedProxies: string[]
   /**
    * NFTCDN, for native-asset media. Optional: a deployment without it serves every chain read and
    * only the media routes degrade, to a 503 that says why.
@@ -88,6 +91,7 @@ const schema = z.object({
   // Anonymous free tier. 0 disables the limiter, which is only correct on a private deployment.
   RATE_LIMIT_MAX: z.coerce.number().int().nonnegative().default(120),
   RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
+  TRUST_PROXY: z.string().default(''),
   KOIOS_URL: z.string().url().optional(),
   KOIOS_TOKEN: z.string().optional(),
   BLOCKFROST_URL: z.string().url().optional(),
@@ -112,6 +116,35 @@ function parseCorsOrigins(raw: string): string[] | '*' {
     .split(',')
     .map((origin) => origin.trim())
     .filter((origin) => origin.length > 0)
+}
+
+function parseTrustedProxies(raw: string): string[] {
+  const proxies = raw
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+
+  for (const proxy of proxies) {
+    const [address, prefix, extra] = proxy.split('/')
+    const family = isIP(address ?? '')
+    const maxPrefix = family === 4 ? 32 : family === 6 ? 128 : 0
+    const prefixNumber = prefix === undefined || prefix === '' ? undefined : Number(prefix)
+    if (
+      extra !== undefined ||
+      family === 0 ||
+      (prefix !== undefined &&
+        (prefixNumber === undefined ||
+          !Number.isInteger(prefixNumber) ||
+          prefixNumber < 0 ||
+          prefixNumber > maxPrefix))
+    ) {
+      throw new ConfigError(
+        `invalid TRUST_PROXY entry "${proxy}"; use comma-separated IP addresses or CIDR ranges`,
+      )
+    }
+  }
+
+  return [...new Set(proxies)]
 }
 
 /**
@@ -169,6 +202,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     provider: e.PROVIDER,
     cacheEnabled: e.CACHE_ENABLED,
     corsOrigins: parseCorsOrigins(e.CORS_ORIGINS),
+    trustedProxies: parseTrustedProxies(e.TRUST_PROXY),
     // A max of 0 means "no limiter at all", which is a deliberate choice for a private
     // deployment and a foot-gun on a public one. It is off only when someone asks for it.
     rateLimit:

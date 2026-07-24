@@ -19,6 +19,9 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
       RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-120}
       RATE_LIMIT_WINDOW_MS: ${RATE_LIMIT_WINDOW_MS:-60000}
+      # Direct Docker traffic is untrusted by default. Set exact proxy IPs/CIDRs only when a
+      # reverse proxy is the exclusive path to this port.
+      TRUST_PROXY: ${TRUST_PROXY:-}
     # The image already declares a HEALTHCHECK; this only shortens the startup grace so a local
     # `up` reports healthy quickly rather than waiting out the production start period.
     healthcheck:

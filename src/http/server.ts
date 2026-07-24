@@ -51,6 +51,11 @@ export interface BuildServerOptions {
   corsOrigins?: string[] | '*'
   /** Anonymous free-tier limit. Omit to disable (tests, and trusted private deployments). */
   rateLimit?: RateLimitOptions
+  /**
+   * Exact proxy IPs/CIDRs allowed to supply `X-Forwarded-For`. Empty/absent is the secure direct
+   * deployment default: forwarded addresses are ignored and the socket peer owns the rate bucket.
+   */
+  trustedProxies?: string[]
 }
 
 const DEFAULT_INFO: StatusInfo = { version: '0.0.0', network: 'unknown', provider: 'unknown' }
@@ -79,9 +84,13 @@ export async function buildServer(opts: BuildServerOptions): Promise<FastifyInst
             // line as the client's IP, which is exactly the link a wallet backend must not keep.
             serializers: { req: serializeRequest },
           },
-    // Behind a load balancer, every client otherwise looks like the proxy, and the rate limiter
-    // would bucket the entire internet into one counter.
-    trustProxy: true,
+    // Never trust forwarded addresses just because they are present. A direct caller controls
+    // those headers and could rotate them to evade the per-IP limiter. Fastify walks the chain
+    // only when the socket peer matches this explicit address/CIDR allowlist.
+    trustProxy:
+      opts.trustedProxies === undefined || opts.trustedProxies.length === 0
+        ? false
+        : opts.trustedProxies,
   })
 
   await app.register(cors, {

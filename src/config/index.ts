@@ -128,7 +128,8 @@ function parseTrustedProxies(raw: string): string[] {
     const [address, prefix, extra] = proxy.split('/')
     const family = isIP(address ?? '')
     const maxPrefix = family === 4 ? 32 : family === 6 ? 128 : 0
-    const prefixNumber = prefix === undefined || prefix === '' ? undefined : Number(prefix)
+    const prefixNumber =
+      prefix === undefined || !/^[0-9]+$/.test(prefix) ? undefined : Number(prefix)
     if (
       extra !== undefined ||
       family === 0 ||

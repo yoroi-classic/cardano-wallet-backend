@@ -103,12 +103,23 @@ describe('loadConfig — unhappy path', () => {
     expect(() => loadConfig({ BLOCKFROST_URL: 'not-a-url' })).toThrow(ConfigError)
   })
 
-  it.each(['*', 'loopback', '10.0.0.0/33', '2001:db8::/129', '10.0.0.1/nope', '10.0.0.1/8/2'])(
-    'rejects malformed TRUST_PROXY entry %s',
-    (entry) => {
-      expect(() => loadConfig({ TRUST_PROXY: entry })).toThrow(ConfigError)
-    },
-  )
+  it.each([
+    '*',
+    'loopback',
+    '10.0.0.0/33',
+    '2001:db8::/129',
+    '10.0.0.1/nope',
+    '10.0.0.1/+0',
+    '10.0.0.1/-0',
+    '10.0.0.1/0x10',
+    '10.0.0.1/1e1',
+    '10.0.0.1/8.0',
+    '10.0.0.1/ 8',
+    '10.0.0.1/',
+    '10.0.0.1/8/2',
+  ])('rejects malformed TRUST_PROXY entry %s', (entry) => {
+    expect(() => loadConfig({ TRUST_PROXY: entry })).toThrow(ConfigError)
+  })
 
   it('rejects PROVIDER=blockfrost with no project id', () => {
     expect(() => loadConfig({ PROVIDER: 'blockfrost' })).toThrow(ConfigError)

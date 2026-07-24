@@ -28,6 +28,22 @@ describe('scrubPath', () => {
     expect(scrubPath('/v1/chain/tip')).toBe('/v1/chain/tip')
     expect(scrubPath('/health')).toBe('/health')
   })
+
+  it.each([
+    [`/v1/account/stake%31${STAKE.slice('stake1'.length)}/utxos`, '/v1/account/[redacted]/utxos'],
+    [
+      `/v1/account/stake_test%31${STAKE_TEST.slice('stake_test1'.length)}/state`,
+      '/v1/account/[redacted]/state',
+    ],
+    [`/v1/tx/%61${TX_HASH.slice(1)}/status`, '/v1/tx/[redacted]/status'],
+  ])('redacts an identifier containing percent-encoded characters from %s', (url, expected) => {
+    expect(scrubPath(url)).toBe(expected)
+  })
+
+  it('redacts malformed percent encoding without throwing', () => {
+    expect(() => scrubPath('/v1/account/stake%ZZwallet/utxos')).not.toThrow()
+    expect(scrubPath('/v1/account/stake%ZZwallet/utxos')).toBe('/v1/account/[redacted]/utxos')
+  })
 })
 
 describe('serializeRequest', () => {
@@ -98,5 +114,40 @@ describe('the app log', () => {
     const logged = lines.join('\n')
     expect(logged).not.toContain(TX_HASH)
     expect(logged).not.toContain('198.51.100.9')
+  })
+
+  it('redacts an encoded stake key from the application log', async () => {
+    const { app, lines } = await capturingServer()
+    const encodedStake = `stake%31${STAKE.slice('stake1'.length)}`
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/v1/account/${encodedStake}/utxos`,
+      remoteAddress: '203.0.113.48',
+    })
+    await app.close()
+
+    expect(response.statusCode).toBe(400)
+    const logged = lines.join('\n')
+    expect(logged).not.toContain(encodedStake)
+    expect(logged).not.toContain(STAKE)
+    expect(logged).not.toContain('203.0.113.48')
+    expect(logged).toContain('/v1/account/[redacted]/utxos')
+  })
+
+  it('redacts malformed percent encoding without turning the request into a 500', async () => {
+    const { app, lines } = await capturingServer()
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/v1/account/stake%ZZwallet/utxos',
+      remoteAddress: '203.0.113.49',
+    })
+    await app.close()
+
+    expect(response.statusCode).not.toBe(500)
+    const logged = lines.join('\n')
+    expect(logged).not.toContain('stake%ZZwallet')
+    expect(logged).not.toContain('203.0.113.49')
   })
 })

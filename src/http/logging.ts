@@ -33,6 +33,18 @@ const STAKE_ADDRESS = /^stake(_test)?1[0-9a-z]+$/i
 /** A 32-byte hash as hex: a transaction id, on /v1/tx/{hash}/status. */
 const TX_HASH = /^[0-9a-fA-F]{64}$/
 
+function scrubSegment(segment: string): string {
+  let decoded: string
+  try {
+    decoded = decodeURIComponent(segment)
+  } catch {
+    // Invalid escapes must not make the request serializer throw. Redact the whole segment:
+    // retaining malformed input would fail open and could still persist most of an identifier.
+    return REDACTED
+  }
+  return STAKE_ADDRESS.test(decoded) || TX_HASH.test(decoded) ? REDACTED : segment
+}
+
 /**
  * The request path with any wallet identifier removed, so the log still says which endpoint was
  * called and how often, but not by whom.
@@ -43,10 +55,7 @@ const TX_HASH = /^[0-9a-fA-F]{64}$/
  */
 export function scrubPath(url: string): string {
   const [path = '', query] = url.split('?')
-  const scrubbed = path
-    .split('/')
-    .map((segment) => (STAKE_ADDRESS.test(segment) || TX_HASH.test(segment) ? REDACTED : segment))
-    .join('/')
+  const scrubbed = path.split('/').map(scrubSegment).join('/')
   return query === undefined ? scrubbed : `${scrubbed}?${query}`
 }
 

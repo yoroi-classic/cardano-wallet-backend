@@ -3,6 +3,24 @@ set -euo pipefail
 
 chart=charts/cardano-wallet-backend
 
+if helm template cardano-wallet-backend "$chart" \
+  --set config.provider=dingo >/dev/null 2>&1; then
+  echo "unsupported Dingo provider passed chart validation" >&2
+  exit 1
+fi
+
+if helm template cardano-wallet-backend "$chart" \
+  --set-string config.blockfrostUrl=not-a-url >/dev/null 2>&1; then
+  echo "malformed Blockfrost URL passed chart validation" >&2
+  exit 1
+fi
+
+chart_version="$(awk '$1 == "version:" { print $2; exit }' "$chart/Chart.yaml")"
+if ! grep -Fq -- "--version $chart_version" "$chart/README.md"; then
+  echo "GHCR install example is not pinned to chart version $chart_version" >&2
+  exit 1
+fi
+
 default_render="$(helm template cardano-wallet-backend "$chart")"
 if grep -Fq 'name: BLOCKFROST_' <<<"$default_render"; then
   echo "default provider unexpectedly renders Blockfrost environment variables" >&2

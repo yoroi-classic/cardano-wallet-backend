@@ -30,7 +30,7 @@ image that your cluster can pull:
 ```bash
 helm upgrade --install cardano-wallet-backend \
   oci://ghcr.io/yoroi-classic/charts/cardano-wallet-backend \
-  --version 0.1.1 \
+  --version 0.1.2 \
   --set image.repository=YOUR_IMAGE_REPOSITORY \
   --set image.tag=YOUR_IMAGE_TAG
 ```

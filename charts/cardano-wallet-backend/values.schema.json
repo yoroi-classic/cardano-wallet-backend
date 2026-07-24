@@ -7,10 +7,18 @@
       "properties": {
         "provider": {
           "type": "string",
-          "enum": ["koios", "blockfrost", "dingo"]
+          "enum": ["koios", "blockfrost"]
         },
         "blockfrostUrl": {
-          "type": "string"
+          "type": "string",
+          "anyOf": [
+            {
+              "const": ""
+            },
+            {
+              "format": "uri"
+            }
+          ]
         }
       }
     },

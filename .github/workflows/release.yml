@@ -1,37 +1,71 @@
 name: release
 
-# When a version lands on main, tag it and cut a GitHub release from package.json.
-# Tagging only, no publish. Skips cleanly if the tag already exists.
+# After CI succeeds for the current main commit, tag it and cut a GitHub release
+# from package.json. Tagging only, no publish.
 on:
-  push:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
     branches: [main]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   tag:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
+    concurrency:
+      group: release-main
+      cancel-in-progress: false
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
+      - name: Verify the successful commit is still main
+        env:
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -eu
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          git fetch origin main --depth=1
+          main_sha="$(git rev-parse FETCH_HEAD)"
+          if [ "$main_sha" != "$RELEASE_SHA" ]; then
+            echo "::error::Successful CI commit $RELEASE_SHA is no longer the main head ($main_sha)"
+            exit 1
+          fi
       - name: Read version
         id: v
         run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
       - name: Tag and release if new
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
           VERSION: ${{ steps.v.outputs.version }}
         run: |
+          set -eu
           tag="v${VERSION}"
-          if git rev-parse "$tag" >/dev/null 2>&1; then
-            echo "tag $tag already exists, nothing to do"
+          existing_sha="$(git rev-parse --verify --quiet "refs/tags/${tag}^{commit}" || true)"
+          if [ -n "$existing_sha" ] && [ "$existing_sha" != "$RELEASE_SHA" ]; then
+            echo "::error::Tag $tag already points to $existing_sha, not $RELEASE_SHA"
+            exit 1
+          fi
+          if [ -z "$existing_sha" ]; then
+            git tag "$tag" "$RELEASE_SHA"
+            git push origin "refs/tags/$tag"
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release $tag already exists at $RELEASE_SHA"
             exit 0
           fi
-          git tag "$tag"
-          git push origin "$tag"
-          gh release create "$tag" --title "$tag" --generate-notes
+          gh release create "$tag" --verify-tag --target "$RELEASE_SHA" --title "$tag" --generate-notes

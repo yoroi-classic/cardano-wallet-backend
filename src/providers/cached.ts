@@ -107,15 +107,12 @@ export function withCache(provider: ChainProvider, cache: Cache): ChainProvider 
         )
       }
 
-      // Publish the matching pair together. Updating the tip prevents the next caller from
-      // repeating recovery through the old epoch key, while read() retains normal coalescing for
-      // the newly current parameter key.
+      // Publish and return the pair recovery already verified. Going back through read() here
+      // could join an older in-flight read for the refreshed epoch and replace this successful
+      // recovery with that read's failure.
       cache.set(TIP_CACHE_KEY, freshTip, TIP_TTL_MS)
-      return cache.read(
-        `chain:protocol-params:${freshTip.epoch}`,
-        PROTOCOL_PARAMS_TTL_MS,
-        async () => freshParams,
-      )
+      cache.set(`chain:protocol-params:${freshTip.epoch}`, freshParams, PROTOCOL_PARAMS_TTL_MS)
+      return freshParams
     })()
 
     protocolParamsRecovery = attempt

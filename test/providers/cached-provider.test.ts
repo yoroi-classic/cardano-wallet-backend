@@ -18,6 +18,14 @@ function clock(start = 1_000) {
   return { now: () => t, advance: (ms: number) => void (t += ms) }
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((res) => {
+    resolve = res
+  })
+  return { promise, resolve }
+}
+
 describe('cached provider', () => {
   it('reads the tip from upstream once and serves the rest from the cache', async () => {
     const getTip = vi.fn(async () => TIP)
@@ -164,6 +172,43 @@ describe('cached provider', () => {
     expect(getProtocolParams).toHaveBeenCalledTimes(2)
     expect(cache.peek('chain:protocol-params:199')).toBeUndefined()
     expect(cache.peek('chain:protocol-params:200')).toEqual({ epoch: 200 })
+  })
+
+  it('keeps a verified recovery when a refreshed-epoch read is already in flight', async () => {
+    const freshTip = deferred<typeof TIP>()
+    const concurrentParams = deferred<Awaited<ReturnType<ChainProvider['getProtocolParams']>>>()
+    const recoveredParams = { epoch: 200, minFeeA: 44 } as never
+    const getTip = vi.fn(() => freshTip.promise)
+    const getProtocolParams = vi
+      .fn<ChainProvider['getProtocolParams']>()
+      .mockResolvedValueOnce({ epoch: 200 } as never)
+      .mockReturnValueOnce(concurrentParams.promise)
+      .mockResolvedValueOnce(recoveredParams)
+    const cache = createMemoryCache()
+    cache.set(TIP_CACHE_KEY, { ...TIP, epoch: 199 }, 60_000)
+    const provider = withCache(fakeProvider({ getTip, getProtocolParams }), cache)
+
+    const recovering = provider.getProtocolParams()
+    await vi.waitFor(() => expect(getTip).toHaveBeenCalledTimes(1))
+
+    // A second request sees the refreshed epoch while the first request is still recovering and
+    // starts the normal epoch-200 cache read. Hold that read until recovery has validated its own
+    // fresh pair, then make the older read report a mismatch.
+    cache.set(TIP_CACHE_KEY, { ...TIP, epoch: 200 }, 60_000)
+    const concurrent = provider.getProtocolParams()
+    await vi.waitFor(() => expect(getProtocolParams).toHaveBeenCalledTimes(2))
+
+    freshTip.resolve({ ...TIP, epoch: 200 })
+    await vi.waitFor(() => expect(getProtocolParams).toHaveBeenCalledTimes(3))
+    concurrentParams.resolve({ epoch: 201 } as never)
+
+    await expect(Promise.all([recovering, concurrent])).resolves.toEqual([
+      recoveredParams,
+      recoveredParams,
+    ])
+    expect(cache.peek('chain:protocol-params:200')).toEqual(recoveredParams)
+    expect(getTip).toHaveBeenCalledTimes(1)
+    expect(getProtocolParams).toHaveBeenCalledTimes(3)
   })
 
   it('does not cache an upstream failure', async () => {

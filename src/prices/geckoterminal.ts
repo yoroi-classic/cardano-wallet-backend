@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { noCache, type Cache } from '../cache/index.js'
 import type { Ohlc, PriceRange, PriceWindow, TokenActivity } from '../domain/types/price.js'
@@ -224,6 +225,27 @@ function dedupeSubjects(subjects: string[]): string[] {
 }
 
 const poolCacheKey = (subject: string) => `price:token:pool:${subject}`
+
+/**
+ * Stable identity for a selected pool in a cache key.
+ *
+ * GeckoTerminal addresses are case-insensitive Cardano identifiers, so normalize their spelling
+ * before hashing. The one-way identity keeps upstream strings out of process diagnostics if cache
+ * keys are ever inspected; in particular, never solve this by keying on a request URL, which can
+ * grow credentials or other query parameters later.
+ */
+function poolCacheIdentity(address: string): string {
+  return createHash('sha256').update(address.toLowerCase()).digest('hex')
+}
+
+function ohlcvCacheKey(
+  subject: string,
+  poolAddress: string,
+  kind: 'history' | 'activity',
+  range: PriceRange | PriceWindow,
+): string {
+  return `price:token:ohlcv:${subject}:pool:${poolCacheIdentity(poolAddress)}:${kind}:${range}`
+}
 
 /** Build a TokenActivity from a resolved pool's own 24h figures, or undefined when incomplete. */
 function activityFromPool(subject: string, pool: AdaPool | undefined): TokenActivity | undefined {
@@ -483,7 +505,7 @@ export function createGeckoTerminalClient(config: GeckoTerminalConfig = {}): Gec
   ): Promise<TokenActivity | undefined> {
     if (pool === undefined) return undefined
     const days = window === '7d' ? 7 : 30
-    const cacheKey = `price:token:ohlcv:${subject}:activity:${window}`
+    const cacheKey = ohlcvCacheKey(subject, pool.address, 'activity', window)
     const candles = await cache.read(cacheKey, TOKEN_HISTORY_TTL_MS, () =>
       fetchOhlcv(pool.address, 'day', 1, days),
     )
@@ -549,7 +571,7 @@ export function createGeckoTerminalClient(config: GeckoTerminalConfig = {}): Gec
       if (pool === undefined) return []
 
       const { timeframe, aggregate, limit } = RANGE_TO_OHLCV[range]
-      const cacheKey = `price:token:ohlcv:${normalized}:history:${range}`
+      const cacheKey = ohlcvCacheKey(normalized, pool.address, 'history', range)
       const candles = await cache.read(cacheKey, TOKEN_HISTORY_TTL_MS, () =>
         fetchOhlcv(pool.address, timeframe, aggregate, limit),
       )

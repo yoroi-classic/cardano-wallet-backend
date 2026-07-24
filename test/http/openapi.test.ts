@@ -432,6 +432,30 @@ describe('real responses validate against the schemas the spec publishes', () =>
     expect((res.body as { chain: string }).chain).toBe('down')
   })
 
+  it('requires an exact Unix millisecond server time in every status response', () => {
+    const down = {
+      version: '1.2.3',
+      network: 'preprod',
+      provider: 'koios',
+      serverTime: 1_784_674_800_123,
+      chain: 'down',
+      tip: null,
+    }
+
+    expect(validate('Status', down)).toEqual([])
+    expect(validate('Status', { ...down, serverTime: 1.5 })).not.toEqual([])
+    expect(validate('Status', { ...down, serverTime: Number.MAX_SAFE_INTEGER + 1 })).not.toEqual([])
+    expect(
+      validate('Status', {
+        version: down.version,
+        network: down.network,
+        provider: down.provider,
+        chain: down.chain,
+        tip: down.tip,
+      }),
+    ).not.toEqual([])
+  })
+
   it('GET /v1/account/{stake}/rewards', async () => {
     const res = await get(
       {

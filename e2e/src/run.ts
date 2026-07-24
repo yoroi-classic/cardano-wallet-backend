@@ -1,7 +1,7 @@
 import { loadConfig } from './config.js'
 import { deriveWallet } from './wallet.js'
 import { createV1Client } from './v1.js'
-import { buildSelfPayment } from './buildTx.js'
+import { buildSelfPayment, spendableUtxosForAddress } from './buildTx.js'
 
 const ada = (lovelace: string): string => (Number(lovelace) / 1_000_000).toFixed(6)
 const sleep = (seconds: number): Promise<void> =>
@@ -48,10 +48,10 @@ async function main(): Promise<void> {
   console.log(`balance:      ${ada(state.balance)} ADA`)
 
   const utxos = await client.getAccountUtxos(wallet.stakeAddress)
-  const adaOnly = utxos.filter((u) => u.assets.length === 0)
-  const spendable = adaOnly.reduce((sum, u) => sum + BigInt(u.value), 0n)
+  const spendableUtxos = spendableUtxosForAddress(utxos, wallet.paymentAddress)
+  const spendable = spendableUtxos.reduce((sum, u) => sum + BigInt(u.value), 0n)
   console.log(
-    `utxos:        ${utxos.length} total, ${adaOnly.length} ADA-only (${ada(spendable.toString())} ADA spendable)`,
+    `utxos:        ${utxos.length} account total, ${spendableUtxos.length} ADA-only at signing address (${ada(spendable.toString())} ADA spendable)`,
   )
 
   // Pool info: pick a currently-registered pool from the chain, then confirm our /v1

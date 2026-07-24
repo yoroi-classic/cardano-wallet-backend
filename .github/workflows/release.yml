@@ -55,17 +55,55 @@ jobs:
         run: |
           set -eu
           tag="v${VERSION}"
+          tag_created=false
+
+          require_current_main() {
+            main_sha="$(git ls-remote --exit-code origin refs/heads/main | cut -f1)"
+            if [ "$main_sha" != "$RELEASE_SHA" ]; then
+              echo "::error::Successful CI commit $RELEASE_SHA is no longer the main head ($main_sha)"
+              return 1
+            fi
+          }
+
+          delete_created_tag() {
+            remote_tag_sha="$(git ls-remote origin "refs/tags/$tag" | cut -f1)"
+            if [ "$remote_tag_sha" != "$RELEASE_SHA" ]; then
+              echo "::error::Refusing to delete $tag because it no longer points to $RELEASE_SHA"
+              return 1
+            fi
+            git push origin ":refs/tags/$tag"
+          }
+
           existing_sha="$(git rev-parse --verify --quiet "refs/tags/${tag}^{commit}" || true)"
           if [ -n "$existing_sha" ] && [ "$existing_sha" != "$RELEASE_SHA" ]; then
             echo "::error::Tag $tag already points to $existing_sha, not $RELEASE_SHA"
             exit 1
           fi
           if [ -z "$existing_sha" ]; then
+            require_current_main
             git tag "$tag" "$RELEASE_SHA"
             git push origin "refs/tags/$tag"
+            tag_created=true
+            if ! require_current_main; then
+              delete_created_tag
+              exit 1
+            fi
           fi
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "release $tag already exists at $RELEASE_SHA"
             exit 0
           fi
+          if ! require_current_main; then
+            if [ "$tag_created" = true ]; then
+              delete_created_tag
+            fi
+            exit 1
+          fi
           gh release create "$tag" --verify-tag --target "$RELEASE_SHA" --title "$tag" --generate-notes
+          if ! require_current_main; then
+            gh release delete "$tag" --yes || true
+            if [ "$tag_created" = true ]; then
+              delete_created_tag
+            fi
+            exit 1
+          fi

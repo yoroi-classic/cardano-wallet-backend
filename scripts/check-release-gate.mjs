@@ -5,6 +5,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 const workflow = readFileSync('.github/workflows/release.yml', 'utf8')
+const ciWorkflow = readFileSync('.github/workflows/ci.yml', 'utf8')
+const packageJson = JSON.parse(readFileSync('package.json', 'utf8'))
 
 for (const required of [
   'workflow_run:',
@@ -22,9 +24,13 @@ for (const required of [
   'git fetch origin main --depth=1',
   'test "$(git rev-parse HEAD)" = "$RELEASE_SHA"',
   'if [ "$main_sha" != "$RELEASE_SHA" ]; then',
+  'git ls-remote --exit-code origin refs/heads/main',
+  'delete_created_tag()',
   'git tag "$tag" "$RELEASE_SHA"',
   'git push origin "refs/tags/$tag"',
+  'git push origin ":refs/tags/$tag"',
   'gh release create "$tag" --verify-tag --target "$RELEASE_SHA"',
+  'gh release delete "$tag" --yes || true',
 ]) {
   assert.ok(workflow.includes(required), `release workflow contract missing: ${required}`)
 }
@@ -38,6 +44,24 @@ assert.doesNotMatch(
   workflow,
   /on:\n {2}push:/,
   'release must not run in parallel with CI on a main push',
+)
+assert.ok(
+  (workflow.match(/require_current_main/g) ?? []).length >= 5,
+  'release must revalidate remote main before and after each write',
+)
+assert.ok(
+  ciWorkflow.includes('run: npm run check:release-gate'),
+  'CI must invoke the shared release-gate contract script',
+)
+assert.equal(
+  packageJson.scripts['check:release-gate'],
+  'node scripts/check-release-gate.mjs',
+  'package scripts must expose the release-gate contract',
+)
+assert.match(
+  packageJson.scripts['check:ci'],
+  /npm run check:release-gate/,
+  'the local CI mirror must exercise the release-gate contract',
 )
 
 function isEligible(event, repository) {
@@ -72,6 +96,22 @@ function releaseDecision({ releaseSha, mainSha, tagSha, releaseExists }) {
   return releaseExists ? 'already-released' : 'create-missing-release'
 }
 
+function raceDecision({
+  currentBeforeTag,
+  currentAfterTag,
+  currentBeforeRelease,
+  currentAfterRelease,
+  tagCreated,
+}) {
+  if (!currentBeforeTag) return 'reject-before-tag'
+  if (!currentAfterTag) return 'delete-created-tag'
+  if (!currentBeforeRelease) return tagCreated ? 'delete-created-tag' : 'reject-before-release'
+  if (!currentAfterRelease) {
+    return tagCreated ? 'delete-release-and-created-tag' : 'delete-release'
+  }
+  return 'release-complete'
+}
+
 const sha = 'a'.repeat(40)
 assert.equal(
   releaseDecision({ releaseSha: sha, mainSha: sha, tagSha: undefined, releaseExists: false }),
@@ -102,6 +142,29 @@ assert.equal(
 assert.equal(
   releaseDecision({ releaseSha: sha, mainSha: sha, tagSha: sha, releaseExists: false }),
   'create-missing-release',
+)
+const noRace = {
+  currentBeforeTag: true,
+  currentAfterTag: true,
+  currentBeforeRelease: true,
+  currentAfterRelease: true,
+  tagCreated: true,
+}
+assert.equal(raceDecision(noRace), 'release-complete')
+assert.equal(raceDecision({ ...noRace, currentBeforeTag: false }), 'reject-before-tag')
+assert.equal(raceDecision({ ...noRace, currentAfterTag: false }), 'delete-created-tag')
+assert.equal(raceDecision({ ...noRace, currentBeforeRelease: false }), 'delete-created-tag')
+assert.equal(
+  raceDecision({ ...noRace, currentBeforeRelease: false, tagCreated: false }),
+  'reject-before-release',
+)
+assert.equal(
+  raceDecision({ ...noRace, currentAfterRelease: false }),
+  'delete-release-and-created-tag',
+)
+assert.equal(
+  raceDecision({ ...noRace, currentAfterRelease: false, tagCreated: false }),
+  'delete-release',
 )
 
 console.log('Release gate contract ok: exact successful current main commit only')

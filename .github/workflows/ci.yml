@@ -31,7 +31,7 @@ jobs:
       - run: npm run typecheck
       - run: npm run build
       - name: Check release gate contract
-        run: node scripts/check-release-gate.mjs
+        run: npm run check:release-gate
       - name: Unit and contract tests with coverage
         run: npm run test:coverage
       - name: Audit production dependencies

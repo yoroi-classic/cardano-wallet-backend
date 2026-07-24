@@ -72,6 +72,30 @@ describe('loadConfig — happy path', () => {
     const config = loadConfig({ COINGECKO_API_KEY: '' })
     expect(config.coingeckoApiKey).toBeUndefined()
   })
+
+  it.each(['https://config.example/wallet.json', 'http://127.0.0.1:8080/wallet.json'])(
+    'accepts a supported CONFIG_URL: %s',
+    (url) => {
+      expect(loadConfig({ CONFIG_URL: url }).configUrl).toBe(url)
+    },
+  )
+
+  it('retains the exact empty CONFIG_URL disable switch', () => {
+    expect(loadConfig({ CONFIG_URL: '' }).configUrl).toBeUndefined()
+  })
+
+  it('normalizes the NFTCDN subdomain without rewriting its secret', () => {
+    const secret = '  c2lnbmluZy1rZXk=  '
+    const config = loadConfig({
+      NFTCDN_SUBDOMAIN: '  preprod  ',
+      NFTCDN_KEY: secret,
+    })
+
+    expect(config.nftcdn).toEqual({
+      subdomain: 'preprod',
+      secretKeyBase64: secret,
+    })
+  })
 })
 
 describe('loadConfig — unhappy path', () => {
@@ -114,6 +138,26 @@ describe('loadConfig — unhappy path', () => {
   it('trims surrounding whitespace from the project id', () => {
     const config = loadConfig({ PROVIDER: 'blockfrost', BLOCKFROST_PROJECT_ID: '  proj_id  ' })
     expect(config.blockfrost.projectId).toBe('proj_id')
+  })
+
+  it.each([
+    ['a malformed value', 'not-a-url'],
+    ['a relative URL', '/wallet.json'],
+    ['an unsupported scheme', 'ftp://config.example/wallet.json'],
+    ['a whitespace-only value', '   '],
+    ['a padded URL', ' https://config.example/wallet.json '],
+  ])('rejects CONFIG_URL with %s', (_case, url) => {
+    expect(() => loadConfig({ CONFIG_URL: url })).toThrow(ConfigError)
+  })
+
+  it.each([
+    ['only a subdomain', { NFTCDN_SUBDOMAIN: 'preprod' }],
+    ['only a key', { NFTCDN_KEY: 'c2lnbmluZy1rZXk=' }],
+    ['a blank subdomain', { NFTCDN_SUBDOMAIN: ' \t ', NFTCDN_KEY: 'c2lnbmluZy1rZXk=' }],
+    ['a blank key', { NFTCDN_SUBDOMAIN: 'preprod', NFTCDN_KEY: ' \n ' }],
+    ['two blank values', { NFTCDN_SUBDOMAIN: ' ', NFTCDN_KEY: '\t' }],
+  ])('rejects NFTCDN configuration with %s', (_case, env) => {
+    expect(() => loadConfig(env)).toThrow(ConfigError)
   })
 })
 

@@ -36,8 +36,11 @@ function validate(schemaName: string, value: unknown): string[] {
 // Well-formed bech32, so the routes' own validation passes and the responses under test are the
 // real ones rather than a 400.
 const STAKE = bech32.encode('stake_test', bech32.toWords(new Uint8Array(29)), 1023)
-const ADDR = (fill: number): string =>
-  bech32.encode('addr_test', bech32.toWords(new Uint8Array(57).fill(fill)), 1023)
+const ADDR = (fill: number): string => {
+  const bytes = new Uint8Array(57).fill(fill)
+  bytes[0] = 0 // Base key-key address on a test network.
+  return bech32.encode('addr_test', bech32.toWords(bytes), 1023)
+}
 const ADDR_VKH = bech32.encode('addr_vkh', bech32.toWords(new Uint8Array(28).fill(3)), 1023)
 const TX_HASH = 'ab'.repeat(32)
 const POLICY = 'a'.repeat(56)

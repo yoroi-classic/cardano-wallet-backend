@@ -7,10 +7,34 @@ import type { Utxo, WalletTransaction } from '../../src/domain/types/transaction
 import { ProviderError } from '../../src/domain/errors.js'
 import { fakeProvider } from '../support/fake-provider.js'
 
-// Two well-formed addr_test payment addresses so the route's bech32 validation passes;
-// the bytes are arbitrary but produce a valid HRP + checksum.
+function addressBytes(
+  type: number,
+  networkId: number,
+  payloadBytes: number,
+  fill: number,
+): Uint8Array {
+  const bytes = new Uint8Array(1 + payloadBytes).fill(fill)
+  bytes[0] = (type << 4) | networkId
+  return bytes
+}
+
+function shelleyAddress(
+  type: number,
+  networkId: number,
+  payloadBytes: number,
+  fill: number,
+  prefix = networkId === 1 ? 'addr' : 'addr_test',
+): string {
+  return bech32.encode(
+    prefix,
+    bech32.toWords(addressBytes(type, networkId, payloadBytes, fill)),
+    1023,
+  )
+}
+
+// Two structurally valid testnet base addresses (header + payment and stake credentials).
 function addrTest(fill: number): string {
-  return bech32.encode('addr_test', bech32.toWords(new Uint8Array(57).fill(fill)), 1023)
+  return shelleyAddress(0, 0, 56, fill)
 }
 const USED = addrTest(1)
 const UNUSED = addrTest(2)
@@ -32,9 +56,7 @@ const MALFORMED_BYRON = BYRON_ICARUS.slice(0, BYRON_ICARUS.length - 5)
 // Valid bech32 under the addr_test HRP, but the Shelley header names type 15 (a
 // stake/reward address kind), not a payment address.
 function nonPaymentTypeAddress(): string {
-  const bytes = new Uint8Array(29)
-  bytes[0] = 0xf0
-  return bech32.encode('addr_test', bech32.toWords(bytes), 1023)
+  return shelleyAddress(15, 0, 28, 0)
 }
 const NON_PAYMENT_TYPE = nonPaymentTypeAddress()
 
@@ -184,6 +206,137 @@ describe('filter-used route', () => {
     })
     expect(res.statusCode).toBe(400)
     expect(res.json()).toMatchObject({ error: { code: 'BAD_REQUEST' } })
+  })
+
+  it.each([
+    ['base key-key', shelleyAddress(0, 0, 56, 11)],
+    ['base script-key', shelleyAddress(1, 0, 56, 12)],
+    ['base key-script', shelleyAddress(2, 0, 56, 13)],
+    ['base script-script', shelleyAddress(3, 0, 56, 14)],
+    [
+      'pointer key',
+      bech32.encode(
+        'addr_test',
+        bech32.toWords(Uint8Array.from([...addressBytes(4, 0, 28, 15), 0, 0x81, 0, 0])),
+        1023,
+      ),
+    ],
+    [
+      'pointer script',
+      bech32.encode(
+        'addr_test',
+        bech32.toWords(Uint8Array.from([...addressBytes(5, 0, 28, 16), 0, 0, 0])),
+        1023,
+      ),
+    ],
+    ['enterprise key', shelleyAddress(6, 0, 28, 17)],
+    ['enterprise script', shelleyAddress(7, 0, 28, 18)],
+  ])('accepts a structurally complete testnet %s address', async (_kind, address) => {
+    let seen: string[] = []
+    app = await buildServer({
+      provider: providerWith({
+        filterUsedAddresses: async (addresses) => {
+          seen = addresses
+          return addresses
+        },
+      }),
+      info: { version: 'test', network: 'preprod', provider: 'test' },
+    })
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/addresses/filter-used',
+      payload: { addresses: [address] },
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(seen).toEqual([address])
+  })
+
+  it.each([
+    ['short base payload', shelleyAddress(0, 0, 55, 21), 'preprod'],
+    ['long base payload', shelleyAddress(0, 0, 57, 22), 'preprod'],
+    ['short enterprise payload', shelleyAddress(6, 0, 27, 23), 'preprod'],
+    ['long enterprise payload', shelleyAddress(7, 0, 29, 24), 'preprod'],
+    [
+      'pointer missing its third integer',
+      bech32.encode(
+        'addr_test',
+        bech32.toWords(Uint8Array.from([...addressBytes(4, 0, 28, 25), 0, 0])),
+        1023,
+      ),
+      'preprod',
+    ],
+    [
+      'pointer with trailing bytes',
+      bech32.encode(
+        'addr_test',
+        bech32.toWords(Uint8Array.from([...addressBytes(5, 0, 28, 26), 0, 0, 0, 0])),
+        1023,
+      ),
+      'preprod',
+    ],
+    [
+      'pointer with a non-canonical leading zero group',
+      bech32.encode(
+        'addr_test',
+        bech32.toWords(Uint8Array.from([...addressBytes(4, 0, 28, 27), 0x80, 0, 0, 0])),
+        1023,
+      ),
+      'preprod',
+    ],
+    ['reward address type', shelleyAddress(14, 0, 28, 28), 'preprod'],
+    ['payment bytes under a reward HRP', shelleyAddress(0, 0, 56, 29, 'stake_test'), 'preprod'],
+    ['testnet header under mainnet HRP', shelleyAddress(0, 0, 56, 30, 'addr'), 'preprod'],
+    ['mainnet header under testnet HRP', shelleyAddress(0, 1, 56, 31, 'addr_test'), 'mainnet'],
+    ['reserved network id', shelleyAddress(0, 2, 56, 32, 'addr_test'), 'unknown'],
+    ['mainnet address on a preprod server', shelleyAddress(0, 1, 56, 33), 'preprod'],
+    ['testnet address on a mainnet server', shelleyAddress(0, 0, 56, 34), 'mainnet'],
+    [
+      'invalid 5-bit padding',
+      bech32.encode('addr_test', [...bech32.toWords(addressBytes(0, 0, 56, 35)), 31], 1023),
+      'preprod',
+    ],
+  ])('rejects %s as BAD_REQUEST without calling the provider', async (_kind, address, network) => {
+    app = await buildServer({
+      provider: providerWith({
+        filterUsedAddresses: async () => {
+          throw new Error('provider should not be called for an invalid Shelley address')
+        },
+      }),
+      info: { version: 'test', network, provider: 'test' },
+    })
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/addresses/filter-used',
+      payload: { addresses: [address] },
+    })
+
+    expect(res.statusCode).toBe(400)
+    expect(res.json()).toMatchObject({ error: { code: 'BAD_REQUEST' } })
+  })
+
+  it.each([
+    ['mainnet', shelleyAddress(0, 1, 56, 41)],
+    ['preprod', shelleyAddress(0, 0, 56, 42)],
+    ['preview', shelleyAddress(7, 0, 28, 43)],
+  ])('accepts a valid address on configured %s', async (network, address) => {
+    app = await buildServer({
+      provider: providerWith({
+        filterUsedAddresses: async (addresses) => addresses,
+      }),
+      info: { version: 'test', network, provider: 'test' },
+    })
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/addresses/filter-used',
+      payload: { addresses: [address] },
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual([address])
   })
 
   // The bug this issue fixes: Byron wallets 400 on every address, because the validator only

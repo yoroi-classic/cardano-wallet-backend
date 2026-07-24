@@ -18,10 +18,13 @@ const utxoRefsBody = z.object({
   refs: z.array(z.string()).min(1).max(100),
 })
 
-function isUtxoRef(ref: string): boolean {
-  if (!UTXO_REF.test(ref)) return false
+function normalizeUtxoRef(ref: string): string | undefined {
+  if (!UTXO_REF.test(ref)) return undefined
   const index = Number(ref.slice(65))
-  return Number.isInteger(index) && index <= MAX_OUTPUT_INDEX
+  if (!Number.isSafeInteger(index) || index < 0 || index > MAX_OUTPUT_INDEX) return undefined
+
+  // Koios keys both components canonically: lowercase hex and an ordinary base-10 integer.
+  return `${ref.slice(0, 64).toLowerCase()}#${index}`
 }
 
 /** Transaction submit and status. */
@@ -64,14 +67,19 @@ export function registerTxRoutes(app: FastifyInstance, provider: ChainProvider):
       throw new BadRequestError('body must be { "refs": ["<txHash>#<index>", ...] } (1 to 100)')
     }
 
-    const bad = parsed.data.refs.filter((ref) => !isUtxoRef(ref))
+    const normalizedRefs: string[] = []
+    const bad: string[] = []
+    for (const ref of parsed.data.refs) {
+      const normalized = normalizeUtxoRef(ref)
+      if (normalized === undefined) bad.push(ref)
+      else normalizedRefs.push(normalized)
+    }
     if (bad.length > 0) {
       throw new BadRequestError(
         `refs must be "<64-char tx hash>#<output index>": ${bad.slice(0, 3).join(', ')}`,
       )
     }
 
-    // Koios keys UTxOs by lowercase hex; normalize so a caller shouting the hash still matches.
-    return provider.getUtxosByRef(parsed.data.refs.map((ref) => ref.toLowerCase()))
+    return provider.getUtxosByRef(normalizedRefs)
   })
 }

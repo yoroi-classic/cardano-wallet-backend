@@ -1,0 +1,64 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "config": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "enum": ["koios", "blockfrost", "dingo"]
+        },
+        "blockfrostUrl": {
+          "type": "string"
+        }
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "properties": {
+        "existingSecret": {
+          "type": "string"
+        },
+        "blockfrostProjectIdKey": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "config": {
+            "properties": {
+              "provider": {
+                "const": "blockfrost"
+              }
+            },
+            "required": ["provider"]
+          }
+        },
+        "required": ["config"]
+      },
+      "then": {
+        "properties": {
+          "secrets": {
+            "properties": {
+              "existingSecret": {
+                "type": "string",
+                "minLength": 1
+              },
+              "blockfrostProjectIdKey": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": ["existingSecret", "blockfrostProjectIdKey"]
+          }
+        },
+        "required": ["secrets"]
+      }
+    }
+  ]
+}

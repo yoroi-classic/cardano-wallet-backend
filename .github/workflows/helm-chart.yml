@@ -7,12 +7,14 @@ on:
       - 'charts/**'
       - '.github/workflows/helm-chart.yml'
       - 'scripts/check-helm-concurrency.mjs'
+      - 'scripts/test-helm-blockfrost.sh'
   pull_request:
     branches: [development, preview, preprod, main]
     paths:
       - 'charts/**'
       - '.github/workflows/helm-chart.yml'
       - 'scripts/check-helm-concurrency.mjs'
+      - 'scripts/test-helm-blockfrost.sh'
 
 permissions:
   contents: read
@@ -43,6 +45,9 @@ jobs:
 
       - name: Lint chart
         run: helm lint charts/cardano-wallet-backend
+
+      - name: Test Blockfrost chart wiring
+        run: scripts/test-helm-blockfrost.sh
 
       - name: Package chart
         run: helm package charts/cardano-wallet-backend --destination "${RUNNER_TEMP}"

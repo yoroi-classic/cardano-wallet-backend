@@ -6,6 +6,7 @@ import { fakeProvider } from '../support/fake-provider.js'
 const STAKE = 'stake1uyehkck0lajq8gr28t9uxnuvgcqrc6ry3f4muzpp6v0k7lqjqfr4c'
 const STAKE_TEST = 'stake_test1uqehkck0lajq8gr28t9uxnuvgcqrc6ry3f4muzpp6v0k7lqjqfr4c'
 const TX_HASH = 'ab'.repeat(32)
+const MALFORMED_STAKE = ['stake', '%', 'ZZwallet'].join('')
 
 describe('scrubPath', () => {
   it.each([
@@ -41,8 +42,8 @@ describe('scrubPath', () => {
   })
 
   it('redacts malformed percent encoding without throwing', () => {
-    expect(() => scrubPath('/v1/account/stake%ZZwallet/utxos')).not.toThrow()
-    expect(scrubPath('/v1/account/stake%ZZwallet/utxos')).toBe('/v1/account/[redacted]/utxos')
+    expect(() => scrubPath(`/v1/account/${MALFORMED_STAKE}/utxos`)).not.toThrow()
+    expect(scrubPath(`/v1/account/${MALFORMED_STAKE}/utxos`)).toBe('/v1/account/[redacted]/utxos')
   })
 })
 
@@ -140,14 +141,14 @@ describe('the app log', () => {
 
     const response = await app.inject({
       method: 'GET',
-      url: '/v1/account/stake%ZZwallet/utxos',
+      url: `/v1/account/${MALFORMED_STAKE}/utxos`,
       remoteAddress: '203.0.113.49',
     })
     await app.close()
 
     expect(response.statusCode).not.toBe(500)
     const logged = lines.join('\n')
-    expect(logged).not.toContain('stake%ZZwallet')
+    expect(logged).not.toContain(MALFORMED_STAKE)
     expect(logged).not.toContain('203.0.113.49')
   })
 })

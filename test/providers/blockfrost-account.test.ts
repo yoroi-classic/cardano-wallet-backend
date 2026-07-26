@@ -133,6 +133,27 @@ describe('blockfrost account — happy path', () => {
     ])
   })
 
+  it('preserves the accepted hex casing of a native-asset unit in provider output', async () => {
+    const policyId = 'aB'.repeat(28)
+    const assetName = 'DeAd'
+    const provider = testProvider({
+      [`/accounts/${STAKE}/utxos`]: [
+        [
+          utxoRow({
+            amount: [
+              { unit: 'lovelace', quantity: '42000000' },
+              { unit: `${policyId}${assetName}`, quantity: '12' },
+            ],
+          }),
+        ],
+      ],
+    })
+
+    const [utxo] = await provider.getAccountUtxos(STAKE)
+
+    expect(utxo?.assets).toEqual([{ policyId, assetName, quantity: '12' }])
+  })
+
   it('getAccountUtxos reports no utxos, not an error, for a never-used account', async () => {
     const provider = testProvider({ [`/accounts/${STAKE}/utxos`]: [{ status: 404 }] })
 
@@ -225,6 +246,20 @@ describe('blockfrost account — unhappy path', () => {
         { unit: 'lovelace', quantity: '1000000' },
         { unit, quantity: '5' },
         { unit, quantity: '7' },
+      ],
+    })
+    const provider = testProvider({ [`/accounts/${STAKE}/utxos`]: [[dup]] })
+
+    await expect(provider.getAccountUtxos(STAKE)).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+
+  it('rejects case-variant encodings of the same native-asset unit as duplicates', async () => {
+    const lowercaseUnit = `${'ab'.repeat(28)}6e7574636f696e`
+    const dup = utxoRow({
+      amount: [
+        { unit: 'lovelace', quantity: '1000000' },
+        { unit: lowercaseUnit, quantity: '5' },
+        { unit: lowercaseUnit.toUpperCase(), quantity: '7' },
       ],
     })
     const provider = testProvider({ [`/accounts/${STAKE}/utxos`]: [[dup]] })

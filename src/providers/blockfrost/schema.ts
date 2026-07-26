@@ -61,12 +61,16 @@ export function splitAmount(items: z.infer<typeof amountList>): { value: string;
   const seen = new Set<string>()
 
   for (const item of items) {
-    if (seen.has(item.unit)) {
+    // Hex casing does not change a native asset's identity. Keep the upstream spelling for the
+    // returned policy id and asset name, but use a canonical key so case variants cannot bypass
+    // the duplicate guard.
+    const unitKey = item.unit.toLowerCase()
+    if (seen.has(unitKey)) {
       throw new MalformedUpstreamError(
         `blockfrost returned a utxo amount with a duplicate '${item.unit}' unit`,
       )
     }
-    seen.add(item.unit)
+    seen.add(unitKey)
     if (item.unit === 'lovelace') {
       value = String(item.quantity)
       continue

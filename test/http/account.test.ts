@@ -16,6 +16,7 @@ const stakeAddress = (prefix: 'stake' | 'stake_test', header: number, length = 2
 
 // A reward key-hash address on preprod: type 14 and network id 0.
 const STAKE = stakeAddress('stake_test', 0xe0)
+const TEST_INFO = { version: 'test', network: 'preprod', provider: 'fake' }
 
 const STATE: AccountState = {
   stakeAddress: STAKE,
@@ -46,7 +47,7 @@ afterEach(async () => {
 
 describe('account routes', () => {
   it('GET /v1/account/:stake/state returns account state', async () => {
-    app = await buildServer({ provider: providerWith({}) })
+    app = await buildServer({ provider: providerWith({}), info: TEST_INFO })
     const res = await app.inject({ method: 'GET', url: `/v1/account/${STAKE}/state` })
 
     expect(res.statusCode).toBe(200)
@@ -54,7 +55,7 @@ describe('account routes', () => {
   })
 
   it('GET /v1/account/:stake/utxos returns utxos', async () => {
-    app = await buildServer({ provider: providerWith({}) })
+    app = await buildServer({ provider: providerWith({}), info: TEST_INFO })
     const res = await app.inject({ method: 'GET', url: `/v1/account/${STAKE}/utxos` })
 
     expect(res.statusCode).toBe(200)
@@ -70,6 +71,7 @@ describe('account routes', () => {
           return structuredClone(STATE)
         },
       }),
+      info: TEST_INFO,
     })
     const res = await app.inject({ method: 'GET', url: '/v1/account/not-a-stake/state' })
 
@@ -79,7 +81,7 @@ describe('account routes', () => {
   })
 
   it('rejects a stake address with a bad checksum', async () => {
-    app = await buildServer({ provider: providerWith({}) })
+    app = await buildServer({ provider: providerWith({}), info: TEST_INFO })
     // Flip the last character to break the bech32 checksum.
     const broken = STAKE.slice(0, -1) + (STAKE.endsWith('q') ? 'p' : 'q')
     const res = await app.inject({ method: 'GET', url: `/v1/account/${broken}/state` })
@@ -113,6 +115,7 @@ describe('account routes', () => {
     ['a testnet HRP with a mainnet header', 'preprod', stakeAddress('stake_test', 0xe1)],
     ['a mainnet address on preprod', 'preprod', stakeAddress('stake', 0xe1)],
     ['a testnet address on mainnet', 'mainnet', stakeAddress('stake_test', 0xe0)],
+    ['a testnet address on an unknown network', 'staging', stakeAddress('stake_test', 0xe0)],
   ])(
     'rejects %s on every account route without an upstream call',
     async (_case, network, invalid) => {
@@ -180,6 +183,7 @@ describe('account routes', () => {
           throw new ProviderError('koios down', { upstreamStatus: 503 })
         },
       }),
+      info: TEST_INFO,
     })
     const res = await app.inject({ method: 'GET', url: `/v1/account/${STAKE}/utxos` })
 
@@ -203,7 +207,10 @@ describe('account routes', () => {
         certificates: [],
       },
     ]
-    app = await buildServer({ provider: providerWith({ getTxHistory: async () => TXS }) })
+    app = await buildServer({
+      provider: providerWith({ getTxHistory: async () => TXS }),
+      info: TEST_INFO,
+    })
     const res = await app.inject({ method: 'GET', url: `/v1/account/${STAKE}/txs` })
 
     expect(res.statusCode).toBe(200)
@@ -211,7 +218,7 @@ describe('account routes', () => {
   })
 
   it('rejects a non-numeric or empty after with 400', async () => {
-    app = await buildServer({ provider: providerWith({}) })
+    app = await buildServer({ provider: providerWith({}), info: TEST_INFO })
 
     const nonNumeric = await app.inject({
       method: 'GET',

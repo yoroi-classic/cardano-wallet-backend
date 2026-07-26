@@ -10,7 +10,10 @@ const STAKE = bech32.encode('stake_test', bech32.toWords(STAKE_BYTES), 1023)
 const TX = 'a'.repeat(64)
 
 const serve = async (overrides: Partial<ChainProvider>) =>
-  buildServer({ provider: fakeProvider(overrides) })
+  buildServer({
+    provider: fakeProvider(overrides),
+    info: { version: 'test', network: 'preprod', provider: 'fake' },
+  })
 
 describe('GET /v1/account/{stake}/rewards', () => {
   it('returns the reward history', async () => {

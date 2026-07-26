@@ -118,7 +118,10 @@ describe('real responses validate against the schemas the spec publishes', () =>
     url: string,
     payload?: object,
   ): Promise<{ statusCode: number; body: unknown }> {
-    const app = await buildServer({ provider: fakeProvider(provider) })
+    const app = await buildServer({
+      provider: fakeProvider(provider),
+      info: { version: 'test', network: 'preprod', provider: 'fake' },
+    })
     const res = await app.inject({ method, url, ...(payload === undefined ? {} : { payload }) })
     await app.close()
     return { statusCode: res.statusCode, body: res.json() }

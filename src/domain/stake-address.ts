@@ -39,5 +39,5 @@ export function isStakeAddressForNetwork(value: string, network: string): boolea
   if (decoded.prefix !== expectedPrefix) return false
 
   const expectedNetworkId = configuredNetworkId(network)
-  return expectedNetworkId === undefined || networkId === expectedNetworkId
+  return expectedNetworkId !== undefined && networkId === expectedNetworkId
 }

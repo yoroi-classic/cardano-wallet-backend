@@ -108,7 +108,8 @@ describe('koios getProposals', () => {
       abstainPower: '402481959468417',
     })
     expect(p?.poolVotes?.yes).toBe(1)
-    expect(p?.committeeVotes?.yes).toBe(3)
+    expect(p?.committeeVotes).toEqual({ yes: 3, no: 0, abstain: 0 })
+    expect(p?.committeeVotes).not.toHaveProperty('yesPower')
   })
 
   // Upstream reports a proposal's fate as four separate nullable epoch fields. Deriving the status

@@ -528,6 +528,11 @@ describe('real responses validate against the schemas the spec publishes', () =>
               noPower: '0',
               abstainPower: '0',
             },
+            committeeVotes: {
+              yes: 3,
+              no: 0,
+              abstain: 0,
+            },
           },
         ],
       },
@@ -539,6 +544,21 @@ describe('real responses validate against the schemas the spec publishes', () =>
     expect((res.body as { drepVotes: { yesPower: string } }[])[0]?.drepVotes.yesPower).toBe(
       '9999999999999999999',
     )
+    expect((res.body as { committeeVotes: Record<string, unknown> }[])[0]?.committeeVotes).toEqual({
+      yes: 3,
+      no: 0,
+      abstain: 0,
+    })
+    expect(
+      validate('CommitteeVoteTally', {
+        yes: 3,
+        no: 0,
+        abstain: 0,
+        yesPower: '0',
+        noPower: '0',
+        abstainPower: '0',
+      }),
+    ).not.toEqual([])
   })
 
   it('POST /v1/assets/media', async () => {

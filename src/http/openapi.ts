@@ -1512,6 +1512,24 @@ export const openapi = {
         },
       },
 
+      CommitteeVoteTally: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['yes', 'no', 'abstain'],
+        description:
+          'Constitutional committee votes by member count. Each current committee member has ' +
+          'one vote; these votes are not weighted by lovelace.',
+        properties: {
+          yes: { type: 'integer', minimum: 0, description: 'Committee members voting yes.' },
+          no: { type: 'integer', minimum: 0, description: 'Committee members voting no.' },
+          abstain: {
+            type: 'integer',
+            minimum: 0,
+            description: 'Committee members explicitly abstaining.',
+          },
+        },
+      },
+
       Proposal: {
         type: 'object',
         required: [
@@ -1575,7 +1593,7 @@ export const openapi = {
           },
           drepVotes: { $ref: '#/components/schemas/VoteTally' },
           poolVotes: { $ref: '#/components/schemas/VoteTally' },
-          committeeVotes: { $ref: '#/components/schemas/VoteTally' },
+          committeeVotes: { $ref: '#/components/schemas/CommitteeVoteTally' },
         },
       },
 

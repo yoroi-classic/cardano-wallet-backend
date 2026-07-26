@@ -9,6 +9,7 @@ import {
   type Proposal,
   type ProposalListParams,
   type ProposalStatus,
+  type VoteCountTally,
   type VoteTally,
 } from '../../domain/types/governance.js'
 import type { GovernanceCapability } from '../capabilities/governance.js'
@@ -205,7 +206,17 @@ function proposalMeta(metaJson: unknown): { title?: string; abstract?: string } 
   return { ...(title ? { title } : {}), ...(summary ? { abstract: summary } : {}) }
 }
 
-const tally = (
+const voteCountTally = (
+  yes: number | null | undefined,
+  no: number | null | undefined,
+  abstain: number | null | undefined,
+): VoteCountTally => ({
+  yes: yes ?? 0,
+  no: no ?? 0,
+  abstain: abstain ?? 0,
+})
+
+const stakeWeightedTally = (
   yes: number | null | undefined,
   no: number | null | undefined,
   abstain: number | null | undefined,
@@ -213,9 +224,7 @@ const tally = (
   noPower: unknown,
   abstainPower: unknown,
 ): VoteTally => ({
-  yes: yes ?? 0,
-  no: no ?? 0,
-  abstain: abstain ?? 0,
+  ...voteCountTally(yes, no, abstain),
   yesPower: String(yesPower ?? 0),
   noPower: String(noPower ?? 0),
   abstainPower: String(abstainPower ?? 0),
@@ -492,7 +501,7 @@ export function createGovernanceMethods(
           ...(votes === undefined
             ? {}
             : {
-                drepVotes: tally(
+                drepVotes: stakeWeightedTally(
                   votes.drep_yes_votes_cast,
                   votes.drep_no_votes_cast,
                   votes.drep_abstain_votes_cast,
@@ -500,7 +509,7 @@ export function createGovernanceMethods(
                   votes.drep_no_vote_power,
                   votes.drep_always_abstain_vote_power,
                 ),
-                poolVotes: tally(
+                poolVotes: stakeWeightedTally(
                   votes.pool_yes_votes_cast,
                   votes.pool_no_votes_cast,
                   votes.pool_abstain_votes_cast,
@@ -508,13 +517,12 @@ export function createGovernanceMethods(
                   votes.pool_no_vote_power,
                   votes.pool_passive_always_abstain_vote_power,
                 ),
-                committeeVotes: tally(
+                // Constitutional committee members each have one vote. Supplying manufactured
+                // lovelace power fields here would make every committee tally look powerless.
+                committeeVotes: voteCountTally(
                   votes.committee_yes_votes_cast,
                   votes.committee_no_votes_cast,
                   votes.committee_abstain_votes_cast,
-                  0,
-                  0,
-                  0,
                 ),
               }),
         }

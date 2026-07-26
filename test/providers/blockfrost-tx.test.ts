@@ -67,6 +67,19 @@ describe('blockfrost tx — happy path', () => {
     expect(status).toEqual({ seen: true, confirmations: 4698 })
   })
 
+  it('canonicalizes an uppercase hash before building the status path', async () => {
+    const { provider, callsTo } = testProvider({
+      [`/txs/${TX_HASH}`]: [{ block: BLOCK_HASH }],
+      [`/blocks/${BLOCK_HASH}`]: [{ confirmations: 0 }],
+    })
+
+    await expect(provider.getTxStatus(TX_HASH.toUpperCase())).resolves.toEqual({
+      seen: true,
+      confirmations: 0,
+    })
+    expect(callsTo(`/txs/${TX_HASH}`)).toBe(1)
+  })
+
   it('getTxStatus reports unseen for a transaction not yet on chain, without calling /blocks', async () => {
     const { provider, callsTo } = testProvider({ [`/txs/${TX_HASH}`]: [{ status: 404 }] })
 

@@ -37,7 +37,10 @@ export function createTxMethods(client: BlockfrostClient): TxCapability {
     },
 
     async getTxStatus(hash: string): Promise<TxStatus> {
-      const tx = await client.getOrUndefined(txRow, `/txs/${encodeURIComponent(hash)}`)
+      // Keep direct provider callers consistent with the HTTP boundary: Blockfrost keys this path
+      // by canonical lowercase hex, while hash spelling itself is case-insensitive.
+      const normalizedHash = hash.toLowerCase()
+      const tx = await client.getOrUndefined(txRow, `/txs/${encodeURIComponent(normalizedHash)}`)
       // Not on chain at all — 404 here is a legitimate answer, not a failure. The transaction
       // may simply not have propagated yet.
       if (tx === undefined) return { seen: false, confirmations: 0 }

@@ -117,6 +117,34 @@ function testProvider(script: Script, config: Partial<KoiosConfig> = {}) {
   return { provider, callsTo, delays, retries }
 }
 
+describe('koios read attempt configuration', () => {
+  it.each([
+    ['zero', 0],
+    ['negative', -1],
+    ['fractional', 1.5],
+    ['NaN', Number.NaN],
+    ['positive infinity', Number.POSITIVE_INFINITY],
+    ['unsafe integer', Number.MAX_SAFE_INTEGER + 1],
+  ])('rejects a %s budget at construction', (_case, readAttempts) => {
+    expect(() => testProvider({}, { readAttempts })).toThrow(
+      new RangeError('readAttempts must be a positive safe integer; use 1 to disable retries'),
+    )
+  })
+
+  it.each([1, Number.MAX_SAFE_INTEGER])(
+    'accepts the positive safe-integer boundary %s',
+    async (readAttempts) => {
+      const { provider, callsTo } = testProvider(
+        { '/tip': [{ body: [TIP_ROW] }] },
+        { readAttempts },
+      )
+
+      await expect(provider.getTip()).resolves.toMatchObject({ block: 3_500_000 })
+      expect(callsTo('/tip')).toBe(1)
+    },
+  )
+})
+
 describe('koios read retry', () => {
   // The case this whole mechanism exists for. Koios serves `active: null` from some instances
   // (koios-artifacts#411), which is a 200 carrying well-formed JSON of the wrong shape: it only

@@ -61,6 +61,9 @@ export interface KoiosConfig {
   /**
    * Attempts per read, including the first. 1 disables retrying.
    *
+   * Must be a positive safe integer. 0 is rejected rather than treated as "make no request":
+   * callers that want no retries use 1, because every read still needs its first attempt.
+   *
    * Bounded on purpose: an upstream that is genuinely down should surface as down rather than as
    * a hang. Every attempt can burn the full `timeoutMs`, so the longest a caller can wait is
    * roughly `readAttempts * timeoutMs` plus backoff. Raising this trades the caller's patience
@@ -250,6 +253,14 @@ function limitFrom413(err: unknown): number | undefined {
   return Number.isSafeInteger(limit) && limit > 0 ? limit : undefined
 }
 
+function asReadAttempts(value: number | undefined): number {
+  const attempts = value ?? DEFAULT_READ_ATTEMPTS
+  if (!Number.isSafeInteger(attempts) || attempts < 1) {
+    throw new RangeError('readAttempts must be a positive safe integer; use 1 to disable retries')
+  }
+  return attempts
+}
+
 export function createKoiosClient(config: KoiosConfig): KoiosClient {
   const baseUrl = config.baseUrl.replace(/\/+$/, '')
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS
@@ -257,7 +268,7 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
   const doFetch: FetchLike = config.fetchImpl ?? (globalThis.fetch as unknown as FetchLike)
   // Not a constant, because upstream may tell us it is smaller. See batchAll.
   let bodyLimit = config.bodyLimitBytes ?? KOIOS_BODY_LIMIT_BYTES
-  const readAttempts = Math.max(1, config.readAttempts ?? DEFAULT_READ_ATTEMPTS)
+  const readAttempts = asReadAttempts(config.readAttempts)
   const backoffMs = config.retryBackoffMs ?? DEFAULT_BACKOFF_MS
   const delay =
     config.delayImpl ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)))

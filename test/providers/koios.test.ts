@@ -339,14 +339,34 @@ describe('koios provider — asset identifiers', () => {
     },
   ]
 
-  it('accepts an asset with an empty name, which is a real and common token', async () => {
+  it.each([
+    ['empty', ''],
+    ['one byte', '00'],
+    ['even length', '414243'],
+    ['mixed case', 'aB12Cd'],
+    ['32 bytes', 'ab'.repeat(32)],
+  ])('accepts a %s asset name and preserves its spelling', async (_case, assetName) => {
     // A policy's unnamed asset is valid on chain, so the boundary must not demand a name.
-    const { fetchImpl } = fakeFetch({ json: async () => utxoWith('a'.repeat(56), '') })
+    const policyId = 'a'.repeat(56)
+    const { fetchImpl } = fakeFetch({ json: async () => utxoWith(policyId, assetName) })
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
     const [utxo] = await provider.getAccountUtxos('stake_test1abc')
 
-    expect(utxo?.assets).toEqual([{ policyId: 'a'.repeat(56), assetName: '', quantity: '1' }])
+    expect(utxo?.assets).toEqual([{ policyId, assetName, quantity: '1' }])
+  })
+
+  it.each([
+    ['odd length', 'a'],
+    ['non-hex', '0g'],
+    ['over 32 bytes', 'ab'.repeat(33)],
+  ])('rejects a %s asset name as malformed upstream data', async (_case, assetName) => {
+    const { fetchImpl } = fakeFetch({ json: async () => utxoWith('a'.repeat(56), assetName) })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    await expect(provider.getAccountUtxos('stake_test1abc')).rejects.toBeInstanceOf(
+      MalformedUpstreamError,
+    )
   })
 
   it('rejects an empty policy id, which is never valid', async () => {

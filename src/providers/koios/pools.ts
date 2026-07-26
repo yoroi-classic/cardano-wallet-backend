@@ -335,8 +335,9 @@ export function createPoolMethods(koios: KoiosClient, deps: PoolMethodDeps = {})
       // Keyed on the epoch as well as the page, so the ranking underneath cannot change without
       // the page key changing with it.
       const epoch = await cacheEpoch()
-      const key = `pools:page:${epoch ?? 'none'}:${ticker ?? ''}:${offset}:${limit}`
+      if (epoch === undefined) return servePage({ limit, offset, ticker }, epoch)
 
+      const key = `pools:page:${epoch}:${ticker ?? ''}:${offset}:${limit}`
       return cache.read(key, { ttlMs: PAGE_TTL_MS, staleIfErrorMs: PAGE_STALE_IF_ERROR_MS }, () =>
         servePage({ limit, offset, ticker }, epoch),
       )

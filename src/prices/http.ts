@@ -97,9 +97,10 @@ export async function fetchJsonOrNotFound<T>(
   schema: z.ZodType<T>,
   opts: FetchJsonOptions,
 ): Promise<T | undefined> {
-  const signal = AbortSignal.timeout(opts.timeoutMs)
+  let signal: AbortSignal | undefined
   let res: Awaited<ReturnType<FetchLike>>
   try {
+    signal = AbortSignal.timeout(opts.timeoutMs)
     res = await opts.fetchImpl(url, {
       headers: { accept: 'application/json', ...opts.headers },
       signal,
@@ -107,7 +108,7 @@ export async function fetchJsonOrNotFound<T>(
       redirect: 'error',
     })
   } catch (cause) {
-    const timeout = timeoutCause(cause, signal)
+    const timeout = signal === undefined ? undefined : timeoutCause(cause, signal)
     if (timeout !== undefined) {
       throw new ProviderTimeoutError(`${opts.upstream} request timed out`, timeout)
     }

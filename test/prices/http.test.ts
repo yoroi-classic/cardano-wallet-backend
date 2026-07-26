@@ -19,6 +19,32 @@ const opts = (fetchImpl: FetchLike, headers?: Record<string, string>, timeoutMs 
   ...(headers === undefined ? {} : { headers }),
 })
 
+describe('fetchJson — timeout configuration', () => {
+  it.each([-1, Number.NaN, Number.POSITIVE_INFINITY, 1.5, 2 ** 32])(
+    'maps invalid timeout %s to a provider error without fetching',
+    async (timeoutMs) => {
+      const fetchImpl = vi.fn<FetchLike>()
+
+      let caught: unknown
+      try {
+        await fetchJsonOrNotFound(
+          'https://api/x?credential=SECRET',
+          schema,
+          opts(fetchImpl, undefined, timeoutMs),
+        )
+      } catch (error) {
+        caught = error
+      }
+
+      expect(caught).toBeInstanceOf(ProviderError)
+      expect(caught).not.toBeInstanceOf(ProviderTimeoutError)
+      expect((caught as ProviderError).cause).toBeUndefined()
+      expect((caught as Error).message).not.toContain('SECRET')
+      expect(fetchImpl).not.toHaveBeenCalled()
+    },
+  )
+})
+
 describe('fetchJson — redirect handling', () => {
   it('refuses to follow a redirect, so an api key is never re-sent to another origin', async () => {
     const calls: Array<{ url: string; init?: Init }> = []

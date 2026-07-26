@@ -29,21 +29,43 @@ for (const required of [
   'git tag "$tag" "$RELEASE_SHA"',
   'git push origin "refs/tags/$tag"',
   'git push origin ":refs/tags/$tag"',
-  'gh release create "$tag" --verify-tag --target "$RELEASE_SHA"',
+  'gh api --method POST "repos/${GITHUB_REPOSITORY}/releases"',
+  '-f target_commitish="$RELEASE_SHA"',
+  "--jq '.id'",
+  'created_release_id=',
   'delete_created_release()',
-  'gh api --include "repos/${GITHUB_REPOSITORY}/releases/tags/$tag"',
+  'release_state_by_id()',
+  'release_state_for "repos/${GITHUB_REPOSITORY}/releases/$created_release_id"',
+  'gh api --method DELETE',
+  '"repos/${GITHUB_REPOSITORY}/releases/$created_release_id"',
+  'release_state_by_tag()',
+  'Refusing to delete $tag because a release currently uses it',
   'for attempt in 1 2 3',
-  'gh release delete "$tag" --yes',
   'delete_created_release\n            if [ "$tag_created" = true ]; then',
 ]) {
   assert.ok(workflow.includes(required), `release workflow contract missing: ${required}`)
 }
 
+const ignoredReleaseDeletion =
+  /(?:gh release delete|gh api[^\n]*--method DELETE[^\n]*releases\/)[^\n]*\|\|\s*(?:true\b|:)/
 assert.doesNotMatch(
   workflow,
-  /gh release delete [^\n]*\|\| true/,
+  ignoredReleaseDeletion,
   'release rollback deletion must never be ignored',
 )
+assert.doesNotMatch(
+  workflow,
+  /gh release delete/,
+  'release rollback must delete the captured release ID, never whichever release owns the tag',
+)
+for (const ignored of [
+  'gh release delete "$tag" --yes ||true',
+  'gh release delete "$tag" --yes ||   true',
+  'gh release delete "$tag" --yes || :',
+  'gh api --method DELETE "repos/o/r/releases/$created_release_id" ||\t:',
+]) {
+  assert.match(ignored, ignoredReleaseDeletion, `guard must reject ignored deletion: ${ignored}`)
+}
 assert.ok(
   workflow.indexOf('delete_created_release\n') <
     workflow.indexOf('delete_created_tag\n', workflow.indexOf('delete_created_release\n')),

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createKoiosProvider, type FetchLike } from '../../src/providers/koios/index.js'
-import { MalformedUpstreamError } from '../../src/domain/errors.js'
+import { MalformedUpstreamError, ProviderError } from '../../src/domain/errors.js'
 
 const BASE = 'https://preprod.koios.rest/api/v1'
 
@@ -202,8 +202,8 @@ function txInfoRowFor(hash: string, block: number) {
 
 describe('koios getTxHistoryByAddresses', () => {
   const ADDRESS_TXS = [
+    { tx_hash: 'bb', block_height: 9, block_time: 90, epoch_no: 1 },
     { tx_hash: 'aa', block_height: 10, block_time: 100, epoch_no: 1 },
-    { tx_hash: 'bb', block_height: 9, block_time: 90, epoch_no: 1 }, // older, listed second
   ]
   const TX_INFO = [txInfoRowFor('bb', 9), txInfoRowFor('aa', 10)]
 
@@ -313,10 +313,7 @@ describe('koios getTxHistoryByAddresses', () => {
     expect(JSON.parse(String(txInfoCall?.body))._tx_hashes).toEqual(['cc'])
   })
 
-  // /address_txs is capped at 1,000 rows per response the same way. Ordered oldest-first, the
-  // window this endpoint returns lives in the first page, but the read must still walk the whole
-  // Content-Range so no history is skipped for a set with more than 1,000 matching transactions.
-  it('walks Content-Range pages of address_txs before windowing the history', async () => {
+  it('stops a large history once the first 50 and its boundary are determined', async () => {
     const txs = Array.from({ length: 1_501 }, (_, index) => ({
       tx_hash: `t${index}`,
       block_height: index,
@@ -335,26 +332,28 @@ describe('koios getTxHistoryByAddresses', () => {
           text: async () => '',
         }
       }
-      const offset = new URL(url).searchParams.get('offset')
-      if (offset === '0') {
-        return {
-          ok: true,
-          status: 206,
-          headers: { get: (name) => (name === 'content-range' ? '0-999/1501' : null) },
-          json: async () => txs.slice(0, 1_000),
-          text: async () => '',
-        }
-      }
-      if (offset === '1000') {
+      const query = new URL(url).searchParams
+      const offset = Number(query.get('offset'))
+      const limit = Number(query.get('limit'))
+      if (offset === 0) {
         return {
           ok: true,
           status: 200,
-          headers: { get: (name) => (name === 'content-range' ? '1000-1500/1501' : null) },
-          json: async () => txs.slice(1_000),
+          json: async () => txs.slice(offset, offset + limit),
           text: async () => '',
         }
       }
-      throw new Error(`unexpected offset: ${offset}`)
+      if (offset === 50) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => txs.slice(offset, offset + limit),
+          text: async () => '',
+        }
+      }
+      // This tail can fail and the requested history page is still fully known. Fetching it would
+      // reproduce the active-address failure this regression prevents.
+      throw new Error(`irrelevant history tail fetched at offset ${offset}`)
     }
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
@@ -363,31 +362,154 @@ describe('koios getTxHistoryByAddresses', () => {
     const listOffsets = calls
       .filter((c) => c.url.includes('/address_txs'))
       .map((c) => new URL(c.url).searchParams.get('offset'))
-    expect(listOffsets).toEqual(['0', '1000'])
+    expect(listOffsets).toEqual(['0', '50'])
     expect(history).toHaveLength(50)
     expect(history[0]?.txHash).toBe('t0')
     expect(history[49]?.txHash).toBe('t49')
   })
 
-  it('does not cut a page through the middle of a block', async () => {
-    // 3 transactions in the same boundary block, page size 50: all fit under the page size on
-    // their own, so this checks the simpler case of the same logic account.ts uses — the
-    // boundary-extension branch is exercised more heavily by koios-account.test.ts, and this
-    // guards that the address-keyed copy of the same algorithm agrees with it.
-    const rows = [
-      { tx_hash: 'x1', block_height: 1, block_time: 10, epoch_no: 1 },
-      { tx_hash: 'x2', block_height: 1, block_time: 10, epoch_no: 1 },
-      { tx_hash: 'x3', block_height: 2, block_time: 20, epoch_no: 1 },
-    ]
-    const { fetchImpl } = fakeFetchByPath({
-      '/address_txs': rows,
-      '/tx_info': [txInfoRowFor('x1', 1), txInfoRowFor('x2', 1), txInfoRowFor('x3', 2)],
-    })
+  it('continues through every incremental page tied at the boundary block', async () => {
+    const early = Array.from({ length: 49 }, (_, index) => ({
+      tx_hash: `e${index.toString().padStart(3, '0')}`,
+      block_height: index,
+      block_time: index * 10,
+      epoch_no: 1,
+    }))
+    const boundary = Array.from({ length: 120 }, (_, index) => ({
+      tx_hash: `b${index.toString().padStart(3, '0')}`,
+      block_height: 49,
+      block_time: 490,
+      epoch_no: 1,
+    }))
+    const later = { tx_hash: 'later', block_height: 50, block_time: 500, epoch_no: 1 }
+    const rows = [...early, ...boundary, later]
+    const calls: Call[] = []
+    const fetchImpl: FetchLike = async (url, init) => {
+      calls.push({ url, method: init?.method, body: init?.body })
+      if (url.includes('/tx_info')) {
+        const hashes = (JSON.parse(String(init?.body)) as { _tx_hashes: string[] })._tx_hashes
+        const byHash = new Map(rows.map((row) => [row.tx_hash, row]))
+        return {
+          ok: true,
+          status: 200,
+          json: async () =>
+            hashes.map((hash) => {
+              const row = byHash.get(hash)!
+              return txInfoRowFor(hash, row.block_height)
+            }),
+          text: async () => '',
+        }
+      }
+      const query = new URL(url).searchParams
+      const offset = Number(query.get('offset'))
+      const limit = Number(query.get('limit'))
+      return {
+        ok: true,
+        status: 200,
+        json: async () => rows.slice(offset, offset + limit),
+        text: async () => '',
+      }
+    }
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
     const history = await provider.getTxHistoryByAddresses([BYRON_A])
 
-    expect(history.map((t) => t.txHash)).toEqual(['x1', 'x2', 'x3'])
+    expect(history).toHaveLength(169)
+    expect(history.map((tx) => tx.txHash)).not.toContain('later')
+    expect(
+      calls
+        .filter((call) => call.url.includes('/address_txs'))
+        .map((call) => new URL(call.url).searchParams.get('offset')),
+    ).toEqual(['0', '50', '100', '150'])
+  })
+
+  it('k-way merges sparse packed streams and counts shared transactions once', async () => {
+    const addresses = Array.from({ length: 200 }, (_, index) =>
+      `addr_${index.toString().padStart(3, '0')}`.padEnd(80, 'x'),
+    )
+    const allRows = Array.from({ length: 100 }, (_, block) => ({
+      tx_hash: block.toString(16).padStart(64, '0'),
+      block_height: block,
+      block_time: block * 10,
+      epoch_no: 1,
+    }))
+    const byHash = new Map(allRows.map((row) => [row.tx_hash, row]))
+    const streamIds = new Map<string, number>()
+    const calls: Call[] = []
+    const fetchImpl: FetchLike = async (url, init) => {
+      calls.push({ url, method: init?.method, body: init?.body })
+      if (url.includes('/tx_info')) {
+        const hashes = (JSON.parse(String(init?.body)) as { _tx_hashes: string[] })._tx_hashes
+        return {
+          ok: true,
+          status: 200,
+          json: async () =>
+            hashes.map((hash) => {
+              const row = byHash.get(hash)!
+              return txInfoRowFor(hash, row.block_height)
+            }),
+          text: async () => '',
+        }
+      }
+
+      const bodyKey = String(init?.body)
+      let streamId = streamIds.get(bodyKey)
+      if (streamId === undefined) {
+        streamId = streamIds.size
+        streamIds.set(bodyKey, streamId)
+      }
+      const rows =
+        streamId === 0
+          ? allRows.filter((row) => row.block_height % 2 === 0)
+          : streamId === 1
+            ? [...allRows.filter((row) => row.block_height % 2 === 1), allRows[10]!].sort(
+                (a, b) => a.block_height - b.block_height,
+              )
+            : []
+      const query = new URL(url).searchParams
+      const offset = Number(query.get('offset'))
+      const limit = Number(query.get('limit'))
+      return {
+        ok: true,
+        status: 200,
+        json: async () => rows.slice(offset, offset + limit),
+        text: async () => '',
+      }
+    }
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const history = await provider.getTxHistoryByAddresses(addresses)
+
+    expect(streamIds.size).toBeGreaterThan(2)
+    expect(history.map((tx) => tx.block)).toEqual(Array.from({ length: 50 }, (_, index) => index))
+    expect(new Set(history.map((tx) => tx.txHash))).toHaveLength(50)
+    const listCalls = calls.filter((call) => call.url.includes('/address_txs'))
+    expect(listCalls).toHaveLength(streamIds.size)
+    expect(listCalls.every((call) => new URL(call.url).searchParams.get('offset') === '0')).toBe(
+      true,
+    )
+  })
+
+  it('propagates failure from a page required to find 50 distinct transactions', async () => {
+    const firstPage = Array.from({ length: 25 }, (_, block) => ({
+      tx_hash: block.toString(16).padStart(64, '0'),
+      block_height: block,
+      block_time: block * 10,
+      epoch_no: 1,
+    })).flatMap((row) => [row, row])
+    const calls: Call[] = []
+    const fetchImpl: FetchLike = async (url, init) => {
+      calls.push({ url, method: init?.method, body: init?.body })
+      const offset = Number(new URL(url).searchParams.get('offset'))
+      if (offset === 0) {
+        return { ok: true, status: 200, json: async () => firstPage, text: async () => '' }
+      }
+      return { ok: false, status: 503, json: async () => ({}), text: async () => 'unavailable' }
+    }
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    await expect(provider.getTxHistoryByAddresses([BYRON_A])).rejects.toBeInstanceOf(ProviderError)
+    expect(calls.map((call) => new URL(call.url).searchParams.get('offset'))).toEqual(['0', '50'])
   })
 
   it('returns empty and skips tx_info when no address has transactions', async () => {

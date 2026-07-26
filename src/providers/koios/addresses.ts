@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { MalformedUpstreamError } from '../../domain/errors.js'
 import type { Utxo, WalletTransaction } from '../../domain/types/transactions.js'
 import type { AddressCapability } from '../capabilities/addresses.js'
 import type { KoiosClient } from './client.js'
@@ -8,6 +9,7 @@ import { hydrateTxHistory } from './tx-info.js'
 // How many transactions we detail per page. Matches the stake-account history page (and the
 // extension's request size).
 const HISTORY_PAGE_SIZE = 50
+const HISTORY_MAX_LIST_ROWS = 100_000
 // A large credential OR-query can time out on Koios when one member is used. Probe small groups
 // concurrently, then recursively split only the groups that matched. Follow-up #107 replaces
 // this workaround when an upstream bulk result identifies the matching credential directly.
@@ -53,6 +55,72 @@ const addressTxRow = z.object({
   block_time: z.number(),
   epoch_no: z.number(),
 })
+type AddressTxRow = z.infer<typeof addressTxRow>
+
+interface AddressHistoryStream {
+  body: unknown
+  rows: AddressTxRow[]
+  index: number
+  offset: number
+  done: boolean
+  last?: AddressTxRow
+}
+
+function compareAddressTxRows(left: AddressTxRow, right: AddressTxRow): number {
+  if (left.block_height !== right.block_height) return left.block_height - right.block_height
+  if (left.tx_hash === right.tx_hash) return 0
+  return left.tx_hash < right.tx_hash ? -1 : 1
+}
+
+async function fillAddressHistoryStream(
+  koios: KoiosClient,
+  stream: AddressHistoryStream,
+  path: string,
+): Promise<void> {
+  if (stream.done || stream.index < stream.rows.length) return
+
+  // Match batchAllPages' 100,000-row safety bound. Exactly 100,000 rows may be complete, so probe
+  // once beyond the bound and reject only when upstream really has more.
+  const probingBound = stream.offset >= HISTORY_MAX_LIST_ROWS
+  const limit = probingBound ? 1 : HISTORY_PAGE_SIZE
+  const separator = path.includes('?') ? '&' : '?'
+  const page = await koios.batch(
+    z.array(addressTxRow),
+    `${path}${separator}limit=${limit}&offset=${stream.offset}`,
+    stream.body,
+  )
+  if (probingBound) {
+    if (page.length > 0) {
+      throw new MalformedUpstreamError(
+        `koios paged result exceeds ${HISTORY_MAX_LIST_ROWS} rows for ${path}`,
+      )
+    }
+    stream.done = true
+    stream.rows = []
+    stream.index = 0
+    return
+  }
+
+  for (const row of page) {
+    if (stream.last !== undefined && compareAddressTxRows(stream.last, row) > 0) {
+      throw new MalformedUpstreamError(`koios returned an out-of-order page for ${path}`)
+    }
+    stream.last = row
+  }
+  stream.rows = page
+  stream.index = 0
+  stream.offset += page.length
+  stream.done = page.length < limit
+}
+
+async function peekAddressHistoryStream(
+  koios: KoiosClient,
+  stream: AddressHistoryStream,
+  path: string,
+): Promise<AddressTxRow | undefined> {
+  await fillAddressHistoryStream(koios, stream, path)
+  return stream.rows[stream.index]
+}
 
 /**
  * Body-size chunking composed with Content-Range paging. Two independent Koios limits bite on an
@@ -68,9 +136,9 @@ const addressTxRow = z.object({
  * primitive the account-utxos pagination work also adds to the client; once that lands on
  * development the two client-side definitions collapse to one and this keeps calling it unchanged.
  *
- * The whole set is fetched, not just the page a caller ultimately needs, because Koios pages a
- * single body and cannot merge address chunks itself. batchAllPages' own upper bound guards the
- * pathological case; in practice a caller narrows the set with `after` before it ever grows large.
+ * The whole UTxO set is fetched because a wallet balance cannot be a plausible partial snapshot.
+ * History uses a separate incremental merge below because its public contract is one bounded
+ * transaction page, not the whole matching set.
  */
 function pagedBatchAll<Row>(
   koios: KoiosClient,
@@ -83,6 +151,66 @@ function pagedBatchAll<Row>(
   return koios.packAdaptively(addresses, toBody, (body) =>
     koios.batchAllPages(rowSchema, path, body, rowKey),
   )
+}
+
+async function boundedAddressHistoryRows(
+  koios: KoiosClient,
+  addresses: string[],
+  afterBlock?: number,
+): Promise<AddressTxRow[]> {
+  const path = '/address_txs?order=block_height.asc,tx_hash.asc'
+  const toBody = (chunk: string[]): unknown => ({
+    _addresses: chunk,
+    ...(afterBlock === undefined ? {} : { _after_block_height: afterBlock }),
+  })
+
+  // Start one incrementally paged, ordered stream per adaptively packed request body. Returning
+  // the stream in a one-item array lets packAdaptively retain its 413 limit learning without
+  // forcing any stream to walk its irrelevant tail.
+  const streams = await koios.packAdaptively<AddressHistoryStream, string>(
+    addresses,
+    toBody,
+    async (body) => {
+      const stream: AddressHistoryStream = {
+        body,
+        rows: [],
+        index: 0,
+        offset: 0,
+        done: false,
+      }
+      await fillAddressHistoryStream(koios, stream, path)
+      return [stream]
+    },
+  )
+
+  const distinct = new Map<string, AddressTxRow>()
+  let boundaryBlock: number | undefined
+
+  for (;;) {
+    const heads = await Promise.all(
+      streams.map(async (stream) => ({
+        stream,
+        row: await peekAddressHistoryStream(koios, stream, path),
+      })),
+    )
+    let next: { stream: AddressHistoryStream; row: AddressTxRow } | undefined
+    for (const head of heads) {
+      if (head.row === undefined) continue
+      if (next === undefined || compareAddressTxRows(head.row, next.row) < 0) {
+        next = { stream: head.stream, row: head.row }
+      }
+    }
+    if (next === undefined) break
+    if (boundaryBlock !== undefined && next.row.block_height > boundaryBlock) break
+
+    next.stream.index += 1
+    if (!distinct.has(next.row.tx_hash)) {
+      distinct.set(next.row.tx_hash, next.row)
+      if (distinct.size === HISTORY_PAGE_SIZE) boundaryBlock = next.row.block_height
+    }
+  }
+
+  return [...distinct.values()]
 }
 
 export function createAddressMethods(koios: KoiosClient): AddressCapability {
@@ -158,20 +286,10 @@ export function createAddressMethods(koios: KoiosClient): AddressCapability {
     ): Promise<WalletTransaction[]> {
       if (addresses.length === 0) return []
 
-      // Oldest first, ordered on a key unique per transaction (block_height then tx_hash) so the
-      // pages tile without skipping history. No row key is enforced across pages here: a single
-      // transaction legitimately comes back once per matching address (a self-transfer), and those
-      // repeats are collapsed by tx_hash just below rather than treated as an upstream duplicate.
-      const rows = await pagedBatchAll(
-        koios,
-        addressTxRow,
-        '/address_txs?order=block_height.asc,tx_hash.asc',
-        addresses,
-        (chunk) => ({
-          _addresses: chunk,
-          ...(afterBlock === undefined ? {} : { _after_block_height: afterBlock }),
-        }),
-      )
+      // Each packed address body is an ordered stream. Merge their oldest heads incrementally
+      // until the first 50 distinct transactions and the whole boundary block are known, instead
+      // of walking every active address to the end before throwing almost all of it away.
+      const rows = await boundedAddressHistoryRows(koios, addresses, afterBlock)
       if (rows.length === 0) return []
 
       // A transaction touching more than one of the requested addresses (a self-transfer within
@@ -183,8 +301,9 @@ export function createAddressMethods(koios: KoiosClient): AddressCapability {
       for (const row of rows) byHash.set(row.tx_hash, row)
       const distinct = [...byHash.values()]
 
-      // One page, oldest first. Don't cut through a block: include any trailing txs that share
-      // the boundary block, so the next `after={block}` cursor can't skip the rest of it.
+      // The bounded merge already selected one page, oldest first, without cutting through its
+      // boundary block. Keep the final sort/window here as a defensive statement of the public
+      // contract and to make the selection independent of stream scheduling.
       const sorted = distinct.sort((a, b) => a.block_height - b.block_height)
       let end = Math.min(HISTORY_PAGE_SIZE, sorted.length)
       const boundaryBlock = sorted[end - 1]?.block_height

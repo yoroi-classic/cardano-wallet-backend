@@ -51,6 +51,26 @@ describe('E2E Koios pool discovery', () => {
     )
   })
 
+  it.each(['AbortError', 'TimeoutError'])(
+    'preserves a %s raised while streaming the JSON body',
+    async (name) => {
+      const bodyReadFailure = Object.assign(new Error('response body stopped'), { name })
+      const fetchImpl: PoolListFetch = async () => ({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw bodyReadFailure
+        },
+      })
+
+      await expect(
+        discoverRegisteredPoolId('https://user:password@example.test/api/v1', fetchImpl),
+      ).rejects.toBe(bodyReadFailure)
+      expect(bodyReadFailure.message).not.toContain('password')
+      expect(bodyReadFailure.message).not.toContain(SECRET_BODY)
+    },
+  )
+
   it('preserves fetch timeout failures and the 20-second discovery budget', async () => {
     const timeout = Object.assign(new Error('timed out'), { name: 'TimeoutError' })
     const signal = AbortSignal.abort()

@@ -37,7 +37,18 @@ export async function discoverRegisteredPoolId(
   let data: unknown
   try {
     data = await res.json()
-  } catch {
+  } catch (err) {
+    // Headers can arrive before the body. If the shared timeout fires while Response.json() is
+    // still streaming that body, retain the abort/timeout taxonomy rather than relabeling an
+    // upstream stall as malformed JSON.
+    if (
+      err !== null &&
+      typeof err === 'object' &&
+      'name' in err &&
+      (err.name === 'AbortError' || err.name === 'TimeoutError')
+    ) {
+      throw err
+    }
     // Response.json() errors often quote the invalid body. Replace that message so logging the
     // outer E2E failure cannot echo an upstream error page or credential.
     throw new Error('Koios pool_list returned malformed JSON')

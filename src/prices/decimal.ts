@@ -83,9 +83,16 @@ function expandExponential(str: string): string {
  * the same formatting as `toDecimalString` rather than to `String()`'s default.
  */
 export function divideDecimalStrings(numerator: string, denominator: string): string {
+  const numeratorValue = Number(numerator)
   const denominatorValue = Number(denominator)
+  if (!Number.isFinite(numeratorValue)) {
+    throw new RangeError('cannot divide with a non-finite numerator')
+  }
+  if (!Number.isFinite(denominatorValue)) {
+    throw new RangeError('cannot divide with a non-finite denominator')
+  }
   if (denominatorValue === 0) {
     throw new RangeError('cannot divide by a zero denominator')
   }
-  return toDecimalString(Number(numerator) / denominatorValue)
+  return toDecimalString(numeratorValue / denominatorValue)
 }

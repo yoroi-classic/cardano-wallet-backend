@@ -54,11 +54,28 @@ describe('toDecimalString', () => {
 })
 
 describe('divideDecimalStrings', () => {
+  const largestPowerOfTen = `1${'0'.repeat(308)}`
+  const oversizedPowerOfTen = `1${'0'.repeat(309)}`
+
   it('divides two decimal strings and formats the result', () => {
     expect(divideDecimalStrings('96650.3017183848', '0.163485')).toBe('591187.5812361061')
   })
 
+  it('rejects an oversized numerator before division', () => {
+    expect(() => divideDecimalStrings(oversizedPowerOfTen, '1')).toThrow(RangeError)
+  })
+
+  it('rejects an oversized denominator instead of fabricating a zero result', () => {
+    expect(() => divideDecimalStrings('100', oversizedPowerOfTen)).toThrow(RangeError)
+  })
+
   it('refuses to divide by zero rather than returning Infinity', () => {
     expect(() => divideDecimalStrings('100', '0')).toThrow(RangeError)
+  })
+
+  it('keeps finite boundary operands in plain-decimal notation', () => {
+    expect(divideDecimalStrings(largestPowerOfTen, largestPowerOfTen)).toBe('1')
+    expect(divideDecimalStrings(largestPowerOfTen, '1')).toBe(largestPowerOfTen)
+    expect(divideDecimalStrings('1', largestPowerOfTen)).toBe(`0.${'0'.repeat(307)}1`)
   })
 })

@@ -662,6 +662,59 @@ describe('koios getTxHistory', () => {
     expect(tx?.ttl).toBe(12345)
   })
 
+  it.each([
+    ['a number', Number.MAX_SAFE_INTEGER],
+    ['a canonical numeric string', String(Number.MAX_SAFE_INTEGER)],
+  ])('accepts Number.MAX_SAFE_INTEGER as %s', async (_representation, invalidAfter) => {
+    const info = [{ ...TX_INFO[1], invalid_after: invalidAfter }]
+    const { fetchImpl } = fakeFetchByPath({ '/account_txs': [ACCOUNT_TXS[0]], '/tx_info': info })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [tx] = await provider.getTxHistory(STAKE)
+
+    expect(tx?.ttl).toBe(Number.MAX_SAFE_INTEGER)
+  })
+
+  it.each([
+    ['null', null],
+    ['absent', undefined],
+  ])('preserves an %s invalid_after as an absent ttl', async (_case, invalidAfter) => {
+    const row: Record<string, unknown> = { ...TX_INFO[1] }
+    if (invalidAfter === undefined) {
+      delete row.invalid_after
+    } else {
+      row.invalid_after = invalidAfter
+    }
+    const { fetchImpl } = fakeFetchByPath({
+      '/account_txs': [ACCOUNT_TXS[0]],
+      '/tx_info': [row],
+    })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [tx] = await provider.getTxHistory(STAKE)
+
+    expect(tx?.ttl).toBeUndefined()
+  })
+
+  it.each([
+    ['a numeric string above Number.MAX_SAFE_INTEGER', '9007199254740992'],
+    ['an unsafe number', Number.MAX_SAFE_INTEGER + 1],
+    ['an arbitrarily large numeric string', '9'.repeat(400)],
+    ['a fractional numeric string', '1.5'],
+    ['a fractional number', 1.5],
+    ['a negative sign', '-1'],
+    ['a positive sign', '+1'],
+    ['leading whitespace', ' 1'],
+    ['trailing whitespace', '1 '],
+    ['a non-canonical leading zero', '01'],
+  ])('rejects invalid_after with %s as malformed upstream', async (_case, invalidAfter) => {
+    const info = [{ ...TX_INFO[1], invalid_after: invalidAfter }]
+    const { fetchImpl } = fakeFetchByPath({ '/account_txs': [ACCOUNT_TXS[0]], '/tx_info': info })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getTxHistory(STAKE)).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+
   it('returns empty and skips tx_info when the account has no transactions', async () => {
     const { fetchImpl, calls } = fakeFetchByPath({ '/account_txs': [] })
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })

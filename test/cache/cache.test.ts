@@ -91,15 +91,47 @@ describe('memory cache', () => {
     expect(cache.size).toBe(1)
   })
 
-  it('fails every caller waiting on the same failed load, then recovers', async () => {
+  it('coalesces a synchronous loader throw, clears it, then retries', async () => {
+    const cache = createMemoryCache()
+    const load = vi
+      .fn<() => Promise<string>>()
+      .mockImplementationOnce(() => {
+        throw new Error('thrown before returning a promise')
+      })
+      .mockResolvedValueOnce('value')
+
+    const first = cache.read('k', 1000, load)
+    const concurrent = cache.read('k', 1000, load)
+
+    // The loader is deferred until after the attempt is registered, so same-turn readers share
+    // one promise even when the loader will throw before returning its own promise.
+    expect(load).not.toHaveBeenCalled()
+    expect(concurrent).toBe(first)
+    await Promise.all([
+      expect(first).rejects.toThrow('thrown before returning a promise'),
+      expect(concurrent).rejects.toThrow('thrown before returning a promise'),
+    ])
+    expect(load).toHaveBeenCalledTimes(1)
+
+    // Cleanup ran after registration, so the rejected attempt cannot poison the key.
+    expect(await cache.read('k', 1000, load)).toBe('value')
+    expect(load).toHaveBeenCalledTimes(2)
+  })
+
+  it('coalesces an asynchronously rejected load, clears it, then recovers', async () => {
     const cache = createMemoryCache()
     const gate = deferred<string>()
     const load = vi.fn(() => gate.promise)
 
-    const readers = [cache.read('k', 1000, load), cache.read('k', 1000, load)]
+    const first = cache.read('k', 1000, load)
+    const concurrent = cache.read('k', 1000, load)
+    expect(concurrent).toBe(first)
     gate.reject(new Error('boom'))
 
-    await expect(Promise.all(readers)).rejects.toThrow('boom')
+    await Promise.all([
+      expect(first).rejects.toThrow('boom'),
+      expect(concurrent).rejects.toThrow('boom'),
+    ])
     expect(load).toHaveBeenCalledTimes(1)
 
     // The failed attempt left nothing behind, so the next read starts over.

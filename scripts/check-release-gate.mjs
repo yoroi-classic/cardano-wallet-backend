@@ -25,6 +25,10 @@ for (const required of [
   'test "$(git rev-parse HEAD)" = "$RELEASE_SHA"',
   'if [ "$main_sha" != "$RELEASE_SHA" ]; then',
   'git ls-remote --exit-code origin refs/heads/main',
+  'require_release_tag()',
+  'git ls-remote --exit-code origin "refs/tags/$tag" "refs/tags/$tag^{}"',
+  'Tag $tag no longer exists on origin',
+  'Tag $tag points to $remote_tag_sha on origin, not $RELEASE_SHA',
   'delete_created_tag()',
   'git tag "$tag" "$RELEASE_SHA"',
   'git push origin "refs/tags/$tag"',
@@ -41,15 +45,17 @@ for (const required of [
   'release_state_by_tag()',
   'Refusing to delete $tag because a release currently uses it',
   'for attempt in 1 2 3',
+  'if [ "$release_still_valid" = false ]; then',
   'delete_created_release\n            if [ "$tag_created" = true ]; then',
 ]) {
   assert.ok(workflow.includes(required), `release workflow contract missing: ${required}`)
 }
 
+const workflowWithoutShellContinuations = workflow.replace(/\\[ \t]*\r?\n[ \t]*/g, ' ')
 const ignoredReleaseDeletion =
-  /(?:gh release delete|gh api[^\n]*--method DELETE[^\n]*releases\/)[^\n]*\|\|\s*(?:true\b|:)/
+  /(?:gh release delete|gh api[^\n]*(?:--method|-X)\s+DELETE[^\n]*releases\/)[^\n]*\|\|\s*(?:true\b|:)/
 assert.doesNotMatch(
-  workflow,
+  workflowWithoutShellContinuations,
   ignoredReleaseDeletion,
   'release rollback deletion must never be ignored',
 )
@@ -63,8 +69,14 @@ for (const ignored of [
   'gh release delete "$tag" --yes ||   true',
   'gh release delete "$tag" --yes || :',
   'gh api --method DELETE "repos/o/r/releases/$created_release_id" ||\t:',
+  'gh api \\\n    --method DELETE \\\n    "repos/o/r/releases/$created_release_id" || true',
+  'gh api -X \\\n    DELETE "repos/o/r/releases/$created_release_id" \\\n    || :',
 ]) {
-  assert.match(ignored, ignoredReleaseDeletion, `guard must reject ignored deletion: ${ignored}`)
+  assert.match(
+    ignored.replace(/\\[ \t]*\r?\n[ \t]*/g, ' '),
+    ignoredReleaseDeletion,
+    `guard must reject ignored deletion: ${ignored}`,
+  )
 }
 assert.ok(
   workflow.indexOf('delete_created_release\n') <
@@ -84,6 +96,10 @@ assert.doesNotMatch(
 assert.ok(
   (workflow.match(/require_current_main/g) ?? []).length >= 5,
   'release must revalidate remote main before and after each write',
+)
+assert.ok(
+  (workflow.match(/require_release_tag/g) ?? []).length >= 4,
+  'release must revalidate the remote tag immediately before and after release creation',
 )
 assert.ok(
   ciWorkflow.includes('run: npm run check:release-gate'),

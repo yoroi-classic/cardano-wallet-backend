@@ -66,6 +66,24 @@ jobs:
             fi
           }
 
+          require_release_tag() {
+            if ! remote_tag_refs="$(
+              git ls-remote --exit-code origin "refs/tags/$tag" "refs/tags/$tag^{}"
+            )"; then
+              echo "::error::Tag $tag no longer exists on origin"
+              return 1
+            fi
+            remote_tag_sha="$(
+              printf '%s\n' "$remote_tag_refs" |
+                awk '$2 ~ /\^\{\}$/ { peeled = $1 } $2 !~ /\^\{\}$/ { direct = $1 }
+                  END { print peeled != "" ? peeled : direct }'
+            )"
+            if [ "$remote_tag_sha" != "$RELEASE_SHA" ]; then
+              echo "::error::Tag $tag points to $remote_tag_sha on origin, not $RELEASE_SHA"
+              return 1
+            fi
+          }
+
           delete_created_tag() {
             # A release recreated by another actor after this run deleted its own release owns the
             # tag now. Fail closed instead of orphaning that release by deleting a tag solely
@@ -154,6 +172,9 @@ jobs:
               exit 1
             fi
           fi
+          if ! require_release_tag; then
+            exit 1
+          fi
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "release $tag already exists at $RELEASE_SHA"
             exit 0
@@ -162,6 +183,11 @@ jobs:
             if [ "$tag_created" = true ]; then
               delete_created_tag
             fi
+            exit 1
+          fi
+          # Re-read the remote tag immediately before the Releases API write. target_commitish is
+          # ignored when a tag exists, and GitHub creates the tag when it is missing.
+          if ! require_release_tag; then
             exit 1
           fi
           created_release_id="$(
@@ -178,7 +204,14 @@ jobs:
               exit 1
               ;;
           esac
+          release_still_valid=true
           if ! require_current_main; then
+            release_still_valid=false
+          fi
+          if ! require_release_tag; then
+            release_still_valid=false
+          fi
+          if [ "$release_still_valid" = false ]; then
             # Confirm the release is absent before touching its tag. If GitHub is unavailable or
             # remains inconsistent after retries, fail closed and leave the tag in place so a
             # rerun cannot mistake an orphaned release for a completed rollback.

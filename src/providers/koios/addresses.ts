@@ -64,6 +64,7 @@ interface AddressHistoryStream {
   offset: number
   done: boolean
   last?: AddressTxRow
+  expectedTotal?: number
 }
 
 function compareAddressTxRows(left: AddressTxRow, right: AddressTxRow): number {
@@ -84,21 +85,58 @@ async function fillAddressHistoryStream(
   const probingBound = stream.offset >= HISTORY_MAX_LIST_ROWS
   const limit = probingBound ? 1 : HISTORY_PAGE_SIZE
   const separator = path.includes('?') ? '&' : '?'
-  const page = await koios.batch(
-    z.array(addressTxRow),
+  const response = await koios.batchPageOnce(
+    addressTxRow,
     `${path}${separator}limit=${limit}&offset=${stream.offset}`,
     stream.body,
   )
-  if (probingBound) {
-    if (page.length > 0) {
+  const page = response.rows
+
+  if (response.range === null) {
+    if (response.status === 206 || stream.offset !== 0) {
+      throw new MalformedUpstreamError(
+        `koios omitted Content-Range from a partial response for ${path}`,
+      )
+    }
+    if (probingBound && page.length > 0) {
       throw new MalformedUpstreamError(
         `koios paged result exceeds ${HISTORY_MAX_LIST_ROWS} rows for ${path}`,
       )
     }
+    if (page.length >= limit) {
+      throw new MalformedUpstreamError(
+        `koios returned a full page without Content-Range for ${path}`,
+      )
+    }
+    stream.offset += page.length
     stream.done = true
-    stream.rows = []
-    stream.index = 0
-    return
+  } else if (!('start' in response.range)) {
+    if (stream.offset !== 0 || page.length !== 0) {
+      throw new MalformedUpstreamError(`koios returned rows for an empty Content-Range on ${path}`)
+    }
+    stream.expectedTotal = 0
+    stream.done = true
+  } else {
+    const range = response.range
+    if (range.start !== stream.offset || page.length !== range.end - range.start + 1) {
+      throw new MalformedUpstreamError(`koios returned a non-contiguous page for ${path}`)
+    }
+    if (stream.expectedTotal !== undefined && range.total !== stream.expectedTotal) {
+      throw new MalformedUpstreamError(`koios changed the paged result total for ${path}`)
+    }
+    stream.expectedTotal = range.total
+    if (range.total > HISTORY_MAX_LIST_ROWS) {
+      throw new MalformedUpstreamError(
+        `koios paged result exceeds ${HISTORY_MAX_LIST_ROWS} rows for ${path}`,
+      )
+    }
+    stream.offset = range.end + 1
+    stream.done = stream.offset === range.total
+    if (!stream.done && response.status !== 206) {
+      throw new MalformedUpstreamError(
+        `koios returned an incomplete successful response for ${path}`,
+      )
+    }
   }
 
   for (const row of page) {
@@ -109,8 +147,6 @@ async function fillAddressHistoryStream(
   }
   stream.rows = page
   stream.index = 0
-  stream.offset += page.length
-  stream.done = page.length < limit
 }
 
 async function peekAddressHistoryStream(
@@ -289,7 +325,9 @@ export function createAddressMethods(koios: KoiosClient): AddressCapability {
       // Each packed address body is an ordered stream. Merge their oldest heads incrementally
       // until the first 50 distinct transactions and the whole boundary block are known, instead
       // of walking every active address to the end before throwing almost all of it away.
-      const rows = await boundedAddressHistoryRows(koios, addresses, afterBlock)
+      const rows = await koios.readWithRetry('/address_txs', () =>
+        boundedAddressHistoryRows(koios, addresses, afterBlock),
+      )
       if (rows.length === 0) return []
 
       // A transaction touching more than one of the requested addresses (a self-transfer within

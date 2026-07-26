@@ -35,7 +35,7 @@ function fakeFetchByPath(responses: Record<string, unknown>): {
 } {
   const calls: Call[] = []
   const fetchImpl: FetchLike = async (url, init) => {
-    calls.push({ url, method: init?.method, body: init?.body })
+    calls.push({ url, method: init?.method, body: init?.body, headers: init?.headers })
     const key = Object.keys(responses).find((k) => url.includes(k))
     const data = key !== undefined ? responses[key] : []
     return { ok: true, status: 200, json: async () => data, text: async () => '' }
@@ -219,6 +219,7 @@ describe('koios getTxHistoryByAddresses', () => {
     expect(history.map((t) => t.txHash)).toEqual(['bb', 'aa'])
     const listCall = calls.find((c) => c.url.includes('/address_txs'))
     expect(listCall?.method).toBe('POST')
+    expect(listCall?.headers).toMatchObject({ prefer: 'count=exact' })
     expect(JSON.parse(String(listCall?.body))).toEqual({ _addresses: [BYRON_A] })
   })
 
@@ -338,7 +339,8 @@ describe('koios getTxHistoryByAddresses', () => {
       if (offset === 0) {
         return {
           ok: true,
-          status: 200,
+          status: 206,
+          headers: { get: (name) => (name === 'content-range' ? '0-49/1501' : null) },
           json: async () => txs.slice(offset, offset + limit),
           text: async () => '',
         }
@@ -346,7 +348,8 @@ describe('koios getTxHistoryByAddresses', () => {
       if (offset === 50) {
         return {
           ok: true,
-          status: 200,
+          status: 206,
+          headers: { get: (name) => (name === 'content-range' ? '50-99/1501' : null) },
           json: async () => txs.slice(offset, offset + limit),
           text: async () => '',
         }
@@ -403,10 +406,15 @@ describe('koios getTxHistoryByAddresses', () => {
       const query = new URL(url).searchParams
       const offset = Number(query.get('offset'))
       const limit = Number(query.get('limit'))
+      const page = rows.slice(offset, offset + limit)
+      const end = offset + page.length - 1
       return {
         ok: true,
-        status: 200,
-        json: async () => rows.slice(offset, offset + limit),
+        status: end + 1 === rows.length ? 200 : 206,
+        headers: {
+          get: (name) => (name === 'content-range' ? `${offset}-${end}/${rows.length}` : null),
+        },
+        json: async () => page,
         text: async () => '',
       }
     }
@@ -421,6 +429,122 @@ describe('koios getTxHistoryByAddresses', () => {
         .filter((call) => call.url.includes('/address_txs'))
         .map((call) => new URL(call.url).searchParams.get('offset')),
     ).toEqual(['0', '50', '100', '150'])
+  })
+
+  it('restarts the complete incremental read when Content-Range total changes', async () => {
+    const stale = Array.from({ length: 60 }, (_, block) => ({
+      tx_hash: `stale-${block}`,
+      block_height: block,
+      block_time: block * 10,
+      epoch_no: 1,
+    }))
+    const fresh = Array.from({ length: 50 }, (_, block) => ({
+      tx_hash: `fresh-${block}`,
+      block_height: block,
+      block_time: block * 10,
+      epoch_no: 1,
+    }))
+    const calls: Call[] = []
+    const retries: string[] = []
+    let staleSnapshot = true
+    const fetchImpl: FetchLike = async (url, init) => {
+      calls.push({ url, method: init?.method, body: init?.body })
+      if (url.includes('/tx_info')) {
+        const hashes = (JSON.parse(String(init?.body)) as { _tx_hashes: string[] })._tx_hashes
+        return {
+          ok: true,
+          status: 200,
+          json: async () =>
+            hashes.map((hash) => {
+              const row = fresh.find((candidate) => candidate.tx_hash === hash)!
+              return txInfoRowFor(hash, row.block_height)
+            }),
+          text: async () => '',
+        }
+      }
+
+      const offset = Number(new URL(url).searchParams.get('offset'))
+      if (staleSnapshot && offset === 0) {
+        return {
+          ok: true,
+          status: 206,
+          headers: { get: (name) => (name === 'content-range' ? '0-49/60' : null) },
+          json: async () => stale.slice(0, 50),
+          text: async () => '',
+        }
+      }
+      if (staleSnapshot) {
+        staleSnapshot = false
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: (name) => (name === 'content-range' ? '50-59/61' : null) },
+          json: async () => stale.slice(50),
+          text: async () => '',
+        }
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (name) => (name === 'content-range' ? '0-49/50' : null) },
+        json: async () => fresh,
+        text: async () => '',
+      }
+    }
+    const provider = createKoiosProvider({
+      baseUrl: BASE,
+      fetchImpl,
+      readAttempts: 2,
+      retryBackoffMs: 0,
+      onRetry: (event) => retries.push(event.message),
+    })
+
+    const history = await provider.getTxHistoryByAddresses([BYRON_A])
+
+    expect(history.map((tx) => tx.txHash)).toEqual(fresh.map((row) => row.tx_hash))
+    expect(
+      calls
+        .filter((call) => call.url.includes('/address_txs'))
+        .map((call) => new URL(call.url).searchParams.get('offset')),
+    ).toEqual(['0', '50', '0'])
+    expect(retries).toEqual([
+      expect.stringContaining('koios changed the paged result total for /address_txs'),
+    ])
+  })
+
+  it('stops after the read-attempt budget when Content-Range keeps changing', async () => {
+    const rows = Array.from({ length: 60 }, (_, block) => ({
+      tx_hash: `t${block}`,
+      block_height: block,
+      block_time: block * 10,
+      epoch_no: 1,
+    }))
+    const offsets: string[] = []
+    const fetchImpl: FetchLike = async (url) => {
+      const offset = String(new URL(url).searchParams.get('offset'))
+      offsets.push(offset)
+      return {
+        ok: true,
+        status: offset === '0' ? 206 : 200,
+        headers: {
+          get: (name) =>
+            name === 'content-range' ? (offset === '0' ? '0-49/60' : '50-59/61') : null,
+        },
+        json: async () => (offset === '0' ? rows.slice(0, 50) : rows.slice(50)),
+        text: async () => '',
+      }
+    }
+    const provider = createKoiosProvider({
+      baseUrl: BASE,
+      fetchImpl,
+      readAttempts: 2,
+      retryBackoffMs: 0,
+    })
+
+    await expect(provider.getTxHistoryByAddresses([BYRON_A])).rejects.toThrow(
+      'koios changed the paged result total for /address_txs',
+    )
+    expect(offsets).toEqual(['0', '50', '0', '50'])
   })
 
   it('k-way merges sparse packed streams and counts shared transactions once', async () => {
@@ -469,10 +593,18 @@ describe('koios getTxHistoryByAddresses', () => {
       const query = new URL(url).searchParams
       const offset = Number(query.get('offset'))
       const limit = Number(query.get('limit'))
+      const page = rows.slice(offset, offset + limit)
+      if (page.length === 0) {
+        return { ok: true, status: 200, json: async () => [], text: async () => '' }
+      }
+      const end = offset + page.length - 1
       return {
         ok: true,
-        status: 200,
-        json: async () => rows.slice(offset, offset + limit),
+        status: end + 1 === rows.length ? 200 : 206,
+        headers: {
+          get: (name) => (name === 'content-range' ? `${offset}-${end}/${rows.length}` : null),
+        },
+        json: async () => page,
         text: async () => '',
       }
     }
@@ -502,7 +634,13 @@ describe('koios getTxHistoryByAddresses', () => {
       calls.push({ url, method: init?.method, body: init?.body })
       const offset = Number(new URL(url).searchParams.get('offset'))
       if (offset === 0) {
-        return { ok: true, status: 200, json: async () => firstPage, text: async () => '' }
+        return {
+          ok: true,
+          status: 206,
+          headers: { get: (name) => (name === 'content-range' ? '0-49/51' : null) },
+          json: async () => firstPage,
+          text: async () => '',
+        }
       }
       return { ok: false, status: 503, json: async () => ({}), text: async () => 'unavailable' }
     }

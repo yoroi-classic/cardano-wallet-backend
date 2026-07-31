@@ -126,6 +126,7 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
 
   const entries = new Map<string, Entry>()
   const inFlight = new Map<string, Promise<unknown>>()
+  let generation = 0
 
   function evict(): void {
     if (entries.size <= maxEntries) return
@@ -157,6 +158,7 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
       // starting a second identical one.
       const pending = inFlight.get(key)
       if (pending !== undefined) return pending as Promise<T>
+      const attemptGeneration = generation
 
       // Start the loader in a microtask, after the shared promise has been registered below. A
       // loader is expected to return a promise, but JavaScript callers can still throw before
@@ -165,12 +167,14 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
       const attempt = Promise.resolve()
         .then(load)
         .then((value) => {
-          entries.set(key, {
-            value,
-            expiresAt: now() + ttlMs,
-            usableUntil: now() + ttlMs + staleIfErrorMs,
-          })
-          evict()
+          if (generation === attemptGeneration) {
+            entries.set(key, {
+              value,
+              expiresAt: now() + ttlMs,
+              usableUntil: now() + ttlMs + staleIfErrorMs,
+            })
+            evict()
+          }
           return value
         })
         .catch((err: unknown) => {
@@ -189,7 +193,7 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
           throw err
         })
         .finally(() => {
-          inFlight.delete(key)
+          if (inFlight.get(key) === attempt) inFlight.delete(key)
         })
 
       inFlight.set(key, attempt)
@@ -213,6 +217,7 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
     },
 
     clear(): void {
+      generation += 1
       entries.clear()
       inFlight.clear()
     },

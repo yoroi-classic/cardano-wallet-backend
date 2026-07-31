@@ -175,6 +175,27 @@ describe('memory cache', () => {
     expect(cache.size).toBe(0)
     expect(await cache.read('k', 60_000, async () => 'reloaded')).toBe('reloaded')
   })
+
+  it('clear() prevents an older attempt from caching or deleting its replacement', async () => {
+    const cache = createMemoryCache()
+    const oldLoad = deferred<string>()
+    const replacementLoad = deferred<string>()
+
+    const oldAttempt = cache.read('k', 60_000, () => oldLoad.promise)
+    cache.clear()
+    const replacement = cache.read('k', 60_000, () => replacementLoad.promise)
+
+    oldLoad.resolve('old')
+    await expect(oldAttempt).resolves.toBe('old')
+    expect(cache.peek('k')).toBeUndefined()
+
+    const concurrent = cache.read('k', 60_000, async () => 'unexpected')
+    expect(concurrent).toBe(replacement)
+
+    replacementLoad.resolve('new')
+    await expect(replacement).resolves.toBe('new')
+    expect(cache.peek('k')).toBe('new')
+  })
 })
 
 describe('noCache', () => {

@@ -106,7 +106,9 @@ describe('loadConfig — unhappy path', () => {
   it.each([
     '*',
     'loopback',
+    '0.0.0.0/0',
     '10.0.0.0/33',
+    '::/0',
     '2001:db8::/129',
     '10.0.0.1/nope',
     '10.0.0.1/+0',

@@ -999,7 +999,7 @@ export const openapi = {
 
       Status: {
         type: 'object',
-        required: ['version', 'network', 'provider', 'chain'],
+        required: ['version', 'network', 'provider', 'serverTime', 'chain'],
         properties: {
           version: { type: 'string', description: 'Which build you are talking to.' },
           network: {
@@ -1008,6 +1008,16 @@ export const openapi = {
             description: 'A wallet pointed at the wrong network must be able to find out.',
           },
           provider: { type: 'string', description: 'The upstream chain-data source.' },
+          serverTime: {
+            type: 'integer',
+            minimum: 0,
+            maximum: Number.MAX_SAFE_INTEGER,
+            example: 1_784_674_800_123,
+            description:
+              'Unix time in milliseconds when this response was constructed. Present for `ok`, ' +
+              '`stale`, and `down`; safe to pass directly to JavaScript `Date` without a seconds-' +
+              'to-milliseconds conversion.',
+          },
           chain: {
             type: 'string',
             enum: ['ok', 'stale', 'down'],

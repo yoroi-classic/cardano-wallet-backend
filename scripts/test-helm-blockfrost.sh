@@ -2,6 +2,20 @@
 set -euo pipefail
 
 chart=charts/cardano-wallet-backend
+workflow=.github/workflows/helm-chart.yml
+
+# These are literal workflow fragments, not shell expressions.
+# shellcheck disable=SC2016
+for required in \
+  'TRUSTED_BASE_SHA: ${{ github.event.pull_request.base.sha }}' \
+  'git cat-file -e "$TRUSTED_BASE_SHA:scripts/test-helm-blockfrost.sh"' \
+  'git show "$TRUSTED_BASE_SHA:scripts/test-helm-blockfrost.sh"' \
+  'bash "$RUNNER_TEMP/test-helm-blockfrost.sh"'; do
+  if ! grep -Fq "$required" "$workflow"; then
+    echo "Helm workflow trusted-base check is missing: $required" >&2
+    exit 1
+  fi
+done
 
 if helm template cardano-wallet-backend "$chart" \
   --set config.provider=dingo >/dev/null 2>&1; then
@@ -41,6 +55,21 @@ if helm template cardano-wallet-backend "$chart" \
   exit 1
 fi
 
+if helm template cardano-wallet-backend "$chart" \
+  --set config.provider=blockfrost \
+  --set-string secrets.existingSecret='Not Valid' >/dev/null 2>&1; then
+  echo "Blockfrost rendered with an invalid Kubernetes Secret name" >&2
+  exit 1
+fi
+
+if helm template cardano-wallet-backend "$chart" \
+  --set config.provider=blockfrost \
+  --set secrets.existingSecret=cardano-wallet-backend-secrets \
+  --set-string secrets.blockfrostProjectIdKey=invalid/key >/dev/null 2>&1; then
+  echo "Blockfrost rendered with an invalid Kubernetes Secret key" >&2
+  exit 1
+fi
+
 blockfrost_without_url="$(
   helm template cardano-wallet-backend "$chart" \
     --set config.provider=blockfrost \
@@ -55,13 +84,14 @@ blockfrost_render="$(
   helm template cardano-wallet-backend "$chart" \
     --set config.provider=blockfrost \
     --set config.blockfrostUrl=https://blockfrost.example/api/v0 \
-    --set secrets.existingSecret=cardano-wallet-backend-secrets
+    --set secrets.existingSecret=cardano-wallet-backend-secrets \
+    --set secrets.blockfrostProjectIdKey=custom-project-id
 )"
 
 for expected in \
   'name: BLOCKFROST_PROJECT_ID' \
   'name: "cardano-wallet-backend-secrets"' \
-  'key: "BLOCKFROST_PROJECT_ID"' \
+  'key: "custom-project-id"' \
   'name: BLOCKFROST_URL' \
   'value: "https://blockfrost.example/api/v0"'; do
   if ! grep -Fq "$expected" <<<"$blockfrost_render"; then

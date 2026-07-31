@@ -37,6 +37,8 @@ describe('scrubPath', () => {
       '/v1/account/[redacted]/state',
     ],
     [`/v1/tx/%61${TX_HASH.slice(1)}/status`, '/v1/tx/[redacted]/status'],
+    [`/v1/account/stake%2531${STAKE.slice('stake1'.length)}/utxos`, '/v1/account/[redacted]/utxos'],
+    [`/v1/tx/%2561${TX_HASH.slice(1)}/status`, '/v1/tx/[redacted]/status'],
   ])('redacts an identifier containing percent-encoded characters from %s', (url, expected) => {
     expect(scrubPath(url)).toBe(expected)
   })
@@ -133,6 +135,24 @@ describe('the app log', () => {
     expect(logged).not.toContain(encodedStake)
     expect(logged).not.toContain(STAKE)
     expect(logged).not.toContain('203.0.113.48')
+    expect(logged).toContain('/v1/account/[redacted]/utxos')
+  })
+
+  it('redacts a double-encoded stake key from the application log', async () => {
+    const { app, lines } = await capturingServer()
+    const encodedStake = `stake%2531${STAKE.slice('stake1'.length)}`
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/v1/account/${encodedStake}/utxos`,
+      remoteAddress: '203.0.113.50',
+    })
+    await app.close()
+
+    expect(response.statusCode).toBe(400)
+    const logged = lines.join('\n')
+    expect(logged).not.toContain(encodedStake)
+    expect(logged).not.toContain('203.0.113.50')
     expect(logged).toContain('/v1/account/[redacted]/utxos')
   })
 

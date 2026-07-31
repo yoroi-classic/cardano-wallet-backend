@@ -34,15 +34,21 @@ const STAKE_ADDRESS = /^stake(_test)?1[0-9a-z]+$/i
 const TX_HASH = /^[0-9a-fA-F]{64}$/
 
 function scrubSegment(segment: string): string {
-  let decoded: string
-  try {
-    decoded = decodeURIComponent(segment)
-  } catch {
-    // Invalid escapes must not make the request serializer throw. Redact the whole segment:
-    // retaining malformed input would fail open and could still persist most of an identifier.
+  let decoded = segment
+  do {
+    try {
+      decoded = decodeURIComponent(decoded)
+    } catch {
+      // Invalid escapes must not make the request serializer throw. Redact the whole segment:
+      // retaining malformed input would fail open and could still persist most of an identifier.
+      return REDACTED
+    }
+  } while (/%[0-9a-fA-F]{2}/.test(decoded))
+
+  if (STAKE_ADDRESS.test(decoded) || TX_HASH.test(decoded)) {
     return REDACTED
   }
-  return STAKE_ADDRESS.test(decoded) || TX_HASH.test(decoded) ? REDACTED : segment
+  return segment
 }
 
 /**

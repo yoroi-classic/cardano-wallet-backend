@@ -101,10 +101,16 @@ assert.ok(
   (workflow.match(/require_release_tag/g) ?? []).length >= 4,
   'release must revalidate the remote tag immediately before and after release creation',
 )
-assert.ok(
-  ciWorkflow.includes('run: npm run check:release-gate'),
-  'CI must invoke the shared release-gate contract script',
-)
+for (const required of [
+  'fetch-depth: 0',
+  'TRUSTED_BASE_SHA: ${{ github.event.pull_request.base.sha }}',
+  'git cat-file -e "$TRUSTED_BASE_SHA:scripts/check-release-gate.mjs"',
+  'git show "$TRUSTED_BASE_SHA:scripts/check-release-gate.mjs"',
+  'node "$RUNNER_TEMP/check-release-gate.mjs"',
+  'npm run check:release-gate',
+]) {
+  assert.ok(ciWorkflow.includes(required), `CI release check missing: ${required}`)
+}
 assert.equal(
   packageJson.scripts['check:release-gate'],
   'node scripts/check-release-gate.mjs',

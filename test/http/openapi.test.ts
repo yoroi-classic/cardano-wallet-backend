@@ -1,5 +1,5 @@
 import { Ajv2020 } from 'ajv/dist/2020.js'
-import addFormats from 'ajv-formats'
+import addFormatsImport from 'ajv-formats'
 import { bech32 } from '@scure/base'
 import { describe, expect, it } from 'vitest'
 import { openapi } from '../../src/http/openapi.js'
@@ -19,8 +19,21 @@ import { fakeProvider } from '../support/fake-provider.js'
  * from the real handlers, against the schemas it publishes.
  */
 
+type FormatsPlugin = (instance: Ajv2020) => unknown
+
+// Node's ESM loader exposes this CommonJS package's default import as the callable plugin. Its
+// declaration file also assigns `module.exports`, which TypeScript 6/NodeNext conservatively models
+// as the module namespace instead. Keep that declaration mismatch at the import boundary; runtime
+// callers use the plugin function directly and never depend on a nested `.default` implementation
+// detail.
+const addFormats = addFormatsImport as unknown as FormatsPlugin
+
+function registerFormats(instance: Ajv2020, plugin: FormatsPlugin = addFormats): void {
+  plugin(instance)
+}
+
 const ajv = new Ajv2020({ strict: false, allErrors: true })
-addFormats.default(ajv)
+registerFormats(ajv)
 ajv.addSchema({ ...openapi.components, $id: 'components' })
 
 /** Validate a value against a named schema from the spec. */
@@ -32,6 +45,26 @@ function validate(schemaName: string, value: unknown): string[] {
   const check = ajv.compile(schema)
   return check(value) ? [] : (check.errors ?? []).map((e) => `${e.instancePath} ${e.message}`)
 }
+
+describe('OpenAPI schema format setup', () => {
+  it('accepts the callable default-import shape without requiring a nested default property', () => {
+    const isolated = new Ajv2020({ strict: false })
+    let called = false
+    const callableOnly: FormatsPlugin = (instance) => {
+      called = true
+      return addFormats(instance)
+    }
+
+    expect('default' in callableOnly).toBe(false)
+    registerFormats(isolated, callableOnly)
+
+    expect(called).toBe(true)
+    expect(isolated.validate({ type: 'string', format: 'uri' }, 'https://example.test/path')).toBe(
+      true,
+    )
+    expect(isolated.validate({ type: 'string', format: 'uri' }, 'not a URI')).toBe(false)
+  })
+})
 
 // Well-formed bech32, so the routes' own validation passes and the responses under test are the
 // real ones rather than a 400.
@@ -430,6 +463,30 @@ describe('real responses validate against the schemas the spec publishes', () =>
     expect(res.statusCode).toBe(200)
     expect(validate('Status', res.body)).toEqual([])
     expect((res.body as { chain: string }).chain).toBe('down')
+  })
+
+  it('requires an exact Unix millisecond server time in every status response', () => {
+    const down = {
+      version: '1.2.3',
+      network: 'preprod',
+      provider: 'koios',
+      serverTime: 1_784_674_800_123,
+      chain: 'down',
+      tip: null,
+    }
+
+    expect(validate('Status', down)).toEqual([])
+    expect(validate('Status', { ...down, serverTime: 1.5 })).not.toEqual([])
+    expect(validate('Status', { ...down, serverTime: Number.MAX_SAFE_INTEGER + 1 })).not.toEqual([])
+    expect(
+      validate('Status', {
+        version: down.version,
+        network: down.network,
+        provider: down.provider,
+        chain: down.chain,
+        tip: down.tip,
+      }),
+    ).not.toEqual([])
   })
 
   it('GET /v1/account/{stake}/rewards', async () => {

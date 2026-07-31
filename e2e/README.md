@@ -46,6 +46,17 @@ Fund the printed payment address from the preprod faucet
 
 Use a throwaway, test-only mnemonic. Never point this at a mnemonic that holds real funds.
 
+### Mainnet safety
+
+The harness supports mainnet only for deliberate operator testing because a funded run
+builds, signs, and submits a transaction that spends real ADA. A mainnet run requires both
+`NETWORK=mainnet` and the exact separate opt-in `ALLOW_MAINNET_E2E=true`. Missing, empty,
+or differently spelled values fail during configuration loading, before the mnemonic is
+accepted or signing keys are derived. Preprod and preview do not require this opt-in.
+
+Do not keep the mainnet opt-in in a shared `.env` file. Set it only for the individual
+mainnet command after confirming that the mnemonic and backend are intended for that run.
+
 ## Scope and expansion
 
 Deliberately minimal for now: plain ADA only, single account, self-payment. It grows in

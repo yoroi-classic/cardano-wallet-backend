@@ -26,6 +26,11 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
+      - run: npm ci --prefix e2e
+      - name: E2E harness safety tests
+        run: npm test --prefix e2e
+      - name: E2E harness typecheck
+        run: npm run typecheck --prefix e2e
       - run: npm run lint
       - run: npm run format:check
       - run: npm run typecheck

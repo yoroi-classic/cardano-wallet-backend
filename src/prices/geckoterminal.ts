@@ -244,7 +244,7 @@ function ohlcvCacheKey(
   kind: 'history' | 'activity',
   range: PriceRange | PriceWindow,
 ): string {
-  return `price:token:ohlcv:${subject}:pool:${poolCacheIdentity(poolAddress)}:${kind}:${range}`
+  return `price:token:ohlcv:${NETWORK}:${subject}:pool:${poolCacheIdentity(poolAddress)}:${kind}:${range}`
 }
 
 /** Build a TokenActivity from a resolved pool's own 24h figures, or undefined when incomplete. */

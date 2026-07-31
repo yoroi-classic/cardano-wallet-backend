@@ -399,7 +399,7 @@ describe('geckoterminal client — getTokenHistory', () => {
 
     const candleKey = keys.find((key) => key.includes(':ohlcv:'))
     expect(candleKey).toMatch(
-      new RegExp(`^price:token:ohlcv:${SUBJECT}:pool:[0-9a-f]{64}:history:6m$`),
+      new RegExp(`^price:token:ohlcv:cardano:${SUBJECT}:pool:[0-9a-f]{64}:history:6m$`),
     )
     expect(candleKey).not.toContain(rawPoolAddress)
     expect(candleKey).not.toContain('SECRET')

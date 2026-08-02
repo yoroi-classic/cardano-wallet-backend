@@ -61,7 +61,7 @@ export interface KoiosConfig {
   /**
    * Attempts per read, including the first. 1 disables retrying.
    *
-   * Must be a positive safe integer. 0 is rejected rather than treated as "make no request":
+   * Must be a safe integer from 1 through 100. 0 is rejected rather than treated as "make no request":
    * callers that want no retries use 1, because every read still needs its first attempt.
    *
    * Bounded on purpose: an upstream that is genuinely down should surface as down rather than as
@@ -92,6 +92,9 @@ interface RequestInit {
 }
 
 const DEFAULT_READ_ATTEMPTS = 3
+// A retry budget past ~100 only turns a dead upstream into a longer hang. Keep this aligned with
+// the Blockfrost provider so a hand-built config cannot create an effectively endless request loop.
+const MAX_READ_ATTEMPTS = 100
 const DEFAULT_BACKOFF_MS = 150
 const DEFAULT_TIMEOUT_MS = 10_000
 const KOIOS_PAGE_SIZE = 1_000
@@ -255,8 +258,10 @@ function limitFrom413(err: unknown): number | undefined {
 
 function asReadAttempts(value: number | undefined): number {
   const attempts = value ?? DEFAULT_READ_ATTEMPTS
-  if (!Number.isSafeInteger(attempts) || attempts < 1) {
-    throw new RangeError('readAttempts must be a positive safe integer; use 1 to disable retries')
+  if (!Number.isSafeInteger(attempts) || attempts < 1 || attempts > MAX_READ_ATTEMPTS) {
+    throw new RangeError(
+      `readAttempts must be a safe integer in [1, ${MAX_READ_ATTEMPTS}]; use 1 to disable retries`,
+    )
   }
   return attempts
 }

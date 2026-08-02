@@ -26,6 +26,7 @@
  */
 
 const REDACTED = '[redacted]'
+const MAX_DECODE_PASSES = 3
 
 /** A bech32 stake address, mainnet or testnet. Appears as a path segment on the account routes. */
 const STAKE_ADDRESS = /^stake(_test)?1[0-9a-z]+$/i
@@ -35,7 +36,7 @@ const TX_HASH = /^[0-9a-fA-F]{64}$/
 
 function scrubSegment(segment: string): string {
   let decoded = segment
-  do {
+  for (let passes = 0; passes < MAX_DECODE_PASSES; passes += 1) {
     try {
       decoded = decodeURIComponent(decoded)
     } catch {
@@ -43,12 +44,17 @@ function scrubSegment(segment: string): string {
       // retaining malformed input would fail open and could still persist most of an identifier.
       return REDACTED
     }
-  } while (/%[0-9a-fA-F]{2}/.test(decoded))
-
-  if (STAKE_ADDRESS.test(decoded) || TX_HASH.test(decoded)) {
-    return REDACTED
+    if (STAKE_ADDRESS.test(decoded) || TX_HASH.test(decoded)) {
+      return REDACTED
+    }
+    if (!/%[0-9a-fA-F]{2}/.test(decoded)) {
+      return segment
+    }
   }
-  return segment
+
+  // Do not spend unbounded work decoding attacker-controlled path segments. A deeply nested
+  // encoding is not a valid identifier we need to preserve, so redact it conservatively.
+  return REDACTED
 }
 
 /**

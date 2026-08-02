@@ -47,6 +47,15 @@ describe('scrubPath', () => {
     expect(() => scrubPath(`/v1/account/${MALFORMED_STAKE}/utxos`)).not.toThrow()
     expect(scrubPath(`/v1/account/${MALFORMED_STAKE}/utxos`)).toBe('/v1/account/[redacted]/utxos')
   })
+
+  it('bounds nested percent-decoding work', () => {
+    let deeplyEncoded = '%41'
+    for (let pass = 0; pass < 4; pass += 1) {
+      deeplyEncoded = encodeURIComponent(deeplyEncoded)
+    }
+
+    expect(scrubPath(`/bad/${deeplyEncoded}/path`)).toBe('/bad/[redacted]/path')
+  })
 })
 
 describe('serializeRequest', () => {

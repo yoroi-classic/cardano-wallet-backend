@@ -110,10 +110,12 @@ interface PagedBatchResult<Row> {
 type PagedBatchOptions<Row> =
   | {
       rowKey?: (row: Row) => string
+      keyset?: (row: Row) => readonly [string, number]
       verifyConsistency?: false
     }
   | {
       rowKey: (row: Row) => string
+      keyset?: (row: Row) => readonly [string, number]
       verifyConsistency: true
     }
 
@@ -435,6 +437,7 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
     path: string,
     body: unknown,
     rowKey?: (row: Row) => string,
+    keyset?: (row: Row) => readonly [string, number],
   ): Promise<PagedBatchResult<Row>> {
     const rows: Row[] = []
     const keys: string[] = []
@@ -442,6 +445,7 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
     let expectedStart = 0
     let expectedTotal: number | undefined
     let pageCount = 0
+    let lastCursor: readonly [string, number] | undefined
 
     const appendPage = (page: Row[]): void => {
       if (rowKey !== undefined) {
@@ -463,7 +467,15 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
 
     for (;;) {
       const separator = path.includes('?') ? '&' : '?'
-      const pagePath = `${path}${separator}limit=${KOIOS_PAGE_SIZE}&offset=${expectedStart}`
+      const query = new URLSearchParams({ limit: String(KOIOS_PAGE_SIZE) })
+      if (keyset === undefined) query.set('offset', String(expectedStart))
+      else if (lastCursor !== undefined) {
+        const [txHash, txIndex] = lastCursor
+        // The order is tx_hash, then tx_index.  PostgREST's composite OR keeps rows after
+        // the cursor without relying on an offset into a result set that may be changing.
+        query.set('or', `(tx_hash.gt.${txHash},and(tx_hash.eq.${txHash},tx_index.gt.${txIndex}))`)
+      }
+      const pagePath = `${path}${separator}${query.toString()}`
       const response = await requestWithMetadata(pagePath, {
         method: 'POST',
         body: JSON.stringify(body),
@@ -476,6 +488,11 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
       pageCount += 1
 
       if (response.contentRange === null) {
+        if (keyset !== undefined && (page.length >= KOIOS_PAGE_SIZE || lastCursor !== undefined)) {
+          throw new MalformedUpstreamError(
+            `koios omitted Content-Range from a keyset response for ${path}`,
+          )
+        }
         if (response.status === 206 || expectedStart !== 0) {
           throw new MalformedUpstreamError(
             `koios omitted Content-Range from a partial response for ${path}`,
@@ -501,13 +518,33 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
       }
 
       if (range.start !== expectedStart || page.length !== range.end - range.start + 1) {
+        if (keyset !== undefined && range.start === 0 && page.length === range.end + 1) {
+          // A keyset-filtered query starts at zero on every request. Its total is the number
+          // remaining after the cursor, so it cannot be compared with the previous page total.
+        } else {
+          throw new MalformedUpstreamError(`koios returned a non-contiguous page for ${path}`)
+        }
+      }
+      if (keyset !== undefined && page.length > 0) {
+        const cursor = keyset(page[page.length - 1]!)
+        if (
+          lastCursor !== undefined &&
+          (cursor[0] < lastCursor[0] || (cursor[0] === lastCursor[0] && cursor[1] <= lastCursor[1]))
+        ) {
+          throw new MalformedUpstreamError(`koios returned a non-advancing keyset page for ${path}`)
+        }
+        lastCursor = cursor
+      }
+      if (keyset !== undefined) {
+        expectedTotal = range.total
+      } else if (expectedTotal !== undefined && range.total !== expectedTotal) {
         throw new MalformedUpstreamError(`koios returned a non-contiguous page for ${path}`)
       }
-      if (expectedTotal !== undefined && range.total !== expectedTotal) {
-        throw new MalformedUpstreamError(`koios changed the paged result total for ${path}`)
-      }
-      expectedTotal = range.total
-      if (expectedTotal > KOIOS_MAX_PAGED_ROWS) {
+      if (keyset === undefined) expectedTotal = range.total
+      if (
+        (keyset === undefined ? (expectedTotal ?? 0) : rows.length + page.length) >
+        KOIOS_MAX_PAGED_ROWS
+      ) {
         throw new MalformedUpstreamError(
           `koios paged result exceeds ${KOIOS_MAX_PAGED_ROWS} rows for ${path}`,
         )
@@ -515,7 +552,10 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
 
       appendPage(page)
       expectedStart = range.end + 1
-      if (expectedStart === expectedTotal) {
+      if (keyset !== undefined && range.total <= page.length) {
+        return { rows, keys, total: rows.length, pageCount }
+      }
+      if (keyset === undefined && expectedStart === expectedTotal) {
         return { rows, keys, total: expectedTotal, pageCount }
       }
       if (response.status !== 206) {
@@ -591,8 +631,13 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
       }
 
       return read(path, async () => {
-        const first = await walkBatchPages(rowSchema, path, body, rowKey)
-        if (first.pageCount === 1 || rowKey === undefined || options?.verifyConsistency !== true) {
+        const first = await walkBatchPages(rowSchema, path, body, rowKey, options?.keyset)
+        if (
+          first.pageCount === 1 ||
+          rowKey === undefined ||
+          options?.verifyConsistency !== true ||
+          options?.keyset !== undefined
+        ) {
           return first.rows
         }
 

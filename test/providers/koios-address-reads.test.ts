@@ -71,9 +71,7 @@ describe('koios getUtxosByAddresses', () => {
         inlineDatum: 'd87980',
       },
     ])
-    expect(calls[0]?.url).toBe(
-      `${BASE}/address_utxos?order=tx_hash.asc,tx_index.asc&limit=1000&offset=0`,
-    )
+    expect(calls[0]?.url).toBe(`${BASE}/address_utxos?order=tx_hash.asc,tx_index.asc&limit=1000`)
     expect(calls[0]?.headers).toMatchObject({ prefer: 'count=exact' })
     expect(calls[0]?.headers).not.toHaveProperty('range')
     expect(JSON.parse(String(calls[0]?.body))).toEqual({
@@ -125,8 +123,8 @@ describe('koios getUtxosByAddresses', () => {
     const calls: Call[] = []
     const fetchImpl: FetchLike = async (url, init) => {
       calls.push({ url, method: init?.method, body: init?.body, headers: init?.headers })
-      const offset = new URL(url).searchParams.get('offset')
-      if (offset === '0') {
+      const query = new URL(url).searchParams
+      if (query.get('or') === null) {
         return {
           ok: true,
           status: 206,
@@ -135,23 +133,24 @@ describe('koios getUtxosByAddresses', () => {
           text: async () => '',
         }
       }
-      if (offset === '1000') {
+      if (query.get('or') !== null) {
         return {
           ok: true,
           status: 200,
-          headers: { get: (name) => (name === 'content-range' ? '1000-1500/1501' : null) },
+          headers: { get: (name) => (name === 'content-range' ? '0-500/501' : null) },
           json: async () => rows.slice(1_000),
           text: async () => '',
         }
       }
-      throw new Error(`unexpected offset: ${offset}`)
+      throw new Error(`unexpected keyset: ${query.get('or')}`)
     }
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
     const utxos = await provider.getUtxosByAddresses([BYRON_A])
 
     expect(utxos).toHaveLength(1_501)
-    expect(calls.map((call) => new URL(call.url).searchParams.get('offset'))).toEqual(['0', '1000'])
+    expect(calls).toHaveLength(2)
+    expect(new URL(calls[1]!.url).searchParams.get('or')).toContain('tx_hash.gt.')
     expect(utxos[1_500]).toMatchObject({ value: '1501' })
   })
 
@@ -500,7 +499,7 @@ describe('koios address reads — 413 body-limit adaptation', () => {
       // After the repack: a two-address chunk, walked across two Content-Range pages so the fix is
       // shown to compose packing, limit-learning, and paging together.
       const addr = body._addresses[0]
-      const offset = new URL(url).searchParams.get('offset')
+      const query = new URL(url).searchParams
       const row = (suffix: string, index: number, value: string) => ({
         tx_hash: `${addr}#${suffix}`,
         tx_index: index,
@@ -511,7 +510,7 @@ describe('koios address reads — 413 body-limit adaptation', () => {
         inline_datum: null,
         reference_script: null,
       })
-      if (offset === '0') {
+      if (query.get('or') === null) {
         return {
           ok: true,
           status: 206,
@@ -520,16 +519,16 @@ describe('koios address reads — 413 body-limit adaptation', () => {
           text: async () => '',
         }
       }
-      if (offset === '1') {
+      if (query.get('or') !== null) {
         return {
           ok: true,
           status: 200,
-          headers: { get: (name) => (name === 'content-range' ? '1-1/2' : null) },
+          headers: { get: (name) => (name === 'content-range' ? '0-0/1' : null) },
           json: async () => [row('b', 1, '2000000')],
           text: async () => '',
         }
       }
-      throw new Error(`unexpected offset: ${offset}`)
+      throw new Error(`unexpected keyset: ${query.get('or')}`)
     }
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 

@@ -113,7 +113,7 @@ describe('POST /v1/tx/utxos', () => {
     await app.close()
   })
 
-  it('accepts the maximum bounded output index', async () => {
+  it('accepts the maximum provider-supported output index', async () => {
     const seen: string[][] = []
     const app = await serve({
       getUtxosByRef: async (refs: string[]) => {
@@ -125,11 +125,11 @@ describe('POST /v1/tx/utxos', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/v1/tx/utxos',
-      payload: { refs: [`${TX}#65535`] },
+      payload: { refs: [`${TX}#32767`] },
     })
 
     expect(res.statusCode).toBe(200)
-    expect(seen[0]).toEqual([`${TX}#65535`])
+    expect(seen[0]).toEqual([`${TX}#32767`])
     await app.close()
   })
 
@@ -140,7 +140,8 @@ describe('POST /v1/tx/utxos', () => {
     ['a negative index', `${TX}#-1`],
     ['a signed index', `${TX}#+1`],
     ['a decimal index', `${TX}#1.0`],
-    ['an index above the protocol bound', `${TX}#65536`],
+    ['an index above the provider bound', `${TX}#32768`],
+    ['an index at the ledger maximum but above the provider bound', `${TX}#65535`],
     ['an unsafe integer index', `${TX}#9007199254740992`],
     ['an extremely long index', `${TX}#${'9'.repeat(1_000)}`],
     ['a second separator', `${TX}#1#0`],

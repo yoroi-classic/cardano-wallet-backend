@@ -8,11 +8,12 @@ const submitBody = z.object({ cbor: z.string().regex(/^([0-9a-fA-F]{2})+$/) })
 const TX_HASH = /^[0-9a-fA-F]{64}$/
 
 // A UTxO reference, in the form the whole ecosystem writes it: `<64 hex>#<index>`. The index is
-// bounded rather than merely numeric, because a transaction cannot have 10^9 outputs and a value
-// like that is a caller bug we would otherwise forward to Koios and get a 400 for from further
-// away, where it is harder to understand.
-const MAX_OUTPUT_INDEX = 65_535
-const UTXO_REF = /^[0-9a-fA-F]{64}#\d{1,5}$/
+// Koios stores tx_index as PostgreSQL smallint, so values above 32767 are rejected upstream.
+// Keep the HTTP bound aligned with that provider limit instead of accepting a value that becomes
+// a 502 after the request is forwarded.
+const MAX_OUTPUT_INDEX = 32_767
+const UTXO_REF =
+  /^[0-9a-fA-F]{64}#(?:[0-9]{1,4}|0[0-9]{4}|[12][0-9]{4}|3[01][0-9]{3}|32[0-6][0-9]{2}|327[0-5][0-9]|3276[0-7])$/
 
 const utxoRefsBody = z.object({
   refs: z.array(z.string()).min(1).max(100),

@@ -392,6 +392,7 @@ describe('geckoterminal client — getTokenHistory', () => {
     const provider = createGeckoTerminalClient({
       baseUrl: upstreamWithCredential,
       cache,
+      cacheNamespace: 'preview',
       fetchImpl,
     })
 
@@ -399,8 +400,9 @@ describe('geckoterminal client — getTokenHistory', () => {
 
     const candleKey = keys.find((key) => key.includes(':ohlcv:'))
     expect(candleKey).toMatch(
-      new RegExp(`^price:token:ohlcv:cardano:${SUBJECT}:pool:[0-9a-f]{64}:history:6m$`),
+      new RegExp(`^price:token:ohlcv:preview:${SUBJECT}:pool:[0-9a-f]{64}:history:6m$`),
     )
+    expect(keys).toContain(`price:token:pool:preview:${SUBJECT}`)
     expect(candleKey).not.toContain(rawPoolAddress)
     expect(candleKey).not.toContain('SECRET')
     expect(candleKey).not.toContain('example.test')

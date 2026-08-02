@@ -224,7 +224,8 @@ function dedupeSubjects(subjects: string[]): string[] {
   return unique
 }
 
-const poolCacheKey = (subject: string) => `price:token:pool:${subject}`
+const poolCacheKey = (cacheNamespace: string, subject: string) =>
+  `price:token:pool:${cacheNamespace}:${subject}`
 
 /**
  * Stable identity for a selected pool in a cache key.
@@ -239,12 +240,13 @@ function poolCacheIdentity(address: string): string {
 }
 
 function ohlcvCacheKey(
+  cacheNamespace: string,
   subject: string,
   poolAddress: string,
   kind: 'history' | 'activity',
   range: PriceRange | PriceWindow,
 ): string {
-  return `price:token:ohlcv:${NETWORK}:${subject}:pool:${poolCacheIdentity(poolAddress)}:${kind}:${range}`
+  return `price:token:ohlcv:${cacheNamespace}:${subject}:pool:${poolCacheIdentity(poolAddress)}:${kind}:${range}`
 }
 
 /** Build a TokenActivity from a resolved pool's own 24h figures, or undefined when incomplete. */
@@ -284,6 +286,8 @@ export interface GeckoTerminalConfig {
   fetchImpl?: FetchLike
   baseUrl?: string
   timeoutMs?: number
+  /** Namespace cache entries by the deployment's chain network. Defaults to the upstream network. */
+  cacheNamespace?: string
   /**
    * The rate limiter every upstream call is paced through. Injectable so a test can drive it with
    * its own clock; production gets the shared default built from the constants above.
@@ -299,6 +303,9 @@ export interface GeckoTerminalClient {
 export function createGeckoTerminalClient(config: GeckoTerminalConfig = {}): GeckoTerminalClient {
   const baseUrl = (config.baseUrl ?? DEFAULT_GECKOTERMINAL_BASE_URL).replace(/\/+$/, '')
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  // GeckoTerminal's API path is Cardano-wide, while deployments can be mainnet, preprod, or
+  // preview. Keep those process-cache entries separate even though the upstream path is fixed.
+  const cacheNamespace = config.cacheNamespace ?? NETWORK
   const rawFetch: FetchLike = config.fetchImpl ?? (globalThis.fetch as unknown as FetchLike)
   const cache = config.cache ?? noCache
   const bucket =
@@ -346,7 +353,7 @@ export function createGeckoTerminalClient(config: GeckoTerminalConfig = {}): Gec
    */
   async function resolveAdaPool(subject: string): Promise<AdaPool | undefined> {
     const resolved = await cache.read<AdaPool | null>(
-      poolCacheKey(subject),
+      poolCacheKey(cacheNamespace, subject),
       TOKEN_POOL_TTL_MS,
       async () => {
         const body = await getOrNotFound(
@@ -391,7 +398,7 @@ export function createGeckoTerminalClient(config: GeckoTerminalConfig = {}): Gec
           .filter((pool): pool is z.infer<typeof includedPool> => pool !== undefined)
         const adaPool = pickMostLiquidAdaPool(subject, topPools)
         if (adaPool !== undefined) {
-          cache.set(poolCacheKey(subject), adaPool, TOKEN_POOL_TTL_MS)
+          cache.set(poolCacheKey(cacheNamespace, subject), adaPool, TOKEN_POOL_TTL_MS)
           resolved.set(subject, adaPool)
         } else {
           // Indexed, but its most-liquid pool is not ADA-quoted. Its full pool list may still hold
@@ -404,7 +411,7 @@ export function createGeckoTerminalClient(config: GeckoTerminalConfig = {}): Gec
       // absence so it is not re-asked about, mirroring `resolveAdaPool`'s negative cache.
       for (const subject of chunk) {
         if (!returned.has(subject)) {
-          cache.set(poolCacheKey(subject), null, TOKEN_POOL_TTL_MS)
+          cache.set(poolCacheKey(cacheNamespace, subject), null, TOKEN_POOL_TTL_MS)
           resolved.set(subject, undefined)
         }
       }
@@ -436,7 +443,7 @@ export function createGeckoTerminalClient(config: GeckoTerminalConfig = {}): Gec
     const owned = new Map<string, Deferred<AdaPool | undefined>>()
 
     for (const subject of subjects) {
-      const cached = cache.peek<AdaPool | null>(poolCacheKey(subject))
+      const cached = cache.peek<AdaPool | null>(poolCacheKey(cacheNamespace, subject))
       if (cached !== undefined) {
         resolved.set(subject, cached ?? undefined)
         continue
@@ -505,7 +512,7 @@ export function createGeckoTerminalClient(config: GeckoTerminalConfig = {}): Gec
   ): Promise<TokenActivity | undefined> {
     if (pool === undefined) return undefined
     const days = window === '7d' ? 7 : 30
-    const cacheKey = ohlcvCacheKey(subject, pool.address, 'activity', window)
+    const cacheKey = ohlcvCacheKey(cacheNamespace, subject, pool.address, 'activity', window)
     const candles = await cache.read(cacheKey, TOKEN_HISTORY_TTL_MS, () =>
       fetchOhlcv(pool.address, 'day', 1, days),
     )
@@ -571,7 +578,7 @@ export function createGeckoTerminalClient(config: GeckoTerminalConfig = {}): Gec
       if (pool === undefined) return []
 
       const { timeframe, aggregate, limit } = RANGE_TO_OHLCV[range]
-      const cacheKey = ohlcvCacheKey(normalized, pool.address, 'history', range)
+      const cacheKey = ohlcvCacheKey(cacheNamespace, normalized, pool.address, 'history', range)
       const candles = await cache.read(cacheKey, TOKEN_HISTORY_TTL_MS, () =>
         fetchOhlcv(pool.address, timeframe, aggregate, limit),
       )

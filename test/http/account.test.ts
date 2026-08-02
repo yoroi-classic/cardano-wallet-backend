@@ -154,8 +154,8 @@ describe('account routes', () => {
   )
 
   it.each([
-    ['a testnet reward key address', 'preprod', stakeAddress('stake_test', 0xe0)],
-    ['a testnet reward script address', 'preview', stakeAddress('stake_test', 0xf0)],
+    ['a testnet reward key address on preprod', 'preprod', stakeAddress('stake_test', 0xe0)],
+    ['a testnet reward script address on preview', 'preview', stakeAddress('stake_test', 0xf0)],
     ['a mainnet reward key address', 'mainnet', stakeAddress('stake', 0xe1)],
     ['a mainnet reward script address', 'mainnet', stakeAddress('stake', 0xf1)],
   ])('accepts %s on the configured network', async (_case, network, stake) => {
@@ -174,6 +174,17 @@ describe('account routes', () => {
 
     expect(res.statusCode).toBe(200)
     expect(seen).toEqual([stake])
+  })
+
+  it('uses the shared testnet network id for both preprod and preview', async () => {
+    const stake = stakeAddress('stake_test', 0xe0)
+
+    for (const network of ['preprod', 'preview']) {
+      app = await buildServer({ provider: providerWith({}), info: { ...TEST_INFO, network } })
+      const res = await app.inject({ method: 'GET', url: `/v1/account/${stake}/state` })
+      expect(res.statusCode).toBe(200)
+      await app.close()
+    }
   })
 
   it('maps a provider error to 502', async () => {

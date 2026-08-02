@@ -19,6 +19,9 @@ function configuredNetworkId(network: string): number | undefined {
  *
  * A valid Bech32 checksum and `stake` HRP are not enough: the decoded header has to name a reward
  * key/script credential, carry the same network as the HRP, and match the configured deployment.
+ * Cardano assigns network id 0 to both preprod and preview, so reward-address bytes cannot
+ * distinguish those deployments; the deployment's `/v1/status` response identifies the configured
+ * network.
  * Conversion is deliberately non-throwing so malformed 5-bit padding remains caller input rather
  * than becoming an internal error.
  */

@@ -113,7 +113,10 @@ const schema = z.object({
   // must not silently rewrite the operator's secret.
   NFTCDN_KEY: z
     .string()
-    .refine((value) => value.trim().length > 0, 'must contain a non-whitespace value')
+    .refine(
+      (value) => Buffer.from(value, 'base64').length > 0,
+      'must contain a non-empty base64-encoded key',
+    )
     .optional(),
   // Client remote config. Exactly "" disables it; every other value must be fetchable by Node.
   CONFIG_URL: z

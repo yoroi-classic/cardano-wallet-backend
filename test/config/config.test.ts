@@ -156,6 +156,8 @@ describe('loadConfig — unhappy path', () => {
     ['a blank subdomain', { NFTCDN_SUBDOMAIN: ' \t ', NFTCDN_KEY: 'c2lnbmluZy1rZXk=' }],
     ['a blank key', { NFTCDN_SUBDOMAIN: 'preprod', NFTCDN_KEY: ' \n ' }],
     ['two blank values', { NFTCDN_SUBDOMAIN: ' ', NFTCDN_KEY: '\t' }],
+    ['a key with no decodable bytes', { NFTCDN_SUBDOMAIN: 'preprod', NFTCDN_KEY: '!!!!' }],
+    ['a padding-only key', { NFTCDN_SUBDOMAIN: 'preprod', NFTCDN_KEY: '=' }],
   ])('rejects NFTCDN configuration with %s', (_case, env) => {
     expect(() => loadConfig(env)).toThrow(ConfigError)
   })

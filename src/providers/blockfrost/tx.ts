@@ -1,5 +1,10 @@
 import { z } from 'zod'
-import { BadRequestError, MalformedUpstreamError } from '../../domain/errors.js'
+import {
+  BadRequestError,
+  MalformedUpstreamError,
+  ProviderError,
+  ProviderTimeoutError,
+} from '../../domain/errors.js'
 import {
   confirmedTxStatus,
   pendingTxStatus,
@@ -57,10 +62,20 @@ export function createTxMethods(client: BlockfrostClient): TxCapability {
         // through Blockfrost. A hit proves pending. A miss proves nothing: the transaction might
         // be propagating elsewhere, might have left the mempool between our two reads, or this may
         // be a compatible/self-hosted deployment without the hosted mempool index.
-        const mempool = await client.getOrUndefined(
-          mempoolRow,
-          `/mempool/${encodeURIComponent(hash)}`,
-        )
+        let mempool: z.infer<typeof mempoolRow> | undefined
+        try {
+          mempool = await client.getOrUndefined(mempoolRow, `/mempool/${encodeURIComponent(hash)}`)
+        } catch (error) {
+          // Mempool is enrichment only. Hosted Blockfrost answers a miss with 404, while
+          // compatibility-mode/self-hosted deployments may answer an unregistered route with
+          // 400 (or another transient transport/status error). None of those should turn the
+          // already-valid "not on chain" answer into a 502. Keep malformed payloads and the
+          // explicit hash-mismatch check below loud: they indicate an upstream contract problem.
+          if (!(error instanceof ProviderError || error instanceof ProviderTimeoutError)) {
+            throw error
+          }
+          return unknownTxStatus()
+        }
         if (mempool === undefined) return unknownTxStatus()
         if (mempool.tx.hash.toLowerCase() !== hash.toLowerCase()) {
           throw new MalformedUpstreamError(

@@ -102,6 +102,25 @@ describe('blockfrost tx — happy path', () => {
     expect(callsTo('/blocks/')).toBe(0)
   })
 
+  it.each([400, 403, 500])(
+    'keeps a transaction unknown when the optional mempool lookup returns %s',
+    async (status) => {
+      const { provider, callsTo } = testProvider({
+        [`/txs/${TX_HASH}`]: [{ status: 404 }],
+        [`/mempool/${TX_HASH}`]: [{ status }],
+      })
+
+      await expect(provider.getTxStatus(TX_HASH)).resolves.toEqual({
+        status: 'unknown',
+        seen: false,
+        confirmations: 0,
+        overlayAction: 'retain',
+      })
+      expect(callsTo('/blocks/')).toBe(0)
+      expect(callsTo(`/mempool/${TX_HASH}`)).toBe(status >= 500 ? 3 : 1)
+    },
+  )
+
   it('does not invent rejection or expiry after a previously pending transaction disappears', async () => {
     const { provider } = testProvider({
       [`/txs/${TX_HASH}`]: [{ status: 404 }],

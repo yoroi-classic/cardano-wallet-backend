@@ -119,20 +119,23 @@ describe('the pool list is cached', () => {
   // snapshot. It is fixed for five days and then moves all at once, and a duration would be wrong
   // in both directions.
   it('rescans when the epoch turns over, and not before', async () => {
+    let t = 1_000
     const koios = fakeKoios({ epoch: 300 })
-    const cache = createMemoryCache()
+    const cache = createMemoryCache({ now: () => t })
     const p = provider(koios, cache)
 
     await p.getPoolList({ limit: 50, offset: 0 })
     expect(koios.countOf('/pool_list')).toBe(1)
 
-    // A new epoch. The cached tip has to age out before anyone notices, so clear it as the TTL
-    // would; what is under test is the ranking key, not the tip TTL.
+    // Expire only the ten-second tip entry. The old epoch's page is still live for ninety seconds,
+    // so this proves the new epoch key prevents reusing it rather than merely proving a cleared
+    // cache misses.
+    t += 11_000
     koios.state.epoch = 301
-    cache.clear()
 
     await p.getPoolList({ limit: 50, offset: 0 })
     expect(koios.countOf('/pool_list')).toBe(2)
+    expect(koios.countOf('/pool_info')).toBe(2)
   })
 
   it('does not cache a ticker search', async () => {

@@ -119,7 +119,14 @@ export async function fetchJsonOrNotFound<T>(
     // A 404 is a normal, high-volume answer here (any token GeckoTerminal has not indexed), so the
     // body must be drained rather than abandoned: an unread body pins the underlying connection and
     // defeats keep-alive reuse, one leaked socket per unindexed token.
-    await drainErrorBody(res, signal, opts.upstream)
+    try {
+      await drainErrorBody(res, signal, opts.upstream)
+    } catch (error) {
+      // The status line is already a complete "not indexed" answer. A truncated error body must
+      // not turn that normal absence into a batch-wide provider failure; only an aborted body means
+      // the request deadline was missed and remains actionable to the caller.
+      if (error instanceof ProviderTimeoutError) throw error
+    }
     return undefined
   }
 

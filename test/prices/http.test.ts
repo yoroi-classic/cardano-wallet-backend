@@ -90,6 +90,21 @@ describe('fetchJson — 404 body handling', () => {
     expect(text).toHaveBeenCalledTimes(1)
   })
 
+  it('keeps a 404 answer when its body cannot be drained for a non-timeout reason', async () => {
+    const fetchImpl: FetchLike = async () => ({
+      ok: false,
+      status: 404,
+      json: async () => ({}),
+      text: async () => {
+        throw new Error('connection reset while draining')
+      },
+    })
+
+    await expect(
+      fetchJsonOrNotFound('https://api/x', schema, opts(fetchImpl)),
+    ).resolves.toBeUndefined()
+  })
+
   it('does not turn a stalled 404 body into a negative-cache result', async () => {
     let signal: AbortSignal | undefined
     const fetchImpl: FetchLike = async (_url, init) => {

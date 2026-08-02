@@ -71,7 +71,7 @@ function scopeProviderCache(cache: Cache, config: AppConfig): Cache {
     get size() {
       return cache.size
     },
-    clear: () => cache.clear(),
+    clear: () => cache.clear(prefix),
   }
 }
 

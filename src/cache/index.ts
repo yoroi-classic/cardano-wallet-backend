@@ -94,8 +94,12 @@ export interface Cache {
   /** Live entries. For tests and diagnostics. */
   readonly size: number
 
-  /** Drop everything. For tests. */
-  clear(): void
+  /**
+   * Drop everything, or only keys with the supplied prefix. For tests and scoped cache views.
+   * Prefix deletion keeps one consumer from clearing unrelated entries in the shared process
+   * cache.
+   */
+  clear(prefix?: string): void
 }
 
 export interface MemoryCacheOptions {
@@ -207,9 +211,18 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
       return entries.size
     },
 
-    clear(): void {
-      entries.clear()
-      inFlight.clear()
+    clear(prefix?: string): void {
+      if (prefix === undefined) {
+        entries.clear()
+        inFlight.clear()
+      } else {
+        for (const key of entries.keys()) {
+          if (key.startsWith(prefix)) entries.delete(key)
+        }
+        for (const key of inFlight.keys()) {
+          if (key.startsWith(prefix)) inFlight.delete(key)
+        }
+      }
     },
   }
 }
@@ -230,5 +243,5 @@ export const noCache: Cache = {
   },
   set<T>(_key: string, _value: T, _ttlMs: number): void {},
   size: 0,
-  clear(): void {},
+  clear(_prefix?: string): void {},
 }

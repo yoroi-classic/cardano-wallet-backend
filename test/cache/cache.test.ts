@@ -143,6 +143,18 @@ describe('memory cache', () => {
     expect(cache.size).toBe(0)
     expect(await cache.read('k', 60_000, async () => 'reloaded')).toBe('reloaded')
   })
+
+  it('clear(prefix) only removes entries in that namespace', async () => {
+    const cache = createMemoryCache()
+    await cache.read('provider:koios:preprod:tip', 60_000, async () => 'tip')
+    await cache.read('price:ada', 60_000, async () => 'price')
+
+    cache.clear('provider:koios:preprod:')
+
+    expect(cache.size).toBe(1)
+    expect(cache.peek('provider:koios:preprod:tip')).toBeUndefined()
+    expect(cache.peek('price:ada')).toBe('price')
+  })
 })
 
 describe('noCache', () => {

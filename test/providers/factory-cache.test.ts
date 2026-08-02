@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createMemoryCache, type Cache } from '../../src/cache/index.js'
+import { createMemoryCache, noCache, type Cache } from '../../src/cache/index.js'
 import { loadConfig } from '../../src/config/index.js'
 import type { Tip } from '../../src/domain/types/chain.js'
 import { TIP_TTL_MS } from '../../src/providers/cached.js'
@@ -34,6 +34,9 @@ afterEach(() => {
 })
 
 describe('provider factory cache ownership', () => {
+  const tokenSubject = 'a'.repeat(56) + '484f534b59'
+  const drepId = 'drep1ygpuetneftlmufa97hm5mf3xvqpdkyw656hyg6h20qaewtg3csnkc'
+
   it('uses the exact injected process cache through a provider/network-scoped view', async () => {
     const memory = createMemoryCache()
     const reads: string[] = []
@@ -84,6 +87,77 @@ describe('provider factory cache ownership', () => {
     await expect(koiosMainnet.getTip()).resolves.toEqual(tip(11))
     await expect(blockfrostPreprod.getTip()).resolves.toEqual(tip(12))
     expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('uses the provider view for batch peek and set keys', async () => {
+    const cache = createMemoryCache()
+    const cached = { subject: tokenSubject, policyId: 'a'.repeat(56), assetName: '484f534b59' }
+    cache.set(`provider:koios:preprod:asset:meta:${tokenSubject}`, cached, 60_000)
+    const fetchImpl = vi.fn().mockResolvedValue(
+      response([
+        {
+          policy_id: 'b'.repeat(56),
+          asset_name: '484f534b59',
+          asset_name_ascii: 'HOSKY',
+          fingerprint: 'asset1hosky',
+          total_supply: '1',
+          name: 'HOSKY',
+          ticker: 'HOSKY',
+          description: null,
+          url: null,
+          decimals: 0,
+        },
+      ]),
+    )
+    vi.stubGlobal('fetch', fetchImpl)
+    const provider = createProvider(loadConfig({ NETWORK: 'preprod' }), { cache })
+
+    await expect(provider.getTokenMetadata([tokenSubject])).resolves.toEqual([cached])
+    await expect(provider.getTokenMetadata(['b'.repeat(56) + '484f534b59'])).resolves.toHaveLength(
+      1,
+    )
+    expect(
+      cache.peek(`provider:koios:preprod:asset:meta:${'b'.repeat(56) + '484f534b59'}`),
+    ).toBeDefined()
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the uncached governance walk bounded when noCache is injected', async () => {
+    const cache = noCache
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes('/drep_list')) {
+        const after = new URL(url).searchParams.get('drep_id')
+        const rows = after
+          ? []
+          : Array.from({ length: 1_000 }, () => ({ drep_id: drepId, registered: true }))
+        return response(rows)
+      }
+      if (url.includes('/drep_info')) {
+        return response([
+          {
+            drep_id: drepId,
+            hex: '03ccae794affbe27a5f5f74da6266002db11daa6ae446aea783b972d',
+            has_script: false,
+            drep_status: 'registered',
+            active: true,
+            deposit: '500000000',
+            amount: '1',
+            expires_epoch_no: 219,
+            meta_url: null,
+            meta_hash: null,
+          },
+        ])
+      }
+      void init
+      return response([])
+    })
+    vi.stubGlobal('fetch', fetchImpl)
+    const provider = createProvider(loadConfig({ NETWORK: 'preprod' }), { cache })
+
+    await expect(provider.getDrepList({ limit: 1, offset: 0 })).resolves.toHaveLength(1)
+    expect(fetchImpl.mock.calls.filter(([url]) => String(url).includes('/drep_list'))).toHaveLength(
+      1,
+    )
   })
 
   it('gives standalone providers separate configured memory-cache fallbacks', async () => {

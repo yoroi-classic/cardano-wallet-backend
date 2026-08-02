@@ -9,6 +9,7 @@
   },
   "scripts": {
     "start": "tsx src/run.ts",
+    "test": "tsx --test src/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

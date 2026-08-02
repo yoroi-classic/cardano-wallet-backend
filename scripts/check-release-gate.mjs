@@ -8,6 +8,44 @@ const workflow = readFileSync('.github/workflows/release.yml', 'utf8')
 const ciWorkflow = readFileSync('.github/workflows/ci.yml', 'utf8')
 const packageJson = JSON.parse(readFileSync('package.json', 'utf8'))
 
+function releaseJobCondition(source) {
+  const match = source.match(
+    /^jobs:\n {2}tag:\n {4}if: >-\n((?: {6}.+\n?)+)/m,
+  )
+  assert.ok(match, 'release workflow must define the tag job condition')
+  return match[1]
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => line.trim())
+    .join(' ')
+}
+
+const expectedReleaseJobCondition = [
+  "github.event.workflow_run.conclusion == 'success' &&",
+  "github.event.workflow_run.event == 'push' &&",
+  "github.event.workflow_run.head_branch == 'main' &&",
+  'github.event.workflow_run.head_repository.full_name == github.repository',
+].join(' ')
+function assertReleaseJobCondition(source) {
+  assert.equal(
+    releaseJobCondition(source),
+    expectedReleaseJobCondition,
+    'release job must run only for successful same-repository pushes to main',
+  )
+}
+assertReleaseJobCondition(workflow)
+assert.throws(
+  () =>
+    assertReleaseJobCondition(
+      workflow.replace(
+        "github.event.workflow_run.conclusion == 'success' &&",
+        "github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.conclusion == 'failure' ||",
+      ),
+    ),
+  /release job must run only/,
+  'release gate must reject broadened job conditions',
+)
+
 for (const required of [
   'workflow_run:',
   'workflows: [ci]',

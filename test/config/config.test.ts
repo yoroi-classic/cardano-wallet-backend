@@ -159,10 +159,19 @@ describe('loadConfig — unhappy path', () => {
     ['a key with no decodable bytes', { NFTCDN_SUBDOMAIN: 'preprod', NFTCDN_KEY: '!!!!' }],
     ['a padding-only key', { NFTCDN_SUBDOMAIN: 'preprod', NFTCDN_KEY: '=' }],
     ['a key with only zero bytes', { NFTCDN_SUBDOMAIN: 'preprod', NFTCDN_KEY: 'AA==' }],
-    ['a key with invalid base64 characters', { NFTCDN_SUBDOMAIN: 'preprod', NFTCDN_KEY: '!!!!AA==' }],
+    [
+      'a key with invalid base64 characters',
+      { NFTCDN_SUBDOMAIN: 'preprod', NFTCDN_KEY: '!!!!AA==' },
+    ],
     ['a base64url key', { NFTCDN_SUBDOMAIN: 'preprod', NFTCDN_KEY: '--==' }],
-    ['a subdomain containing a separator', { NFTCDN_SUBDOMAIN: 'evil.example/x', NFTCDN_KEY: 'c2lnbmluZy1rZXk=' }],
-    ['a subdomain containing whitespace', { NFTCDN_SUBDOMAIN: 'pre prod', NFTCDN_KEY: 'c2lnbmluZy1rZXk=' }],
+    [
+      'a subdomain containing a separator',
+      { NFTCDN_SUBDOMAIN: 'evil.example/x', NFTCDN_KEY: 'c2lnbmluZy1rZXk=' },
+    ],
+    [
+      'a subdomain containing whitespace',
+      { NFTCDN_SUBDOMAIN: 'pre prod', NFTCDN_KEY: 'c2lnbmluZy1rZXk=' },
+    ],
   ])('rejects NFTCDN configuration with %s', (_case, env) => {
     expect(() => loadConfig(env)).toThrow(ConfigError)
   })

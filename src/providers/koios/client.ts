@@ -1,6 +1,11 @@
 import { z } from 'zod'
 import type { ErrorCode } from '../../domain/errors.js'
-import { MalformedUpstreamError, ProviderError, ProviderTimeoutError } from '../../domain/errors.js'
+import {
+  ConfigError,
+  MalformedUpstreamError,
+  ProviderError,
+  ProviderTimeoutError,
+} from '../../domain/errors.js'
 import { KOIOS_BODY_LIMIT_BYTES, packBySize } from './schema.js'
 
 /** A minimal fetch signature so tests can inject a fake without pulling in DOM types. */
@@ -97,6 +102,7 @@ const DEFAULT_READ_ATTEMPTS = 3
 const MAX_READ_ATTEMPTS = 100
 const DEFAULT_BACKOFF_MS = 150
 const DEFAULT_TIMEOUT_MS = 10_000
+const MAX_TIMER_MS = 2_147_483_647
 const KOIOS_PAGE_SIZE = 1_000
 const KOIOS_MAX_PAGED_ROWS = 100_000
 
@@ -266,15 +272,41 @@ function asReadAttempts(value: number | undefined): number {
   return attempts
 }
 
+function asBoundedNumber(
+  value: number | undefined,
+  fallback: number,
+  name: string,
+  min: number,
+  max: number,
+): number {
+  const result = value ?? fallback
+  if (!Number.isSafeInteger(result) || result < min || result > max) {
+    throw new ConfigError(`koios ${name} must be a safe integer in [${min}, ${max}]`)
+  }
+  return result
+}
+
 export function createKoiosClient(config: KoiosConfig): KoiosClient {
   const baseUrl = config.baseUrl.replace(/\/+$/, '')
-  const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS
-  const heavyTimeoutMs = config.heavyTimeoutMs ?? HEAVY_TIMEOUT_MS
+  const timeoutMs = asBoundedNumber(config.timeoutMs, DEFAULT_TIMEOUT_MS, 'timeoutMs', 1, MAX_TIMER_MS)
+  const heavyTimeoutMs = asBoundedNumber(
+    config.heavyTimeoutMs,
+    HEAVY_TIMEOUT_MS,
+    'heavyTimeoutMs',
+    1,
+    MAX_TIMER_MS,
+  )
   const doFetch: FetchLike = config.fetchImpl ?? (globalThis.fetch as unknown as FetchLike)
   // Not a constant, because upstream may tell us it is smaller. See batchAll.
-  let bodyLimit = config.bodyLimitBytes ?? KOIOS_BODY_LIMIT_BYTES
+  let bodyLimit = asBoundedNumber(
+    config.bodyLimitBytes,
+    KOIOS_BODY_LIMIT_BYTES,
+    'bodyLimitBytes',
+    1,
+    Number.MAX_SAFE_INTEGER,
+  )
   const readAttempts = asReadAttempts(config.readAttempts)
-  const backoffMs = config.retryBackoffMs ?? DEFAULT_BACKOFF_MS
+  const backoffMs = asBoundedNumber(config.retryBackoffMs, DEFAULT_BACKOFF_MS, 'retryBackoffMs', 0, MAX_TIMER_MS)
   const delay =
     config.delayImpl ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)))
 

@@ -6,6 +6,7 @@ import {
   type RetryEvent,
 } from '../../src/providers/koios/index.js'
 import {
+  ConfigError,
   MalformedUpstreamError,
   ProviderError,
   ProviderTimeoutError,
@@ -137,6 +138,18 @@ describe('koios read attempt configuration', () => {
 
     await expect(provider.getTip()).resolves.toMatchObject({ block: 3_500_000 })
     expect(callsTo('/tip')).toBe(1)
+  })
+
+  it.each([
+    ['timeoutMs', { timeoutMs: Number.NaN }],
+    ['timeoutMs overflow', { timeoutMs: 2_147_483_648 }],
+    ['heavyTimeoutMs', { heavyTimeoutMs: Number.NaN }],
+    ['retryBackoffMs', { retryBackoffMs: Number.NaN }],
+    ['retryBackoffMs overflow', { retryBackoffMs: 2_147_483_648 }],
+    ['bodyLimitBytes', { bodyLimitBytes: Number.NaN }],
+    ['bodyLimitBytes overflow', { bodyLimitBytes: Number.POSITIVE_INFINITY }],
+  ])('rejects invalid %s at construction', (_case, config) => {
+    expect(() => testProvider({}, config)).toThrow(ConfigError)
   })
 })
 

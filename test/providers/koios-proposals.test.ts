@@ -42,8 +42,8 @@ const summaryRow = (overrides: Record<string, unknown> = {}) => ({
   pool_no_vote_power: '0',
   pool_passive_always_abstain_vote_power: '0',
   committee_yes_votes_cast: 3,
-  committee_no_votes_cast: 0,
-  committee_abstain_votes_cast: 0,
+  committee_no_votes_cast: 1,
+  committee_abstain_votes_cast: 3,
   ...overrides,
 })
 
@@ -108,9 +108,24 @@ describe('koios getProposals', () => {
       abstainPower: '402481959468417',
     })
     expect(p?.poolVotes?.yes).toBe(1)
-    expect(p?.committeeVotes).toEqual({ yes: 3, no: 0, abstain: 0 })
+    expect(p?.committeeVotes).toEqual({ yes: 3, no: 1, abstain: 3 })
     expect(p?.committeeVotes).not.toHaveProperty('yesPower')
   })
+
+  it.each(['NewCommittee', 'NoConfidence'] as const)(
+    'omits committee votes for %s, where the committee has no vote',
+    async (type) => {
+      const [p] = await provider({
+        proposals: [proposalRow({ proposal_type: type })],
+        summary: [summaryRow()],
+      }).getProposals({ limit: 20, offset: 0 })
+
+      expect(p?.type).toBe(type)
+      expect(p).not.toHaveProperty('committeeVotes')
+      expect(p?.drepVotes?.yes).toBe(4)
+      expect(p?.poolVotes?.yes).toBe(1)
+    },
+  )
 
   // Upstream reports a proposal's fate as four separate nullable epoch fields. Deriving the status
   // here is what stops every client reimplementing the same precedence rules, subtly differently.

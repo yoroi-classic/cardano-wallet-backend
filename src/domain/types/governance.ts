@@ -132,6 +132,7 @@ export interface Proposal {
   /**
    * How the constitutional committee has voted so far, by member count. Committee members each
    * have one vote; unlike DReps and stake pools, their votes are not weighted by lovelace.
+   * Absent for `NewCommittee` and `NoConfidence`, where the committee has no vote.
    */
   committeeVotes?: VoteCountTally
 }

@@ -517,13 +517,19 @@ export function createGovernanceMethods(
                   votes.pool_no_vote_power,
                   votes.pool_passive_always_abstain_vote_power,
                 ),
-                // Constitutional committee members each have one vote. Supplying manufactured
-                // lovelace power fields here would make every committee tally look powerless.
-                committeeVotes: voteCountTally(
-                  votes.committee_yes_votes_cast,
-                  votes.committee_no_votes_cast,
-                  votes.committee_abstain_votes_cast,
-                ),
+                // Constitutional committee members each have one vote. The committee has no
+                // franchise on committee updates or a motion of no-confidence, so a zero tally
+                // there means "not applicable", not "no one voted". Keep that distinction in
+                // the response by omitting the optional field for those action types.
+                ...(row.proposal_type === 'NewCommittee' || row.proposal_type === 'NoConfidence'
+                  ? {}
+                  : {
+                      committeeVotes: voteCountTally(
+                        votes.committee_yes_votes_cast,
+                        votes.committee_no_votes_cast,
+                        votes.committee_abstain_votes_cast,
+                      ),
+                    }),
               }),
         }
       })

@@ -1593,7 +1593,12 @@ export const openapi = {
           },
           drepVotes: { $ref: '#/components/schemas/VoteTally' },
           poolVotes: { $ref: '#/components/schemas/VoteTally' },
-          committeeVotes: { $ref: '#/components/schemas/CommitteeVoteTally' },
+          committeeVotes: {
+            $ref: '#/components/schemas/CommitteeVoteTally',
+            description:
+              'Committee votes by member count. Absent for `NewCommittee` and `NoConfidence`, ' +
+              'where the constitutional committee has no vote.',
+          },
         },
       },
 

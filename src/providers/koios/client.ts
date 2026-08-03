@@ -288,7 +288,13 @@ function asBoundedNumber(
 
 export function createKoiosClient(config: KoiosConfig): KoiosClient {
   const baseUrl = config.baseUrl.replace(/\/+$/, '')
-  const timeoutMs = asBoundedNumber(config.timeoutMs, DEFAULT_TIMEOUT_MS, 'timeoutMs', 1, MAX_TIMER_MS)
+  const timeoutMs = asBoundedNumber(
+    config.timeoutMs,
+    DEFAULT_TIMEOUT_MS,
+    'timeoutMs',
+    1,
+    MAX_TIMER_MS,
+  )
   const heavyTimeoutMs = asBoundedNumber(
     config.heavyTimeoutMs,
     HEAVY_TIMEOUT_MS,
@@ -306,7 +312,13 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
     Number.MAX_SAFE_INTEGER,
   )
   const readAttempts = asReadAttempts(config.readAttempts)
-  const backoffMs = asBoundedNumber(config.retryBackoffMs, DEFAULT_BACKOFF_MS, 'retryBackoffMs', 0, MAX_TIMER_MS)
+  const backoffMs = asBoundedNumber(
+    config.retryBackoffMs,
+    DEFAULT_BACKOFF_MS,
+    'retryBackoffMs',
+    0,
+    MAX_TIMER_MS,
+  )
   const delay =
     config.delayImpl ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)))
 

@@ -53,7 +53,7 @@ function createDriver(config: AppConfig, deps: ProviderDeps, cache: Cache): Chai
   }
 }
 
-function scopeProviderCache(cache: Cache, config: AppConfig): Cache {
+export function scopeProviderCache(cache: Cache, config: AppConfig): Cache {
   // Keep noCache's identity: Koios uses that singleton to select its no-cache fast path.
   if (cache === noCache) return noCache
 
@@ -69,8 +69,9 @@ function scopeProviderCache(cache: Cache, config: AppConfig): Cache {
     peek: (value) => cache.peek(key(value)),
     set: (value, data, ttlMs) => cache.set(key(value), data, ttlMs),
     get size() {
-      return cache.size
+      return cache.sizeForPrefix(prefix)
     },
+    sizeForPrefix: (nestedPrefix) => cache.sizeForPrefix(key(nestedPrefix)),
     clear: () => cache.clear(prefix),
   }
 }

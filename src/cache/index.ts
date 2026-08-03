@@ -94,6 +94,9 @@ export interface Cache {
   /** Live entries. For tests and diagnostics. */
   readonly size: number
 
+  /** Live entries whose keys start with `prefix`, for scoped cache views. */
+  sizeForPrefix(prefix: string): number
+
   /**
    * Drop everything, or only keys with the supplied prefix. For tests and scoped cache views.
    * Prefix deletion keeps one consumer from clearing unrelated entries in the shared process
@@ -130,6 +133,9 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
 
   const entries = new Map<string, Entry>()
   const inFlight = new Map<string, Promise<unknown>>()
+  // A clear must invalidate an attempt that was already waiting on its upstream loader. Without
+  // this generation check, that attempt can finish after clear() and put the deleted value back.
+  let clearGeneration = 0
 
   function evict(): void {
     if (entries.size <= maxEntries) return
@@ -162,15 +168,18 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
       const pending = inFlight.get(key)
       if (pending !== undefined) return pending as Promise<T>
 
+      const attemptGeneration = clearGeneration
       const attempt = (async (): Promise<T> => {
         try {
           const value = await load()
-          entries.set(key, {
-            value,
-            expiresAt: now() + ttlMs,
-            usableUntil: now() + ttlMs + staleIfErrorMs,
-          })
-          evict()
+          if (attemptGeneration === clearGeneration) {
+            entries.set(key, {
+              value,
+              expiresAt: now() + ttlMs,
+              usableUntil: now() + ttlMs + staleIfErrorMs,
+            })
+            evict()
+          }
           return value
         } catch (err) {
           // The refresh failed. If we still hold a value that is old but not *too* old, serve it
@@ -184,10 +193,17 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
           // usableUntil it stops being served at all, so a long outage surfaces as an error rather
           // than as data from last week.
           const stale = entries.get(key)
-          if (stale !== undefined && stale.usableUntil > now()) return stale.value as T
+          if (
+            attemptGeneration === clearGeneration &&
+            stale !== undefined &&
+            stale.usableUntil > now()
+          )
+            return stale.value as T
           throw err
         } finally {
-          inFlight.delete(key)
+          // A clear followed by a new read may have installed a newer attempt for this key. Do
+          // not let the old attempt's cleanup remove that newer registration.
+          if (inFlight.get(key) === attempt) inFlight.delete(key)
         }
       })()
 
@@ -211,7 +227,16 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
       return entries.size
     },
 
+    sizeForPrefix(prefix: string): number {
+      let count = 0
+      for (const key of entries.keys()) {
+        if (key.startsWith(prefix)) count += 1
+      }
+      return count
+    },
+
     clear(prefix?: string): void {
+      clearGeneration += 1
       if (prefix === undefined) {
         entries.clear()
         inFlight.clear()
@@ -243,5 +268,8 @@ export const noCache: Cache = {
   },
   set<T>(_key: string, _value: T, _ttlMs: number): void {},
   size: 0,
+  sizeForPrefix(_prefix: string): number {
+    return 0
+  },
   clear(_prefix?: string): void {},
 }

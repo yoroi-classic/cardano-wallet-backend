@@ -57,6 +57,35 @@ describe('memory cache', () => {
     expect(await cache.read('a', 1000, async () => 'changed')).toBe('A')
   })
 
+  it('reports the size of a key prefix without counting other consumers', () => {
+    const cache = createMemoryCache()
+    cache.set('provider:koios:preprod:tip', 1, 60_000)
+    cache.set('provider:koios:mainnet:tip', 2, 60_000)
+    cache.set('price:ada', 3, 60_000)
+
+    expect(cache.sizeForPrefix?.('provider:koios:preprod:')).toBe(1)
+    expect(cache.sizeForPrefix?.('provider:')).toBe(2)
+    expect(cache.size).toBe(3)
+  })
+
+  it('does not let a load that crossed clear repopulate the cache', async () => {
+    const cache = createMemoryCache()
+    const first = deferred<string>()
+    const second = deferred<string>()
+    const load = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+
+    const oldRead = cache.read('provider:koios:preprod:tip', 60_000, load)
+    cache.clear('provider:koios:preprod:')
+    const newRead = cache.read('provider:koios:preprod:tip', 60_000, load)
+
+    first.resolve('stale')
+    second.resolve('fresh')
+    await expect(oldRead).resolves.toBe('stale')
+    await expect(newRead).resolves.toBe('fresh')
+    expect(cache.peek('provider:koios:preprod:tip')).toBe('fresh')
+    expect(load).toHaveBeenCalledTimes(2)
+  })
+
   // The load spike this exists to prevent. A cold cache plus a burst of wallets must not mean N
   // identical full pool-list walks against Koios at once, which would arrive at the worst moment.
   it('collapses concurrent misses into a single load', async () => {

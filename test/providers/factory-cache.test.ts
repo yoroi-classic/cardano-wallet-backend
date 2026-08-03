@@ -3,7 +3,7 @@ import { createMemoryCache, noCache, type Cache } from '../../src/cache/index.js
 import { loadConfig } from '../../src/config/index.js'
 import type { Tip } from '../../src/domain/types/chain.js'
 import { TIP_TTL_MS } from '../../src/providers/cached.js'
-import { createProvider } from '../../src/providers/factory.js'
+import { createProvider, scopeProviderCache } from '../../src/providers/factory.js'
 
 const tip = (network: number): Tip => ({
   block: network,
@@ -62,6 +62,19 @@ describe('provider factory cache ownership', () => {
     await expect(provider.getTip()).resolves.toEqual(cached)
     expect(reads).toEqual(['provider:koios:preprod:chain:tip'])
     expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('reports only entries owned by the provider-scoped view', () => {
+    const cache = createMemoryCache()
+    cache.set('provider:koios:preprod:chain:tip', tip(10), TIP_TTL_MS)
+    cache.set('price:ada', 1, TIP_TTL_MS)
+
+    const scoped = scopeProviderCache(cache, loadConfig({ NETWORK: 'preprod' }))
+
+    expect(scoped.size).toBe(1)
+    scoped.clear()
+    expect(cache.peek('provider:koios:preprod:chain:tip')).toBeUndefined()
+    expect(cache.peek('price:ada')).toBe(1)
   })
 
   it('isolates shared entries by both network and provider', async () => {

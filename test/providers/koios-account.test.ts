@@ -676,6 +676,19 @@ describe('koios getTxHistory', () => {
   })
 
   it.each([
+    ['a 34-digit numeric string', '1'.padEnd(34, '0')],
+    ['a 400-digit numeric string', '9'.repeat(400)],
+  ])('omits an unrepresentable %s without rejecting history', async (_case, invalidAfter) => {
+    const info = [{ ...TX_INFO[1], invalid_after: invalidAfter }]
+    const { fetchImpl } = fakeFetchByPath({ '/account_txs': [ACCOUNT_TXS[0]], '/tx_info': info })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [tx] = await provider.getTxHistory(STAKE)
+
+    expect(tx?.ttl).toBeUndefined()
+  })
+
+  it.each([
     ['null', null],
     ['absent', undefined],
   ])('preserves an %s invalid_after as an absent ttl', async (_case, invalidAfter) => {
@@ -697,9 +710,7 @@ describe('koios getTxHistory', () => {
   })
 
   it.each([
-    ['a numeric string above Number.MAX_SAFE_INTEGER', '9007199254740992'],
     ['an unsafe number', Number.MAX_SAFE_INTEGER + 1],
-    ['an arbitrarily large numeric string', '9'.repeat(400)],
     ['a fractional numeric string', '1.5'],
     ['a fractional number', 1.5],
     ['a negative sign', '-1'],

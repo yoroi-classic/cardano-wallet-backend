@@ -95,7 +95,7 @@ export interface Cache {
   readonly size: number
 
   /** Live entries whose keys start with `prefix`, for scoped cache views. */
-  sizeForPrefix(prefix: string): number
+  sizeForPrefix?(prefix: string): number
 
   /**
    * Drop everything, or only keys with the supplied prefix. For tests and scoped cache views.
@@ -169,7 +169,8 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
       if (pending !== undefined) return pending as Promise<T>
 
       const attemptGeneration = clearGeneration
-      const attempt = (async (): Promise<T> => {
+      let attempt: Promise<T> | undefined
+      attempt = (async (): Promise<T> => {
         try {
           const value = await load()
           if (attemptGeneration === clearGeneration) {

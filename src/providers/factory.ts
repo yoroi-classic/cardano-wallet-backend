@@ -69,9 +69,9 @@ export function scopeProviderCache(cache: Cache, config: AppConfig): Cache {
     peek: (value) => cache.peek(key(value)),
     set: (value, data, ttlMs) => cache.set(key(value), data, ttlMs),
     get size() {
-      return cache.sizeForPrefix(prefix)
+      return cache.sizeForPrefix?.(prefix) ?? cache.size
     },
-    sizeForPrefix: (nestedPrefix) => cache.sizeForPrefix(key(nestedPrefix)),
+    sizeForPrefix: (nestedPrefix) => cache.sizeForPrefix?.(key(nestedPrefix)) ?? 0,
     clear: () => cache.clear(prefix),
   }
 }

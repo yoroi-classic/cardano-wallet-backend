@@ -541,10 +541,16 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
         throw new MalformedUpstreamError(`koios returned a non-contiguous page for ${path}`)
       }
       if (keyset === undefined) expectedTotal = range.total
-      if (
-        (keyset === undefined ? (expectedTotal ?? 0) : rows.length + page.length) >
-        KOIOS_MAX_PAGED_ROWS
-      ) {
+      // On the first keyset page, Content-Range still reports the full matching set. Reject an
+      // oversized result before walking it; later pages only report rows remaining after the
+      // cursor, so the consumed-row bound is the useful fallback there.
+      const pagedRows =
+        keyset !== undefined && pageCount === 1
+          ? range.total
+          : keyset === undefined
+            ? (expectedTotal ?? 0)
+            : rows.length + page.length
+      if (pagedRows > KOIOS_MAX_PAGED_ROWS) {
         throw new MalformedUpstreamError(
           `koios paged result exceeds ${KOIOS_MAX_PAGED_ROWS} rows for ${path}`,
         )

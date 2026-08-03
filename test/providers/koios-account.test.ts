@@ -309,6 +309,34 @@ describe('koios getAccountUtxos', () => {
     expect(new URL(calls[1]!.url).searchParams.get('or')).toContain('tx_hash.gt.11')
   })
 
+  it('advances the composite cursor through rows sharing a transaction hash', async () => {
+    const first = { ...ROW, tx_hash: '11', tx_index: 1 }
+    const second = { ...ROW, tx_hash: '11', tx_index: 2 }
+    const third = { ...ROW, tx_hash: '11', tx_index: 3 }
+    const calls: Call[] = []
+    const fetchImpl: FetchLike = async (url, init) => {
+      calls.push({ url, method: init?.method, body: init?.body, headers: init?.headers })
+      const keyset = new URL(url).searchParams.get('or')
+      const page = keyset === null ? [first, second] : [third]
+      return {
+        ok: true,
+        status: keyset === null ? 206 : 200,
+        headers: {
+          get: (name: string) =>
+            name === 'content-range' ? (keyset === null ? '0-1/3' : '0-0/1') : null,
+        },
+        json: async () => page,
+        text: async () => '',
+      }
+    }
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    await expect(provider.getAccountUtxos(STAKE)).resolves.toHaveLength(3)
+    expect(new URL(calls[1]!.url).searchParams.get('or')).toContain(
+      'and(tx_hash.eq.11,tx_index.gt.2)',
+    )
+  })
+
   it('fails closed when a 206 response omits Content-Range', async () => {
     const { fetchImpl } = fakeFetch({ status: 206, json: async () => [ROW] })
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })

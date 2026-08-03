@@ -676,6 +676,8 @@ describe('koios getTxHistory', () => {
   })
 
   it.each([
+    ['the first unrepresentable numeric string', String(Number.MAX_SAFE_INTEGER + 1)],
+    ['a numeric string that Number would round down', '9007199254740993'],
     ['a 34-digit numeric string', '1'.padEnd(34, '0')],
     ['a 400-digit numeric string', '9'.repeat(400)],
   ])('omits an unrepresentable %s without rejecting history', async (_case, invalidAfter) => {
@@ -711,6 +713,7 @@ describe('koios getTxHistory', () => {
 
   it.each([
     ['an unsafe number', Number.MAX_SAFE_INTEGER + 1],
+    ['a negative number', -1],
     ['a fractional numeric string', '1.5'],
     ['a fractional number', 1.5],
     ['a negative sign', '-1'],

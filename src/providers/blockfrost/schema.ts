@@ -51,7 +51,10 @@ export const amountList = z.array(amountItem)
  * literal string `"lovelace"`, and every other entry's `unit` is a policy id (28 bytes, 56 hex
  * chars) with the hex asset name concatenated directly after it, no separator.
  */
-export function splitAmount(items: z.infer<typeof amountList>): { value: string; assets: Asset[] } {
+export function splitAmount(
+  items: z.infer<typeof amountList>,
+  seenUnits?: Map<string, string>,
+): { value: string; assets: Asset[] } {
   let value: string | undefined
   const assets: Asset[] = []
   // A real amount list names each unit at most once. A repeat — a second `lovelace`, or the same
@@ -71,6 +74,13 @@ export function splitAmount(items: z.infer<typeof amountList>): { value: string;
       )
     }
     seen.add(unitKey)
+    const priorSpelling = seenUnits?.get(unitKey)
+    if (priorSpelling !== undefined && priorSpelling !== item.unit) {
+      throw new MalformedUpstreamError(
+        `blockfrost returned the same native-asset unit with different hexadecimal casing: '${priorSpelling}' and '${item.unit}'`,
+      )
+    }
+    seenUnits?.set(unitKey, item.unit)
     if (item.unit === 'lovelace') {
       value = String(item.quantity)
       continue

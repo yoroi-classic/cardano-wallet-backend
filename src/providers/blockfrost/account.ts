@@ -32,8 +32,8 @@ const accountUtxoRow = z.object({
   reference_script_hash: z.string().nullish(),
 })
 
-function mapUtxo(row: z.infer<typeof accountUtxoRow>): Utxo {
-  const { value, assets } = splitAmount(row.amount)
+function mapUtxo(row: z.infer<typeof accountUtxoRow>, seenUnits: Map<string, string>): Utxo {
+  const { value, assets } = splitAmount(row.amount, seenUnits)
   return {
     txHash: row.tx_hash,
     outputIndex: row.output_index,
@@ -97,7 +97,10 @@ export function createAccountMethods(client: BlockfrostClient): AccountCapabilit
         // Legitimate, not an error, and it can only happen on page 1.
         if (pageRows === undefined) return []
         rows.push(...pageRows)
-        if (pageRows.length < UTXO_PAGE_SIZE) return rows.map(mapUtxo)
+        if (pageRows.length < UTXO_PAGE_SIZE) {
+          const seenUnits = new Map<string, string>()
+          return rows.map((row) => mapUtxo(row, seenUnits))
+        }
       }
 
       // The cap ran out on a full page, which does not by itself mean anything was missed. Ask
@@ -110,7 +113,10 @@ export function createAccountMethods(client: BlockfrostClient): AccountCapabilit
         z.array(accountUtxoRow),
         `${path}?count=${UTXO_PAGE_SIZE}&page=${UTXO_MAX_PAGES + 1}`,
       )
-      if (probe === undefined || probe.length === 0) return rows.map(mapUtxo)
+      if (probe === undefined || probe.length === 0) {
+        const seenUnits = new Map<string, string>()
+        return rows.map((row) => mapUtxo(row, seenUnits))
+      }
       throw new ProviderError(
         `blockfrost account utxos exceed this provider's ${UTXO_MAX_PAGES * UTXO_PAGE_SIZE}-utxo scan bound`,
       )

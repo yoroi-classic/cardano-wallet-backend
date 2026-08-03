@@ -267,6 +267,44 @@ describe('blockfrost account — unhappy path', () => {
     await expect(provider.getAccountUtxos(STAKE)).rejects.toBeInstanceOf(MalformedUpstreamError)
   })
 
+  it.each([
+    ['lowercase then uppercase', false],
+    ['uppercase then lowercase', true],
+  ])('rejects case-variant native-asset units across UTxO rows (%s)', async (_order, reversed) => {
+    const lowercaseUnit = `${'ab'.repeat(28)}6e7574636f696e`
+    const units = reversed
+      ? [lowercaseUnit.toUpperCase(), lowercaseUnit]
+      : [lowercaseUnit, lowercaseUnit.toUpperCase()]
+    const rows = units.map((unit, index) =>
+      utxoRow({
+        tx_hash: `${index + 1}`.padStart(64, '0'),
+        amount: [
+          { unit: 'lovelace', quantity: '1000000' },
+          { unit, quantity: String(index + 5) },
+        ],
+      }),
+    )
+    const provider = testProvider({ [`/accounts/${STAKE}/utxos`]: [rows] })
+
+    await expect(provider.getAccountUtxos(STAKE)).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+
+  it('allows the same native-asset spelling in separate UTxO rows', async () => {
+    const unit = `${'ab'.repeat(28)}6e7574636f696e`
+    const rows = [0, 1].map((index) =>
+      utxoRow({
+        tx_hash: `${index + 1}`.padStart(64, '0'),
+        amount: [
+          { unit: 'lovelace', quantity: '1000000' },
+          { unit, quantity: String(index + 5) },
+        ],
+      }),
+    )
+    const provider = testProvider({ [`/accounts/${STAKE}/utxos`]: [rows] })
+
+    await expect(provider.getAccountUtxos(STAKE)).resolves.toHaveLength(2)
+  })
+
   it('rejects a second lovelace entry rather than letting it overwrite the real ada value', async () => {
     const dup = utxoRow({
       amount: [

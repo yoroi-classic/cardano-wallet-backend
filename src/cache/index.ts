@@ -169,8 +169,8 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
       if (pending !== undefined) return pending as Promise<T>
 
       const attemptGeneration = clearGeneration
-      let attempt: Promise<T> | undefined
-      attempt = (async (): Promise<T> => {
+      const attemptHolder: { promise?: Promise<T> } = {}
+      const attempt = (async (): Promise<T> => {
         try {
           const value = await load()
           if (attemptGeneration === clearGeneration) {
@@ -204,9 +204,10 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
         } finally {
           // A clear followed by a new read may have installed a newer attempt for this key. Do
           // not let the old attempt's cleanup remove that newer registration.
-          if (inFlight.get(key) === attempt) inFlight.delete(key)
+          if (inFlight.get(key) === attemptHolder.promise) inFlight.delete(key)
         }
       })()
+      attemptHolder.promise = attempt
 
       inFlight.set(key, attempt)
       return attempt

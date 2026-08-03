@@ -161,6 +161,10 @@ export interface PoolMethodDeps {
 
 export function createPoolMethods(koios: KoiosClient, deps: PoolMethodDeps = {}): PoolCapability {
   const cache = deps.cache ?? noCache
+  // A failed tip read deliberately bypasses the epoch-keyed page cache. Keep a separate, short
+  // lived map for that path so a concurrent burst still shares one upstream walk, without ever
+  // retaining a successful result or changing the uncached behaviour of later calls.
+  const uncachedPageInFlight = new Map<string, Promise<PoolInfo[]>>()
 
   /**
    * The epoch to key the cache on, or `undefined` if we could not find out.
@@ -335,7 +339,16 @@ export function createPoolMethods(koios: KoiosClient, deps: PoolMethodDeps = {})
       // Keyed on the epoch as well as the page, so the ranking underneath cannot change without
       // the page key changing with it.
       const epoch = await cacheEpoch()
-      if (epoch === undefined) return servePage({ limit, offset, ticker }, epoch)
+      if (epoch === undefined) {
+        const key = `${ticker ?? ''}:${offset}:${limit}`
+        const pending = uncachedPageInFlight.get(key)
+        if (pending !== undefined) return pending
+        const attempt = servePage({ limit, offset, ticker }, epoch).finally(() => {
+          uncachedPageInFlight.delete(key)
+        })
+        uncachedPageInFlight.set(key, attempt)
+        return attempt
+      }
 
       const key = `pools:page:${epoch}:${ticker ?? ''}:${offset}:${limit}`
       return cache.read(key, { ttlMs: PAGE_TTL_MS, staleIfErrorMs: PAGE_STALE_IF_ERROR_MS }, () =>

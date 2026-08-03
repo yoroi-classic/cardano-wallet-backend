@@ -220,6 +220,25 @@ describe('the pool list survives an upstream wobble', () => {
     expect(cache.size).toBe(0)
   })
 
+  it('coalesces concurrent uncached pages when the tip read fails without retaining a result', async () => {
+    const koios = fakeKoios({ tipFails: true })
+    const p = provider(koios, createMemoryCache())
+
+    const results = await Promise.all(
+      Array.from({ length: 25 }, () => p.getPoolList({ limit: 50, offset: 0 })),
+    )
+
+    expect(results).toHaveLength(25)
+    expect(results.every((result) => result.length === 2)).toBe(true)
+    expect(koios.countOf('/pool_list')).toBe(1)
+    expect(koios.countOf('/pool_info')).toBe(1)
+
+    // A later call is a fresh uncached attempt rather than a cache hit.
+    await p.getPoolList({ limit: 50, offset: 0 })
+    expect(koios.countOf('/pool_list')).toBe(2)
+    expect(koios.countOf('/pool_info')).toBe(2)
+  })
+
   it('does not serve an unkeyed stale page after the tip read fails', async () => {
     const koios = fakeKoios({ tipFails: true })
     const p = provider(koios)

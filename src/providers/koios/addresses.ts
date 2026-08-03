@@ -80,8 +80,10 @@ async function fillAddressHistoryStream(
 ): Promise<void> {
   if (stream.done || stream.index < stream.rows.length) return
 
-  // Match batchAllPages' 100,000-row safety bound. Exactly 100,000 rows may be complete, so probe
-  // once beyond the bound and reject only when upstream really has more.
+  // Match batchAllPages' 100,000-row safety bound. The count in Content-Range describes the whole
+  // matching set, including rows beyond the bounded history page we return, so it is not itself a
+  // reason to reject a valid prefix. Probe once after walking the bound to ensure an unusually
+  // large boundary block cannot be silently truncated.
   const probingBound = stream.offset >= HISTORY_MAX_LIST_ROWS
   const limit = probingBound ? 1 : HISTORY_PAGE_SIZE
   const separator = path.includes('?') ? '&' : '?'
@@ -121,17 +123,18 @@ async function fillAddressHistoryStream(
     if (range.start !== stream.offset || page.length !== range.end - range.start + 1) {
       throw new MalformedUpstreamError(`koios returned a non-contiguous page for ${path}`)
     }
-    if (stream.expectedTotal !== undefined && range.total !== stream.expectedTotal) {
-      throw new MalformedUpstreamError(`koios changed the paged result total for ${path}`)
-    }
     stream.expectedTotal = range.total
-    if (range.total > HISTORY_MAX_LIST_ROWS) {
+    stream.offset = range.end + 1
+    if (stream.offset > HISTORY_MAX_LIST_ROWS) {
       throw new MalformedUpstreamError(
         `koios paged result exceeds ${HISTORY_MAX_LIST_ROWS} rows for ${path}`,
       )
     }
-    stream.offset = range.end + 1
-    stream.done = stream.offset === range.total
+    // A moving total is harmless when it only changes the unconsumed tail. Page shape and
+    // Content-Range continuity still protect the prefix. A short 200 page is the provider's
+    // completion signal even when its count was sampled from a different snapshot; a short 206
+    // page with a larger total remains an incomplete response and is rejected below.
+    stream.done = stream.offset === range.total || (page.length < limit && response.status === 200)
     if (!stream.done && response.status !== 206) {
       throw new MalformedUpstreamError(
         `koios returned an incomplete successful response for ${path}`,

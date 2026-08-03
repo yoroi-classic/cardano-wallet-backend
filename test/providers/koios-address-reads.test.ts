@@ -431,22 +431,50 @@ describe('koios getTxHistoryByAddresses', () => {
     ).toEqual(['0', '50', '100', '150'])
   })
 
-  it('restarts the complete incremental read when Content-Range total changes', async () => {
+  it('fails when walking past the consumed-row safety bound', async () => {
+    const calls: Call[] = []
+    const fetchImpl: FetchLike = async (url, init) => {
+      calls.push({ url, method: init?.method, body: init?.body })
+      const query = new URL(url).searchParams
+      const offset = Number(query.get('offset'))
+      const limit = Number(query.get('limit'))
+      if (url.includes('/tx_info')) throw new Error('details must not be requested')
+      const page = Array.from({ length: Math.min(limit, 100_001 - offset) }, (_, index) => ({
+        tx_hash: `bound-${(offset + index).toString().padStart(6, '0')}`,
+        block_height: 1,
+        block_time: 10,
+        epoch_no: 1,
+      }))
+      const end = offset + page.length - 1
+      return {
+        ok: true,
+        status: end + 1 === 100_001 ? 200 : 206,
+        headers: { get: (name) => (name === 'content-range' ? `${offset}-${end}/100001` : null) },
+        json: async () => page,
+        text: async () => '',
+      }
+    }
+    const provider = createKoiosProvider({
+      baseUrl: BASE,
+      fetchImpl,
+      readAttempts: 1,
+      retryBackoffMs: 0,
+    })
+
+    await expect(provider.getTxHistoryByAddresses([BYRON_A])).rejects.toThrow(
+      'koios paged result exceeds 100000 rows for /address_txs',
+    )
+    expect(calls.filter((call) => call.url.includes('/address_txs'))).toHaveLength(2_001)
+  })
+
+  it('keeps a validated prefix when an upstream total changes in the unconsumed tail', async () => {
     const stale = Array.from({ length: 60 }, (_, block) => ({
       tx_hash: `stale-${block}`,
       block_height: block,
       block_time: block * 10,
       epoch_no: 1,
     }))
-    const fresh = Array.from({ length: 50 }, (_, block) => ({
-      tx_hash: `fresh-${block}`,
-      block_height: block,
-      block_time: block * 10,
-      epoch_no: 1,
-    }))
     const calls: Call[] = []
-    const retries: string[] = []
-    let staleSnapshot = true
     const fetchImpl: FetchLike = async (url, init) => {
       calls.push({ url, method: init?.method, body: init?.body })
       if (url.includes('/tx_info')) {
@@ -456,7 +484,7 @@ describe('koios getTxHistoryByAddresses', () => {
           status: 200,
           json: async () =>
             hashes.map((hash) => {
-              const row = fresh.find((candidate) => candidate.tx_hash === hash)!
+              const row = stale.find((candidate) => candidate.tx_hash === hash)!
               return txInfoRowFor(hash, row.block_height)
             }),
           text: async () => '',
@@ -464,7 +492,7 @@ describe('koios getTxHistoryByAddresses', () => {
       }
 
       const offset = Number(new URL(url).searchParams.get('offset'))
-      if (staleSnapshot && offset === 0) {
+      if (offset === 0) {
         return {
           ok: true,
           status: 206,
@@ -473,21 +501,14 @@ describe('koios getTxHistoryByAddresses', () => {
           text: async () => '',
         }
       }
-      if (staleSnapshot) {
-        staleSnapshot = false
-        return {
-          ok: true,
-          status: 200,
-          headers: { get: (name) => (name === 'content-range' ? '50-59/61' : null) },
-          json: async () => stale.slice(50),
-          text: async () => '',
-        }
-      }
       return {
         ok: true,
         status: 200,
-        headers: { get: (name) => (name === 'content-range' ? '0-49/50' : null) },
-        json: async () => fresh,
+        // The rows in the requested prefix are unchanged, but the count sampled by Koios moved
+        // because one tail row was indexed between requests. The short 200 page is complete for
+        // this read and must not cause a whole-read retry.
+        headers: { get: (name) => (name === 'content-range' ? '50-59/61' : null) },
+        json: async () => stale.slice(50),
         text: async () => '',
       }
     }
@@ -496,55 +517,16 @@ describe('koios getTxHistoryByAddresses', () => {
       fetchImpl,
       readAttempts: 2,
       retryBackoffMs: 0,
-      onRetry: (event) => retries.push(event.message),
     })
 
     const history = await provider.getTxHistoryByAddresses([BYRON_A])
 
-    expect(history.map((tx) => tx.txHash)).toEqual(fresh.map((row) => row.tx_hash))
+    expect(history.map((tx) => tx.txHash)).toEqual(stale.slice(0, 50).map((row) => row.tx_hash))
     expect(
       calls
         .filter((call) => call.url.includes('/address_txs'))
         .map((call) => new URL(call.url).searchParams.get('offset')),
-    ).toEqual(['0', '50', '0'])
-    expect(retries).toEqual([
-      expect.stringContaining('koios changed the paged result total for /address_txs'),
-    ])
-  })
-
-  it('stops after the read-attempt budget when Content-Range keeps changing', async () => {
-    const rows = Array.from({ length: 60 }, (_, block) => ({
-      tx_hash: `t${block}`,
-      block_height: block,
-      block_time: block * 10,
-      epoch_no: 1,
-    }))
-    const offsets: string[] = []
-    const fetchImpl: FetchLike = async (url) => {
-      const offset = String(new URL(url).searchParams.get('offset'))
-      offsets.push(offset)
-      return {
-        ok: true,
-        status: offset === '0' ? 206 : 200,
-        headers: {
-          get: (name) =>
-            name === 'content-range' ? (offset === '0' ? '0-49/60' : '50-59/61') : null,
-        },
-        json: async () => (offset === '0' ? rows.slice(0, 50) : rows.slice(50)),
-        text: async () => '',
-      }
-    }
-    const provider = createKoiosProvider({
-      baseUrl: BASE,
-      fetchImpl,
-      readAttempts: 2,
-      retryBackoffMs: 0,
-    })
-
-    await expect(provider.getTxHistoryByAddresses([BYRON_A])).rejects.toThrow(
-      'koios changed the paged result total for /address_txs',
-    )
-    expect(offsets).toEqual(['0', '50', '0', '50'])
+    ).toEqual(['0', '50'])
   })
 
   it('k-way merges sparse packed streams and counts shared transactions once', async () => {

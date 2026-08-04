@@ -1275,8 +1275,8 @@ export const openapi = {
           policyId: HEX(28, 'Minting policy id'),
           assetName: {
             type: 'string',
-            pattern: '^[0-9a-fA-F]{0,64}$',
-            description: 'Hex. May be empty.',
+            pattern: '^(?:[0-9a-fA-F]{2}){0,32}$',
+            description: 'Hex byte string. May be empty.',
           },
           quantity: { type: 'string', pattern: '^\\d+$', description: 'Parse with BigInt.' },
         },
@@ -1485,8 +1485,8 @@ export const openapi = {
           policyId: HEX(28, 'Minting policy id'),
           assetName: {
             type: 'string',
-            pattern: '^[0-9a-fA-F]{0,64}$',
-            description: 'Hex. May be empty.',
+            pattern: '^(?:[0-9a-fA-F]{2}){0,32}$',
+            description: 'Hex byte string. May be empty.',
           },
           assetNameAscii: {
             type: 'string',

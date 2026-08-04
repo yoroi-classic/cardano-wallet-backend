@@ -9,15 +9,33 @@ const ciWorkflow = readFileSync('.github/workflows/ci.yml', 'utf8')
 const packageJson = JSON.parse(readFileSync('package.json', 'utf8'))
 
 function releaseJobCondition(source) {
-  const match = source.match(
-    /^jobs:\n {2}tag:\n {4}if: >-\n((?: {6}.+\n?)+)/m,
-  )
-  assert.ok(match, 'release workflow must define the tag job condition')
-  return match[1]
+  const marker = 'jobs:\n  tag:\n    if: >-\n'
+  const start = source.indexOf(marker)
+  assert.notEqual(start, -1, 'release workflow must define the tag job condition')
+  const body = []
+  for (const line of source.slice(start + marker.length).split('\n')) {
+    if (/^ {4}\S/.test(line)) break
+    if (line.trim() === '' || /^ {6}\S/.test(line)) body.push(line)
+  }
+  return body
+    .join('\n')
     .split('\n')
-    .filter(Boolean)
+    .filter((line) => line.trim() !== '')
     .map((line) => line.trim())
     .join(' ')
+}
+
+function releaseJobNames(source) {
+  const lines = source.split('\n')
+  const jobsIndex = lines.indexOf('jobs:')
+  assert.notEqual(jobsIndex, -1, 'release workflow must define jobs')
+  const jobs = []
+  for (const line of lines.slice(jobsIndex + 1)) {
+    if (line.trim() !== '' && !line.startsWith(' ')) break
+    const match = /^ {2}([A-Za-z0-9_-]+):/.exec(line)
+    if (match !== null) jobs.push(match[1])
+  }
+  return jobs
 }
 
 const expectedReleaseJobCondition = [
@@ -34,6 +52,11 @@ function assertReleaseJobCondition(source) {
   )
 }
 assertReleaseJobCondition(workflow)
+assert.deepEqual(
+  releaseJobNames(workflow),
+  ['tag'],
+  'release workflow must define only the tag job',
+)
 assert.throws(
   () =>
     assertReleaseJobCondition(
@@ -44,6 +67,25 @@ assert.throws(
     ),
   /release job must run only/,
   'release gate must reject broadened job conditions',
+)
+assert.throws(
+  () =>
+    assertReleaseJobCondition(
+      workflow.replace(
+        'github.event.workflow_run.head_repository.full_name == github.repository\n',
+        "github.event.workflow_run.head_repository.full_name == github.repository\n\n      || github.event.workflow_run.conclusion == 'failure'\n",
+      ),
+    ),
+  /release job must run only/,
+  'release gate must reject broadened folded conditions with blank lines',
+)
+assert.throws(
+  () =>
+    assert.deepEqual(releaseJobNames(`${workflow}\n  publish:\n    runs-on: ubuntu-latest\n`), [
+      'tag',
+    ]),
+  /Expected values to be strictly deep-equal/,
+  'release gate must reject additional release jobs',
 )
 
 for (const required of [
@@ -90,6 +132,11 @@ for (const required of [
 }
 
 const workflowWithoutShellContinuations = workflow.replace(/\\[ \t]*\r?\n[ \t]*/g, ' ')
+assert.doesNotMatch(
+  ciWorkflow,
+  /^\s+continue-on-error:\s*true\s*$/m,
+  'CI must not convert failed steps into a successful workflow conclusion',
+)
 const ignoredReleaseDeletion =
   /(?:gh release delete|gh api[^\n]*(?:--method|-X)\s+DELETE[^\n]*releases\/)[^\n]*\|\|\s*(?:true\b|:)/
 assert.doesNotMatch(

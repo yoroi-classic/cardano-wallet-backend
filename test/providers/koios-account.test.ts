@@ -5,6 +5,7 @@ import { BadRequestError, MalformedUpstreamError, ProviderError } from '../../sr
 
 const BASE = 'https://preprod.koios.rest/api/v1'
 const STAKE = 'stake_test1uqrw9tjymlm8wrz8g8g9q2q0k3s0nq4z9m0q9c0s0'
+const OTHER_STAKE = 'stake_test1uzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz'
 
 interface Call {
   url: string
@@ -90,6 +91,35 @@ describe('koios getAccountState', () => {
       rewardsSum: '0',
       withdrawalsSum: '0',
     })
+  })
+
+  it('canonicalizes an uppercase Bech32 request before querying and mapping', async () => {
+    const { fetchImpl, calls } = fakeFetch({ json: async () => [ROW] })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const state = await provider.getAccountState(STAKE.toUpperCase())
+
+    expect(state.stakeAddress).toBe(STAKE)
+    expect(JSON.parse(String(calls[0]?.body))).toEqual({ _stake_addresses: [STAKE] })
+  })
+
+  it.each([
+    ['one mismatched row', [{ ...ROW, stake_address: OTHER_STAKE }]],
+    ['one noncanonical uppercase row', [{ ...ROW, stake_address: STAKE.toUpperCase() }]],
+    ['duplicate exact rows', [ROW, { ...ROW }]],
+    ['mixed exact and mismatched rows', [ROW, { ...ROW, stake_address: OTHER_STAKE }]],
+    [
+      'multiple mismatched rows',
+      [
+        { ...ROW, stake_address: OTHER_STAKE },
+        { ...ROW, stake_address: `${OTHER_STAKE}x` },
+      ],
+    ],
+  ])('rejects %s as malformed upstream data', async (_case, rows) => {
+    const { fetchImpl } = fakeFetch({ json: async () => rows })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getAccountState(STAKE)).rejects.toBeInstanceOf(MalformedUpstreamError)
   })
 
   it('leaves delegations undefined when Koios returns null', async () => {
@@ -494,7 +524,12 @@ describe('koios getTxStatus', () => {
     })
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
-    await expect(provider.getTxStatus('bb')).resolves.toEqual({ seen: true, confirmations: 12 })
+    await expect(provider.getTxStatus('bb')).resolves.toEqual({
+      status: 'confirmed',
+      seen: true,
+      confirmations: 12,
+      overlayAction: 'reconcile',
+    })
   })
 
   it('reports not-seen when Koios has no confirmation count', async () => {
@@ -503,14 +538,24 @@ describe('koios getTxStatus', () => {
     })
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
-    await expect(provider.getTxStatus('bb')).resolves.toEqual({ seen: false, confirmations: 0 })
+    await expect(provider.getTxStatus('bb')).resolves.toEqual({
+      status: 'unknown',
+      seen: false,
+      confirmations: 0,
+      overlayAction: 'retain',
+    })
   })
 
   it('reports not-seen for an empty response', async () => {
     const { fetchImpl } = fakeFetch({ json: async () => [] })
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
-    await expect(provider.getTxStatus('bb')).resolves.toEqual({ seen: false, confirmations: 0 })
+    await expect(provider.getTxStatus('bb')).resolves.toEqual({
+      status: 'unknown',
+      seen: false,
+      confirmations: 0,
+      overlayAction: 'retain',
+    })
   })
 })
 
@@ -688,11 +733,78 @@ describe('koios filterUsedAddresses', () => {
     })
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
-    const used = await provider.filterUsedAddresses(['addrA', 'addrB', 'addrC'])
+    const used = await provider.filterUsedAddresses(['addrA', 'addrB', 'addrA', 'addrC'])
 
-    expect(used).toEqual(['addrA', 'addrC'])
+    expect(used).toEqual(['addrA', 'addrA', 'addrC'])
     expect(calls[0]?.url).toBe(`${BASE}/address_info`)
-    expect(JSON.parse(String(calls[0]?.body))).toEqual({ _addresses: ['addrA', 'addrB', 'addrC'] })
+    expect(JSON.parse(String(calls[0]?.body))).toEqual({
+      _addresses: ['addrA', 'addrB', 'addrA', 'addrC'],
+    })
+  })
+
+  it('packs large address sets within the shared body budget', async () => {
+    const addresses = Array.from({ length: 200 }, (_, index) =>
+      `addr_test_${index}`.padEnd(80, '0'),
+    )
+    const calls: Call[] = []
+    const fetchImpl: FetchLike = async (url, init) => {
+      calls.push({ url, method: init?.method, body: init?.body })
+      const body = JSON.parse(String(init?.body)) as { _addresses: string[] }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => body._addresses.map((address) => ({ address })),
+        text: async () => '',
+      }
+    }
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.filterUsedAddresses(addresses)).resolves.toEqual(addresses)
+    expect(calls.length).toBeGreaterThan(1)
+    expect(
+      calls.every((call) => Buffer.byteLength(String(call.body)) <= KOIOS_BODY_LIMIT_BYTES),
+    ).toBe(true)
+  })
+
+  it('learns a smaller body limit from 413 and preserves caller order after repacking', async () => {
+    const addresses = Array.from({ length: 6 }, (_, index) => `addr_test_${index}`.padEnd(80, '0'))
+    const usedAddresses = new Set([addresses[1], addresses[4]])
+    const calls: Call[] = []
+    let rejectedOversizedBody = false
+    const fetchImpl: FetchLike = async (url, init) => {
+      calls.push({ url, method: init?.method, body: init?.body })
+      const body = JSON.parse(String(init?.body)) as { _addresses: string[] }
+      if (!rejectedOversizedBody && body._addresses.length > 2) {
+        rejectedOversizedBody = true
+        return {
+          ok: false,
+          status: 413,
+          json: async () => ({}),
+          text: async () =>
+            'Payload too large, body length was 812. Please ensure your request body size is below 248 bytes',
+        }
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () =>
+          body._addresses
+            .filter((address) => usedAddresses.has(address))
+            .map((address) => ({ address })),
+        text: async () => '',
+      }
+    }
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(
+      provider.filterUsedAddresses([addresses[4]!, addresses[0]!, addresses[1]!, addresses[4]!]),
+    ).resolves.toEqual([addresses[4], addresses[1], addresses[4]])
+    expect(rejectedOversizedBody).toBe(true)
+    const sentCounts = calls.map(
+      (call) => (JSON.parse(String(call.body)) as { _addresses: string[] })._addresses.length,
+    )
+    expect(sentCounts[0]).toBe(4)
+    expect(sentCounts.slice(1).every((count) => count <= 2)).toBe(true)
   })
 
   it('returns empty without calling upstream for an empty list', async () => {

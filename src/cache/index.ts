@@ -126,6 +126,7 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
 
   const entries = new Map<string, Entry>()
   const inFlight = new Map<string, Promise<unknown>>()
+  let generation = 0
 
   function evict(): void {
     if (entries.size <= maxEntries) return
@@ -157,18 +158,26 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
       // starting a second identical one.
       const pending = inFlight.get(key)
       if (pending !== undefined) return pending as Promise<T>
+      const attemptGeneration = generation
 
-      const attempt = (async (): Promise<T> => {
-        try {
-          const value = await load()
-          entries.set(key, {
-            value,
-            expiresAt: now() + ttlMs,
-            usableUntil: now() + ttlMs + staleIfErrorMs,
-          })
-          evict()
+      // Start the loader in a microtask, after the shared promise has been registered below. A
+      // loader is expected to return a promise, but JavaScript callers can still throw before
+      // returning one. Calling it inline would let `finally` run before `inFlight.set`, then store
+      // the already-rejected promise after cleanup and permanently poison this key.
+      const attempt = Promise.resolve()
+        .then(load)
+        .then((value) => {
+          if (generation === attemptGeneration) {
+            entries.set(key, {
+              value,
+              expiresAt: now() + ttlMs,
+              usableUntil: now() + ttlMs + staleIfErrorMs,
+            })
+            evict()
+          }
           return value
-        } catch (err) {
+        })
+        .catch((err: unknown) => {
           // The refresh failed. If we still hold a value that is old but not *too* old, serve it
           // rather than the error. See CachePolicy.staleIfErrorMs: for chain-wide data a
           // two-minute-old answer beats a 504, and for account data there is no such thing as an
@@ -182,10 +191,10 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
           const stale = entries.get(key)
           if (stale !== undefined && stale.usableUntil > now()) return stale.value as T
           throw err
-        } finally {
-          inFlight.delete(key)
-        }
-      })()
+        })
+        .finally(() => {
+          if (inFlight.get(key) === attempt) inFlight.delete(key)
+        })
 
       inFlight.set(key, attempt)
       return attempt
@@ -208,6 +217,7 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
     },
 
     clear(): void {
+      generation += 1
       entries.clear()
       inFlight.clear()
     },

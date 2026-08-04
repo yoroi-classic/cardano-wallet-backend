@@ -437,9 +437,11 @@ export function createGovernanceMethods(
     async getProposals({ limit, offset }: ProposalListParams): Promise<Proposal[]> {
       // Newest first: a governance browser opens on what is happening now, not on what happened in
       // the first week of Conway. Ordered upstream on the proposal's own block time, which is a
-      // numeric column, so unlike the pool ranking this sort *can* be pushed down.
+      // numeric column, so unlike the pool ranking this sort *can* be pushed down. A block can
+      // carry several governance actions, so its timestamp is not unique; proposal_id is the
+      // unique tie-break that keeps offset page boundaries deterministic.
       const query = new URLSearchParams({
-        order: 'block_time.desc',
+        order: 'block_time.desc,proposal_id.desc',
         limit: String(limit),
         offset: String(offset),
       })

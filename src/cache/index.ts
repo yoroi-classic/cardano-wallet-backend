@@ -142,6 +142,15 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
   // A clear must invalidate an attempt that was already waiting on its upstream loader. Without
   // this generation check, that attempt can finish after clear() and put the deleted value back.
   let clearGeneration = 0
+  const clearGenerations = new Map<string, number>()
+
+  function generationFor(key: string): number {
+    let latest = clearGenerations.get('') ?? 0
+    for (const [prefix, clearedAt] of clearGenerations) {
+      if (prefix !== '' && key.startsWith(prefix) && clearedAt > latest) latest = clearedAt
+    }
+    return latest
+  }
 
   function evict(): void {
     if (entries.size <= maxEntries) return
@@ -174,12 +183,12 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
       const pending = inFlight.get(key)
       if (pending !== undefined) return pending as Promise<T>
 
-      const attemptGeneration = clearGeneration
+      const attemptGeneration = generationFor(key)
       const attemptHolder: { promise?: Promise<T> } = {}
       const attempt = (async (): Promise<T> => {
         try {
           const value = await load()
-          if (attemptGeneration === clearGeneration) {
+          if (attemptGeneration === generationFor(key)) {
             entries.set(key, {
               value,
               expiresAt: now() + ttlMs,
@@ -201,7 +210,7 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
           // than as data from last week.
           const stale = entries.get(key)
           if (
-            attemptGeneration === clearGeneration &&
+            attemptGeneration === generationFor(key) &&
             stale !== undefined &&
             stale.usableUntil > now()
           )
@@ -258,6 +267,7 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
       if (prefix === undefined) {
         entries.clear()
         inFlight.clear()
+        clearGenerations.set('', clearGeneration)
       } else {
         for (const key of entries.keys()) {
           if (key.startsWith(prefix)) entries.delete(key)
@@ -265,6 +275,7 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
         for (const key of inFlight.keys()) {
           if (key.startsWith(prefix)) inFlight.delete(key)
         }
+        clearGenerations.set(prefix, clearGeneration)
       }
     },
   }

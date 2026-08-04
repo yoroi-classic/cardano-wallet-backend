@@ -86,6 +86,21 @@ describe('memory cache', () => {
     expect(load).toHaveBeenCalledTimes(2)
   })
 
+  it('does not invalidate an unrelated in-flight namespace', async () => {
+    const cache = createMemoryCache()
+    const gate = deferred<string>()
+    const load = vi.fn(() => gate.promise)
+
+    const first = cache.read('provider:koios:preprod:tip', 60_000, load)
+    cache.clear('price:')
+    const second = cache.read('provider:koios:preprod:tip', 60_000, load)
+
+    expect(second).toBe(first)
+    gate.resolve('value')
+    await expect(second).resolves.toBe('value')
+    expect(load).toHaveBeenCalledTimes(1)
+  })
+
   // The load spike this exists to prevent. A cold cache plus a burst of wallets must not mean N
   // identical full pool-list walks against Koios at once, which would arrive at the worst moment.
   it('collapses concurrent misses into a single load', async () => {

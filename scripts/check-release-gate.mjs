@@ -14,8 +14,18 @@ function releaseJobCondition(source) {
   assert.notEqual(start, -1, 'release workflow must define the tag job condition')
   const body = []
   for (const line of source.slice(start + marker.length).split('\n')) {
-    if (/^ {4}\S/.test(line)) break
-    if (line.trim() === '' || /^ {6}\S/.test(line)) body.push(line)
+    if (line.trim() === '') {
+      body.push(line)
+      continue
+    }
+    if (/^[ \t]{6}/.test(line)) {
+      assert.match(line, /^ {6}\S/, 'release job condition has invalid indentation')
+    } else if (/^[ \t]+/.test(line)) {
+      break
+    } else {
+      break
+    }
+    body.push(line)
   }
   return body
     .join('\n')
@@ -32,8 +42,8 @@ function releaseJobNames(source) {
   const jobs = []
   for (const line of lines.slice(jobsIndex + 1)) {
     if (line.trim() !== '' && !line.startsWith(' ')) break
-    const match = /^ {2}([A-Za-z0-9_-]+):/.exec(line)
-    if (match !== null) jobs.push(match[1])
+    const match = /^ {2}(?:"([^"]*)"|'([^']*)'|([^\s:#][^:]*?))[ \t]*:/.exec(line)
+    if (match !== null) jobs.push(match[1] ?? match[2] ?? match[3])
   }
   return jobs
 }
@@ -81,11 +91,30 @@ assert.throws(
 )
 assert.throws(
   () =>
+    assertReleaseJobCondition(
+      workflow.replace(
+        'github.event.workflow_run.head_repository.full_name == github.repository\n',
+        'github.event.workflow_run.head_repository.full_name == github.repository\n        || github.event.workflow_run.conclusion == \'failure\'\n',
+      ),
+    ),
+  /invalid indentation|release job must run only/,
+  'release gate must reject deeper-indented folded conditions',
+)
+assert.throws(
+  () =>
     assert.deepEqual(releaseJobNames(`${workflow}\n  publish:\n    runs-on: ubuntu-latest\n`), [
       'tag',
     ]),
   /Expected values to be strictly deep-equal/,
   'release gate must reject additional release jobs',
+)
+assert.throws(
+  () =>
+    assert.deepEqual(releaseJobNames(`${workflow}\n  "publish":\n    permissions:\n      contents: write\n`), [
+      'tag',
+    ]),
+  /Expected values to be strictly deep-equal/,
+  'release gate must reject quoted additional release jobs',
 )
 
 for (const required of [
@@ -132,10 +161,19 @@ for (const required of [
 }
 
 const workflowWithoutShellContinuations = workflow.replace(/\\[ \t]*\r?\n[ \t]*/g, ' ')
+const ciWithoutComments = ciWorkflow
+  .split('\n')
+  .filter((line) => !/^\s*#/.test(line))
+  .join('\n')
 assert.doesNotMatch(
-  ciWorkflow,
-  /^\s+continue-on-error:\s*true\s*$/m,
+  ciWithoutComments,
+  /^[ \t]+continue-on-error:[ \t]*(?!false\b)[^\n]*$/im,
   'CI must not convert failed steps into a successful workflow conclusion',
+)
+assert.doesNotMatch(
+  ciWithoutComments,
+  /\|\|\s*(?:true\b|:)(?:\s*#.*)?$/m,
+  'CI must not ignore failed commands',
 )
 const ignoredReleaseDeletion =
   /(?:gh release delete|gh api[^\n]*(?:--method|-X)\s+DELETE[^\n]*releases\/)[^\n]*\|\|\s*(?:true\b|:)/
@@ -175,7 +213,7 @@ assert.match(
 )
 assert.doesNotMatch(
   workflow,
-  /on:\n {2}push:/,
+  /^ {2}push:/m,
   'release must not run in parallel with CI on a main push',
 )
 assert.ok(
@@ -186,6 +224,16 @@ assert.ok(
   (workflow.match(/require_release_tag/g) ?? []).length >= 4,
   'release must revalidate the remote tag immediately before and after release creation',
 )
+assert.match(
+  workflow,
+  /require_current_main\(\) \{[\s\S]*?echo "::error::Successful CI commit \$RELEASE_SHA is no longer the main head \(\$main_sha\)"\n\s+return 1[\s\S]*?\n\s+\}/,
+  'require_current_main must fail closed when main moves',
+)
+assert.match(
+  workflow,
+  /if \[ "\$main_sha" != "\$RELEASE_SHA" \]; then\n\s+echo "::error::Successful CI commit \$RELEASE_SHA is no longer the main head \(\$main_sha\)"\n\s+exit 1/,
+  'the initial main-head check must fail closed',
+)
 for (const required of [
   'fetch-depth: 0',
   'TRUSTED_BASE_SHA: ${{ github.event.pull_request.base.sha }}',
@@ -194,7 +242,7 @@ for (const required of [
   'node "$RUNNER_TEMP/check-release-gate.mjs"',
   'npm run check:release-gate',
 ]) {
-  assert.ok(ciWorkflow.includes(required), `CI release check missing: ${required}`)
+  assert.ok(ciWithoutComments.includes(required), `CI release check missing: ${required}`)
 }
 assert.equal(
   packageJson.scripts['check:release-gate'],

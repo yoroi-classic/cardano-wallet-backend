@@ -78,11 +78,32 @@ The summary:
 | GET    | `/v1/governance/dreps`        | neutral page of registered DReps: `?limit=&offset=`                          |
 | POST   | `/v1/governance/dreps/info`   | DRep info for `{ drepIds: [...] }`, in input order                           |
 | GET    | `/v1/governance/proposals`    | Conway governance actions with derived status and vote tallies               |
-| GET    | `/v1/tx/{hash}/status`        | `{ seen, confirmations }`                                                    |
+| GET    | `/v1/tx/{hash}/status`        | lifecycle state and pending-overlay action                                   |
 
 Errors come back as `{ "error": { "code", "message" } }` with a stable status code
 (`502` upstream error, `504` upstream timeout, `429` rate limited, `400` bad request,
 `404` unknown route, `500` otherwise).
+
+### Transaction lifecycle and pending overlays
+
+`GET /v1/tx/{hash}/status` reports one provider-neutral lifecycle state:
+
+- `pending` is a positive mempool observation. `unknown` is only an inconclusive absence. Both
+  return `overlayAction: "retain"`; a wallet must keep spent inputs hidden and keep its pending
+  change available.
+- `confirmed` returns `overlayAction: "reconcile"`. Refresh authoritative current-state UTxOs and
+  remove the overlay only after that state incorporates the transaction.
+- `rejected` and `expired` are reserved for positive terminal proof. They return
+  `overlayAction: "rollback"` and a stable `TX_REJECTED` or `TX_EXPIRED` terminal code. Raw
+  provider response bodies are never returned.
+
+Provider absence is deliberately not terminal. Koios exposes only on-chain confirmation depth, so
+an unconfirmed hash is `unknown`. Hosted Blockfrost can report a transaction submitted through its
+own mempool as `pending`; a miss remains `unknown`, including on compatible/self-hosted deployments
+without that hosted index. Neither provider currently has durable rejection evidence or retains
+enough signed validity data after mempool eviction to prove expiry. Consequently neither reports
+`rejected` or `expired` today. Clients must retain overlays until a provider positively confirms a
+state that permits reconciliation or rollback.
 
 ## Client migration status
 

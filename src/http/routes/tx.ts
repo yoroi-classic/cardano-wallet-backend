@@ -1,6 +1,14 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
-import { BadRequestError } from '../../domain/errors.js'
+import { BadRequestError, MalformedUpstreamError } from '../../domain/errors.js'
+import {
+  confirmedTxStatus,
+  expiredTxStatus,
+  pendingTxStatus,
+  rejectedTxStatus,
+  unknownTxStatus,
+  type TxStatus,
+} from '../../domain/types/transactions.js'
 import type { ChainProvider } from '../../providers/provider.js'
 
 // Even-length hex (whole bytes), matching what the provider will accept.
@@ -24,6 +32,38 @@ function isUtxoRef(ref: string): boolean {
   return Number.isInteger(index) && index <= MAX_OUTPUT_INDEX
 }
 
+/**
+ * Rebuild a lifecycle response from canonical fields.
+ *
+ * Providers consume external data, so returning their object verbatim would let an accidental raw
+ * body, transaction byte string, address or credential become a new public field. This allowlist
+ * also makes terminal reason text stable rather than provider-controlled.
+ */
+function publicTxStatus(status: TxStatus): TxStatus {
+  switch (status.status) {
+    case 'unknown':
+      return unknownTxStatus()
+    case 'pending':
+      return pendingTxStatus()
+    case 'confirmed':
+      if (!Number.isSafeInteger(status.confirmations) || status.confirmations < 0) {
+        throw new MalformedUpstreamError(
+          'provider returned an invalid transaction confirmation count',
+        )
+      }
+      return confirmedTxStatus(status.confirmations)
+    case 'rejected':
+      return rejectedTxStatus()
+    case 'expired':
+      return expiredTxStatus()
+    default: {
+      const exhaustive: never = status
+      void exhaustive
+      throw new MalformedUpstreamError('provider returned an unsupported transaction status')
+    }
+  }
+}
+
 /** Transaction submit and status. */
 export function registerTxRoutes(app: FastifyInstance, provider: ChainProvider): void {
   app.post('/v1/tx/submit', async (request) => {
@@ -31,7 +71,10 @@ export function registerTxRoutes(app: FastifyInstance, provider: ChainProvider):
     if (!parsed.success) {
       throw new BadRequestError('body must be { "cbor": "<hex-encoded transaction>" }')
     }
-    return provider.submitTx(parsed.data.cbor)
+    // Project the public response rather than forwarding a provider-owned object. This route
+    // handles signed bytes, so an accidental debug/raw-body field must not become API surface.
+    const { txHash } = await provider.submitTx(parsed.data.cbor)
+    return { txHash }
   })
 
   app.get('/v1/tx/:hash/status', async (request) => {
@@ -39,7 +82,7 @@ export function registerTxRoutes(app: FastifyInstance, provider: ChainProvider):
     if (!TX_HASH.test(hash)) {
       throw new BadRequestError('invalid transaction hash')
     }
-    return provider.getTxStatus(hash)
+    return publicTxStatus(await provider.getTxStatus(hash))
   })
 
   /**

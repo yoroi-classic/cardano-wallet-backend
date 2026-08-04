@@ -1,6 +1,11 @@
 import { z } from 'zod'
 import { BadRequestError, MalformedUpstreamError } from '../../domain/errors.js'
-import type { ResolvedUtxo, TxStatus } from '../../domain/types/transactions.js'
+import {
+  confirmedTxStatus,
+  unknownTxStatus,
+  type ResolvedUtxo,
+  type TxStatus,
+} from '../../domain/types/transactions.js'
 import type { TxCapability } from '../capabilities/tx.js'
 import type { KoiosClient } from './client.js'
 import { assetItem, mapAssets, numeric } from './schema.js'
@@ -8,7 +13,7 @@ import { assetItem, mapAssets, numeric } from './schema.js'
 const txStatusRow = z.object({
   tx_hash: z.string(),
   // A confirmation count is a number of blocks on top: a whole, non-negative one.
-  num_confirmations: z.number().int().nonnegative().nullish(),
+  num_confirmations: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullish(),
 })
 
 const txHashRow = z.string().regex(/^[0-9a-fA-F]{64}$/)
@@ -60,7 +65,9 @@ export function createTxMethods(koios: KoiosClient): TxCapability {
       }
 
       const confirmations = row?.num_confirmations ?? null
-      return { seen: confirmations !== null, confirmations: confirmations ?? 0 }
+      // Koios indexes only on-chain transactions. A null is neither a mempool answer nor proof
+      // of rejection/expiry, so it must remain unknown and keep the caller's overlay intact.
+      return confirmations === null ? unknownTxStatus() : confirmedTxStatus(confirmations)
     },
 
     async getUtxosByRef(refs: string[]): Promise<ResolvedUtxo[]> {

@@ -494,7 +494,12 @@ describe('koios getTxStatus', () => {
     })
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
-    await expect(provider.getTxStatus('bb')).resolves.toEqual({ seen: true, confirmations: 12 })
+    await expect(provider.getTxStatus('bb')).resolves.toEqual({
+      status: 'confirmed',
+      seen: true,
+      confirmations: 12,
+      overlayAction: 'reconcile',
+    })
   })
 
   it('reports not-seen when Koios has no confirmation count', async () => {
@@ -503,14 +508,24 @@ describe('koios getTxStatus', () => {
     })
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
-    await expect(provider.getTxStatus('bb')).resolves.toEqual({ seen: false, confirmations: 0 })
+    await expect(provider.getTxStatus('bb')).resolves.toEqual({
+      status: 'unknown',
+      seen: false,
+      confirmations: 0,
+      overlayAction: 'retain',
+    })
   })
 
   it('reports not-seen for an empty response', async () => {
     const { fetchImpl } = fakeFetch({ json: async () => [] })
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
-    await expect(provider.getTxStatus('bb')).resolves.toEqual({ seen: false, confirmations: 0 })
+    await expect(provider.getTxStatus('bb')).resolves.toEqual({
+      status: 'unknown',
+      seen: false,
+      confirmations: 0,
+      overlayAction: 'retain',
+    })
   })
 })
 

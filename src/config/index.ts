@@ -136,7 +136,7 @@ function parseTrustedProxies(raw: string): string[] {
       (prefix !== undefined &&
         (prefixNumber === undefined ||
           !Number.isInteger(prefixNumber) ||
-          prefixNumber < 0 ||
+          prefixNumber <= 0 ||
           prefixNumber > maxPrefix))
     ) {
       throw new ConfigError(

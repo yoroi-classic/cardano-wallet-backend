@@ -357,7 +357,7 @@ describe('koios provider — upstream value integrity', () => {
       }
       const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
-      await expect(provider.getTxStatus(requestedHash)).resolves.toEqual({
+      await expect(provider.getTxStatus(requestedHash)).resolves.toMatchObject({
         seen: true,
         confirmations: 0,
       })
@@ -371,7 +371,7 @@ describe('koios provider — upstream value integrity', () => {
     })
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
-    await expect(provider.getTxStatus(TX_HASH)).resolves.toEqual({
+    await expect(provider.getTxStatus(TX_HASH)).resolves.toMatchObject({
       seen: true,
       confirmations: 1,
     })

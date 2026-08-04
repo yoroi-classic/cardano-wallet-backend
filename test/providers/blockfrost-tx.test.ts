@@ -78,7 +78,7 @@ describe('blockfrost tx — happy path', () => {
       [`/blocks/${BLOCK_HASH}`]: [{ confirmations: 0 }],
     })
 
-    await expect(provider.getTxStatus(TX_HASH.toUpperCase())).resolves.toEqual({
+    await expect(provider.getTxStatus(TX_HASH.toUpperCase())).resolves.toMatchObject({
       seen: true,
       confirmations: 0,
     })

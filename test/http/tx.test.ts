@@ -206,7 +206,7 @@ describe('tx status', () => {
       provider: providerWith({
         getTxStatus: async (hash) => {
           received = hash
-          return { seen: false, confirmations: 0 }
+          return unknownTxStatus()
         },
       }),
     })

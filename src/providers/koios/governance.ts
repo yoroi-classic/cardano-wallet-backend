@@ -163,12 +163,14 @@ const votingSummaryRow = z.object({
   drep_abstain_votes_cast: voteCount.nullish(),
   drep_yes_vote_power: numeric.nullish(),
   drep_no_vote_power: numeric.nullish(),
+  drep_active_abstain_vote_power: numeric.nullish(),
   drep_always_abstain_vote_power: numeric.nullish(),
   pool_yes_votes_cast: voteCount.nullish(),
   pool_no_votes_cast: voteCount.nullish(),
   pool_abstain_votes_cast: voteCount.nullish(),
   pool_yes_vote_power: numeric.nullish(),
   pool_no_vote_power: numeric.nullish(),
+  pool_active_abstain_vote_power: numeric.nullish(),
   pool_passive_always_abstain_vote_power: numeric.nullish(),
   committee_yes_votes_cast: voteCount.nullish(),
   committee_no_votes_cast: voteCount.nullish(),
@@ -229,6 +231,9 @@ const stakeWeightedTally = (
   noPower: String(noPower ?? 0),
   abstainPower: String(abstainPower ?? 0),
 })
+
+const addNumeric = (...values: unknown[]): string =>
+  values.reduce((sum, value) => sum + BigInt(value ?? 0), 0n).toString()
 
 export interface GovernanceMethodDeps {
   /** Cache for the DRep membership list and the off-chain names. Defaults to none. */
@@ -507,16 +512,27 @@ export function createGovernanceMethods(
                   votes.drep_abstain_votes_cast,
                   votes.drep_yes_vote_power,
                   votes.drep_no_vote_power,
-                  votes.drep_always_abstain_vote_power,
+                  addNumeric(
+                    votes.drep_active_abstain_vote_power,
+                    votes.drep_always_abstain_vote_power,
+                  ),
                 ),
-                poolVotes: stakeWeightedTally(
-                  votes.pool_yes_votes_cast,
-                  votes.pool_no_votes_cast,
-                  votes.pool_abstain_votes_cast,
-                  votes.pool_yes_vote_power,
-                  votes.pool_no_vote_power,
-                  votes.pool_passive_always_abstain_vote_power,
-                ),
+                ...(row.proposal_type === 'TreasuryWithdrawals' ||
+                row.proposal_type === 'NewConstitution'
+                  ? {}
+                  : {
+                      poolVotes: stakeWeightedTally(
+                        votes.pool_yes_votes_cast,
+                        votes.pool_no_votes_cast,
+                        votes.pool_abstain_votes_cast,
+                        votes.pool_yes_vote_power,
+                        votes.pool_no_vote_power,
+                        addNumeric(
+                          votes.pool_active_abstain_vote_power,
+                          votes.pool_passive_always_abstain_vote_power,
+                        ),
+                      ),
+                    }),
                 // Constitutional committee members each have one vote. The committee has no
                 // franchise on committee updates or a motion of no-confidence, so a zero tally
                 // there means "not applicable", not "no one voted". Keep that distinction in

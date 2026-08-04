@@ -1592,12 +1592,16 @@ export const openapi = {
               '`abstract`: those are attacker-supplied text a user reads right before voting.',
           },
           drepVotes: { $ref: '#/components/schemas/VoteTally' },
-          poolVotes: { $ref: '#/components/schemas/VoteTally' },
+          poolVotes: {
+            $ref: '#/components/schemas/VoteTally',
+            description:
+              'Stake-pool votes. Absent for `TreasuryWithdrawals` and `NewConstitution`, where pools have no vote, or when the tally is unavailable.',
+          },
           committeeVotes: {
             $ref: '#/components/schemas/CommitteeVoteTally',
             description:
               'Committee votes by member count. Absent for `NewCommittee` and `NoConfidence`, ' +
-              'where the constitutional committee has no vote.',
+              'where the constitutional committee has no vote, or when the tally is unavailable.',
           },
         },
       },

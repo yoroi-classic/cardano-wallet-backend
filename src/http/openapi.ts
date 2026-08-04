@@ -677,8 +677,10 @@ export const openapi = {
               type: 'array',
               items: {
                 type: 'string',
-                pattern: '^[0-9a-fA-F]{64}#\\d{1,5}$',
-                description: 'An output reference: `<txHash>#<outputIndex>`.',
+                pattern:
+                  '^[0-9a-fA-F]{64}#(?:[0-9]{1,4}|0[0-9]{4}|[12][0-9]{4}|3[01][0-9]{3}|32[0-6][0-9]{2}|327[0-5][0-9]|3276[0-7])$',
+                description:
+                  'An output reference: `<txHash>#<outputIndex>`, where outputIndex is 0..32767 (leading zeros are accepted).',
               },
               minItems: 1,
               maxItems: 100,

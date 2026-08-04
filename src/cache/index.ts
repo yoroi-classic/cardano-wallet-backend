@@ -91,6 +91,12 @@ export interface Cache {
   /** Store a value under `key` with a TTL. The counterpart to `peek` for batch loads. */
   set<T>(key: string, value: T, ttlMs: number): void
 
+  /** Token for guarding a batch write against a clear that happened while upstream was awaited. */
+  generation(): number
+
+  /** Store only when the supplied generation is still current. */
+  setIfGeneration<T>(key: string, value: T, ttlMs: number, generation: number): void
+
   /** Live entries. For tests and diagnostics. */
   readonly size: number
 
@@ -225,6 +231,16 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
       evict()
     },
 
+    generation(): number {
+      return clearGeneration
+    },
+
+    setIfGeneration<T>(key: string, value: T, ttlMs: number, generation: number): void {
+      if (generation !== clearGeneration) return
+      entries.set(key, { value, expiresAt: now() + ttlMs, usableUntil: now() + ttlMs })
+      evict()
+    },
+
     get size(): number {
       return entries.size
     },
@@ -269,6 +285,10 @@ export const noCache: Cache = {
     return undefined
   },
   set<T>(_key: string, _value: T, _ttlMs: number): void {},
+  generation(): number {
+    return 0
+  },
+  setIfGeneration<T>(_key: string, _value: T, _ttlMs: number, _generation: number): void {},
   size: 0,
   sizeForPrefix(_prefix: string): number {
     return 0

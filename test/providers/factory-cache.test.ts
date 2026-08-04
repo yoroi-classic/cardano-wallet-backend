@@ -47,6 +47,9 @@ describe('provider factory cache ownership', () => {
       },
       peek: (key) => memory.peek(key),
       set: (key, value, ttlMs) => memory.set(key, value, ttlMs),
+      generation: () => memory.generation(),
+      setIfGeneration: (key, value, ttlMs, generation) =>
+        memory.setIfGeneration(key, value, ttlMs, generation),
       get size() {
         return memory.size
       },
@@ -133,6 +136,51 @@ describe('provider factory cache ownership', () => {
       cache.peek(`provider:koios:preprod:asset:meta:${'b'.repeat(56) + '484f534b59'}`),
     ).toBeDefined()
     expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not let a batch metadata load repopulate a namespace cleared while upstream is pending', async () => {
+    const cache = createMemoryCache()
+    const config = loadConfig({ NETWORK: 'preprod' })
+    const subject = 'b'.repeat(56) + '484f534b59'
+    let markStarted!: () => void
+    let release!: () => void
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve
+    })
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.includes('/asset_info')) {
+        markStarted()
+        await blocked
+      }
+      return response([
+        {
+          policy_id: 'b'.repeat(56),
+          asset_name: '484f534b59',
+          asset_name_ascii: 'HOSKY',
+          fingerprint: 'asset1hosky',
+          total_supply: '1',
+          name: 'HOSKY',
+          ticker: 'HOSKY',
+          description: null,
+          url: null,
+          decimals: 0,
+        },
+      ])
+    })
+    vi.stubGlobal('fetch', fetchImpl)
+    const provider = createProvider(config, { cache })
+
+    const pending = provider.getTokenMetadata([subject])
+    await started
+    scopeProviderCache(cache, config).clear()
+    release()
+    await pending
+
+    expect(cache.peek(`provider:koios:preprod:asset:meta:${subject}`)).toBeUndefined()
+    expect(cache.size).toBe(0)
   })
 
   it('keeps the uncached governance walk bounded when noCache is injected', async () => {

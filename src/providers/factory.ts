@@ -68,6 +68,9 @@ export function scopeProviderCache(cache: Cache, config: AppConfig): Cache {
     read: (value, policy, load) => cache.read(key(value), policy, load),
     peek: (value) => cache.peek(key(value)),
     set: (value, data, ttlMs) => cache.set(key(value), data, ttlMs),
+    generation: () => cache.generation(),
+    setIfGeneration: (value, data, ttlMs, expected) =>
+      cache.setIfGeneration(key(value), data, ttlMs, expected),
     get size() {
       return cache.sizeForPrefix?.(prefix) ?? cache.size
     },

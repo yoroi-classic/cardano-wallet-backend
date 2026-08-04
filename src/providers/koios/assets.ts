@@ -503,6 +503,7 @@ export function createAssetMethods(
       }
 
       if (missing.length > 0) {
+        const generation = cache.generation()
         const pairs = missing.map((s) => [
           s.slice(0, POLICY_ID_HEX_LEN),
           s.slice(POLICY_ID_HEX_LEN),
@@ -520,7 +521,7 @@ export function createAssetMethods(
           const meta = mapTokenMetadata(row)
           const subject = row.policy_id + row.asset_name
           found.set(subject, meta)
-          cache.set(`asset:meta:${subject}`, meta, TOKEN_METADATA_TTL_MS)
+          cache.setIfGeneration(`asset:meta:${subject}`, meta, TOKEN_METADATA_TTL_MS, generation)
         }
       }
 

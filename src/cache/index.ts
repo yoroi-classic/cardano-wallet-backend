@@ -182,12 +182,12 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
       // starting a second identical one.
       const pending = inFlight.get(key)
       if (pending !== undefined) return pending as Promise<T>
-
       const attemptGeneration = generationFor(key)
+      // Start the loader in a microtask so synchronous loader throws still clean up inFlight.
       const attemptHolder: { promise?: Promise<T> } = {}
-      const attempt = (async (): Promise<T> => {
-        try {
-          const value = await load()
+      const attempt = Promise.resolve()
+        .then(load)
+        .then((value) => {
           if (attemptGeneration === generationFor(key)) {
             entries.set(key, {
               value,
@@ -197,7 +197,8 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
             evict()
           }
           return value
-        } catch (err) {
+        })
+        .catch((err: unknown) => {
           // The refresh failed. If we still hold a value that is old but not *too* old, serve it
           // rather than the error. See CachePolicy.staleIfErrorMs: for chain-wide data a
           // two-minute-old answer beats a 504, and for account data there is no such thing as an
@@ -216,12 +217,12 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
           )
             return stale.value as T
           throw err
-        } finally {
+        })
+        .finally(() => {
           // A clear followed by a new read may have installed a newer attempt for this key. Do
           // not let the old attempt's cleanup remove that newer registration.
           if (inFlight.get(key) === attemptHolder.promise) inFlight.delete(key)
-        }
-      })()
+        })
       attemptHolder.promise = attempt
 
       inFlight.set(key, attempt)

@@ -1,3 +1,4 @@
+import { createServer } from 'node:http'
 import { describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import { fetchJsonOrNotFound, type FetchLike } from '../../src/prices/http.js'
@@ -11,11 +12,37 @@ const schema = z.object({ ok: z.boolean() })
 
 type Init = Parameters<FetchLike>[1]
 
-const opts = (fetchImpl: FetchLike, headers?: Record<string, string>) => ({
+const opts = (fetchImpl: FetchLike, headers?: Record<string, string>, timeoutMs = 1000) => ({
   fetchImpl,
-  timeoutMs: 1000,
+  timeoutMs,
   upstream: 'coingecko',
   ...(headers === undefined ? {} : { headers }),
+})
+
+describe('fetchJson — timeout configuration', () => {
+  it.each([-1, Number.NaN, Number.POSITIVE_INFINITY, 1.5, 2 ** 32])(
+    'maps invalid timeout %s to a provider error without fetching',
+    async (timeoutMs) => {
+      const fetchImpl = vi.fn<FetchLike>()
+
+      let caught: unknown
+      try {
+        await fetchJsonOrNotFound(
+          'https://api/x?credential=SECRET',
+          schema,
+          opts(fetchImpl, undefined, timeoutMs),
+        )
+      } catch (error) {
+        caught = error
+      }
+
+      expect(caught).toBeInstanceOf(ProviderError)
+      expect(caught).not.toBeInstanceOf(ProviderTimeoutError)
+      expect((caught as ProviderError).cause).toBeUndefined()
+      expect((caught as Error).message).not.toContain('SECRET')
+      expect(fetchImpl).not.toHaveBeenCalled()
+    },
+  )
 })
 
 describe('fetchJson — redirect handling', () => {
@@ -62,9 +89,141 @@ describe('fetchJson — 404 body handling', () => {
     expect(result).toBeUndefined()
     expect(text).toHaveBeenCalledTimes(1)
   })
+
+  it('keeps a 404 answer when its body cannot be drained for a non-timeout reason', async () => {
+    const fetchImpl: FetchLike = async () => ({
+      ok: false,
+      status: 404,
+      json: async () => ({}),
+      text: async () => {
+        throw new Error('connection reset while draining')
+      },
+    })
+
+    await expect(
+      fetchJsonOrNotFound('https://api/x', schema, opts(fetchImpl)),
+    ).resolves.toBeUndefined()
+  })
+
+  it('does not turn a stalled 404 body into a negative-cache result', async () => {
+    let signal: AbortSignal | undefined
+    const fetchImpl: FetchLike = async (_url, init) => {
+      signal = init?.signal
+      return {
+        ok: false,
+        status: 404,
+        json: async () => ({}),
+        text: async () =>
+          await new Promise<string>((_resolve, reject) => {
+            signal?.addEventListener(
+              'abort',
+              () => reject(Object.assign(new Error('body aborted'), { name: 'AbortError' })),
+              { once: true },
+            )
+          }),
+      }
+    }
+
+    let caught: unknown
+    try {
+      await fetchJsonOrNotFound(
+        'https://api/x?credential=SECRET',
+        schema,
+        opts(fetchImpl, undefined, 5),
+      )
+    } catch (error) {
+      caught = error
+    }
+
+    expect(caught).toBeInstanceOf(ProviderTimeoutError)
+    expect((caught as ProviderTimeoutError).cause).toBe(signal?.reason)
+    expect((caught as Error).message).not.toContain('SECRET')
+  })
 })
 
 describe('fetchJson — timeout while reading the body', () => {
+  it('maps a stalled non-2xx streaming body to a provider timeout', async () => {
+    const server = createServer((_request, response) => {
+      response.writeHead(503, { 'content-type': 'text/plain' })
+      response.write('SECRET_PARTIAL_BODY')
+    })
+
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(0, '127.0.0.1', resolve)
+    })
+
+    try {
+      const address = server.address()
+      if (address === null || typeof address === 'string') throw new Error('expected TCP address')
+      const url = `http://127.0.0.1:${address.port}/?credential=SECRET_URL`
+
+      let caught: unknown
+      try {
+        await fetchJsonOrNotFound(url, schema, opts(globalThis.fetch as FetchLike, undefined, 100))
+      } catch (error) {
+        caught = error
+      }
+
+      expect(caught).toBeInstanceOf(ProviderTimeoutError)
+      expect((caught as ProviderTimeoutError).cause).toMatchObject({ name: 'TimeoutError' })
+      expect((caught as Error).message).not.toContain('SECRET_URL')
+      expect((caught as Error).message).not.toContain('SECRET_PARTIAL_BODY')
+    } finally {
+      server.closeAllConnections()
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error === undefined ? resolve() : reject(error)))
+      })
+    }
+  })
+
+  it('maps a timeout thrown from a non-2xx body reader to a provider timeout', async () => {
+    const timeout = Object.assign(new Error('timed out'), { name: 'TimeoutError' })
+    const fetchImpl: FetchLike = async () => ({
+      ok: false,
+      status: 503,
+      json: async () => ({}),
+      text: async () => {
+        throw timeout
+      },
+    })
+
+    let caught: unknown
+    try {
+      await fetchJsonOrNotFound('https://api/x', schema, opts(fetchImpl))
+    } catch (error) {
+      caught = error
+    }
+
+    expect(caught).toBeInstanceOf(ProviderTimeoutError)
+    expect((caught as ProviderTimeoutError).cause).toBe(timeout)
+  })
+
+  it('keeps non-timeout body-read failures as sanitized provider errors', async () => {
+    const fetchImpl: FetchLike = async () => ({
+      ok: false,
+      status: 503,
+      json: async () => ({}),
+      text: async () => {
+        throw new Error('SECRET_BODY at https://api/x?credential=SECRET_URL')
+      },
+    })
+
+    let caught: unknown
+    try {
+      await fetchJsonOrNotFound('https://api/x?credential=SECRET_URL', schema, opts(fetchImpl))
+    } catch (error) {
+      caught = error
+    }
+
+    expect(caught).toBeInstanceOf(ProviderError)
+    expect(caught).not.toBeInstanceOf(ProviderTimeoutError)
+    expect((caught as ProviderError).upstreamStatus).toBe(503)
+    expect((caught as ProviderError).cause).toBeUndefined()
+    expect((caught as ProviderError).details).toBeUndefined()
+    expect((caught as Error).message).not.toContain('SECRET')
+  })
+
   it('maps a timeout thrown from res.json() to a provider timeout, not malformed json', async () => {
     const fetchImpl: FetchLike = async () => ({
       ok: true,

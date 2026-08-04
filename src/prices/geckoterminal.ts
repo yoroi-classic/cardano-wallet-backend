@@ -245,11 +245,13 @@ function activityFromPool(subject: string, pool: AdaPool | undefined): TokenActi
     if (error instanceof RangeError) return undefined
     throw error
   }
+  const changePercent = Number(pool.changePercent24h)
+  if (!Number.isFinite(changePercent)) return undefined
 
   return {
     subject,
     priceAda: pool.priceAda,
-    changePercent: Number(pool.changePercent24h),
+    changePercent,
     volumeAda,
   }
 }

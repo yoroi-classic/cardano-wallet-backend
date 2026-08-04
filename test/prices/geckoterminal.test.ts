@@ -322,6 +322,27 @@ describe('geckoterminal client — unhappy path', () => {
     expect(activity[0]?.volumeAda).toBe('591187.5812361061')
   })
 
+  it('omits a pool with a non-finite 24h change while retaining healthy siblings', async () => {
+    const malformedPool = pool({ changeH24: `1${'0'.repeat(309)}` })
+    const healthyPool = pool({ baseId: `cardano_${HEALTHY_SUBJECT}` })
+    const { fetchImpl } = fakeFetch({
+      '/tokens/multi/': {
+        json: multiResponse(
+          { subject: SUBJECT, pools: [malformedPool] },
+          { subject: HEALTHY_SUBJECT, pools: [healthyPool] },
+        ),
+      },
+    })
+
+    const activity = await client(undefined, fetchImpl).getTokenActivity(
+      [SUBJECT, HEALTHY_SUBJECT],
+      '24h',
+    )
+
+    expect(activity).toHaveLength(1)
+    expect(activity[0]?.subject).toBe(HEALTHY_SUBJECT)
+  })
+
   it('omits a subject with an ADA pool but no candles yet for the 7d/30d window', async () => {
     const { fetchImpl } = fakeFetch({
       '/tokens/multi/': { json: multiResponse({ subject: SUBJECT, pools: [ADA_POOL] }) },

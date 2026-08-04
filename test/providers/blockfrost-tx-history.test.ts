@@ -53,6 +53,7 @@ const defaultOutput = {
   data_hash: null,
   inline_datum: null,
   reference_script_hash: null,
+  collateral: false,
   consumed_by_tx: null,
 }
 
@@ -251,6 +252,7 @@ const HISTORY_CONFIG: FakeConfig = {
           data_hash: null,
           inline_datum: null,
           reference_script_hash: null,
+          collateral: false,
           consumed_by_tx: null,
         },
       ],
@@ -274,6 +276,7 @@ const HISTORY_CONFIG: FakeConfig = {
           data_hash: null,
           inline_datum: null,
           reference_script_hash: null,
+          collateral: false,
           consumed_by_tx: null,
         },
       ],

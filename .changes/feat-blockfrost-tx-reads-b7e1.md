@@ -17,6 +17,12 @@
 
 ### Note
 
+- On `POST /v1/tx/utxos` the spent state of a **collateral** output cannot come from the transaction
+  read: Blockfrost documents `consumed_by_tx` as always null on a collateral output, spent or not.
+  Those outputs are resolved against the controlling address's live UTxO set instead, newest page
+  first, and only they pay for the extra read. When even that cannot settle it, the reference is
+  omitted from the response rather than reported unspent, because a wallet acts on `spent: false` by
+  offering the output as collateral, and the node then rejects the transaction it builds.
 - `filterUsedPaymentCredentials` remains `501` on Blockfrost: it exposes no payment-credential index
   (no equivalent of Koios's `/credential_txs`), so the read cannot be served there. A base Shelley
   wallet can use `filterUsedAddresses` with its derived addresses instead.

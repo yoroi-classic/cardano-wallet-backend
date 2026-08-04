@@ -4,7 +4,7 @@ import type { ResolvedUtxo, TxStatus } from '../../domain/types/transactions.js'
 import type { TxCapability } from '../capabilities/tx.js'
 import type { BlockfrostClient } from './client.js'
 import { mapWithConcurrency } from './concurrency.js'
-import { fetchTxUtxos, mapResolvedOutput, type TxUtxos } from './tx-info.js'
+import { fetchTxUtxos, mapResolvedOutput, resolveOutputSpent, type TxUtxos } from './tx-info.js'
 
 // How many distinct transactions this driver resolves at once. Each reference lookup is a single
 // `/txs/{hash}/utxos` read, so a modest ceiling overlaps them without draining the burst bucket.
@@ -96,13 +96,29 @@ export function createTxMethods(client: BlockfrostClient): TxCapability {
       // Caller's order. A reference that did not parse, whose transaction is not on chain, or whose
       // output index does not exist is simply absent from the result, so it can be shorter than the
       // request — the same "nothing here" contract as the Koios driver.
-      return parsed.flatMap((p) => {
+      const found = parsed.flatMap((p) => {
         if (p === undefined) return []
         const utxos = byHash.get(p.hash)
         if (utxos === undefined) return []
         const output = utxos.outputs.find((o) => o.output_index === p.index)
         if (output === undefined) return []
-        return [mapResolvedOutput(p.hash, p.index, output)]
+        return [{ ref: p, output }]
+      })
+
+      // Only a collateral output makes a second request here; an ordinary one is already answered
+      // by the transaction read above. Paced under the same ceiling as the reads that fed it.
+      const spentStates = await mapWithConcurrency(
+        found,
+        REF_LOOKUP_CONCURRENCY,
+        ({ ref, output }) => resolveOutputSpent(client, ref.hash, ref.index, output),
+      )
+
+      return found.flatMap(({ ref, output }, i) => {
+        const spent = spentStates[i]
+        // Blockfrost could not establish the spent state. Absent, for the same reason the walk
+        // refuses to guess: an output wrongly reported unspent is the one a wallet acts on.
+        if (spent === undefined) return []
+        return [mapResolvedOutput(ref.hash, ref.index, output, spent)]
       })
     },
   }

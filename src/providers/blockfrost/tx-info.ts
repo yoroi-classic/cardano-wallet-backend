@@ -90,12 +90,22 @@ const utxoOutputRow = z.object({
   data_hash: z.string().nullish(),
   inline_datum: z.string().nullish(),
   reference_script_hash: z.string().nullish(),
-  // Transaction that consumed this output, or null/absent for an unspent one. This is what lets a
-  // by-reference lookup answer "spent" without a second query. Absent means unconsumed, which the
-  // spec permits (the field is only serialized when set), so it is read leniently and treated as
-  // unspent — the opposite mistake (reading a spent output as unspent) can't arise from an absent
-  // field because Blockfrost only omits it when the output really is unspent.
+  // Whether this is the collateral return of a failed script transaction. Required by the spec, so
+  // read strictly: it decides which of the two spent-state sources below applies, and a silently
+  // absent flag would route a collateral output down the path that cannot answer for it.
+  collateral: z.boolean(),
+  // Transaction that consumed this output, or null/absent for an unconsumed one. This answers
+  // "spent" without a second query, but *only for an ordinary output*. The spec is explicit that it
+  // is "Always null for collateral outputs", spent or not, so on a collateral output a null here
+  // carries no information at all and must not be read as unspent. See resolveCollateralSpent.
   consumed_by_tx: z.string().nullish(),
+})
+
+// One row of `address_utxo_content` (`/addresses/{address}/utxos`), projected to just the reference.
+// Only used to test set membership, so nothing else on the row is read.
+const addressUtxoRefRow = z.object({
+  tx_hash: z.string(),
+  output_index: z.number().int().nonnegative(),
 })
 
 const txUtxosRow = z.object({
@@ -421,11 +431,73 @@ export function fetchTxUtxos(client: BlockfrostClient, hash: string): Promise<Tx
   return client.getOrUndefined(txUtxosRow, `/txs/${encodeURIComponent(hash)}/utxos`)
 }
 
+/**
+ * Whether a collateral output has since been consumed, or `undefined` if that cannot be established.
+ *
+ * `consumed_by_tx` is null on every collateral output whether or not it has been spent, so the
+ * transaction's own utxo view cannot answer this one. The controlling address's live utxo set can:
+ * an output is unspent exactly while it is still listed there. Walked newest first, so a collateral
+ * return, which is by nature recent, is normally settled by the first page.
+ *
+ * The `undefined` case is deliberate. `spent` has no third value, and of the two, answering
+ * "unspent" for an output that has actually gone is the one that does damage: a wallet offering it
+ * as collateral builds a transaction the node rejects. So an inconclusive walk is reported as
+ * nothing at that reference rather than guessed either way.
+ */
+async function resolveCollateralSpent(
+  client: BlockfrostClient,
+  address: string,
+  txHash: string,
+  outputIndex: number,
+): Promise<boolean | undefined> {
+  const path = `/addresses/${encodeURIComponent(address)}/utxos`
+  const wanted = txHash.toLowerCase()
+
+  for (let page = 1; page <= LIST_MAX_PAGES; page += 1) {
+    const rows = await client.getOrUndefined(
+      z.array(addressUtxoRefRow),
+      `${path}?count=${LIST_PAGE_SIZE}&page=${page}&order=desc`,
+    )
+    // An address Blockfrost has never seen controls nothing, so the output is not in its set.
+    if (rows === undefined) return true
+    const held = rows.some(
+      (row) => row.tx_hash.toLowerCase() === wanted && row.output_index === outputIndex,
+    )
+    if (held) return false
+    // A short page ends the set: walked it all without finding the output, so it is gone.
+    if (rows.length < LIST_PAGE_SIZE) return true
+  }
+
+  return undefined
+}
+
+/**
+ * Establish the spent state of one referenced output.
+ *
+ * Two sources, because Blockfrost only populates `consumed_by_tx` on ordinary outputs. An ordinary
+ * output is answered from the transaction read already in hand; a collateral output costs one more
+ * address-scoped read, paid only by the references that need it.
+ */
+export function resolveOutputSpent(
+  client: BlockfrostClient,
+  txHash: string,
+  outputIndex: number,
+  output: TxUtxos['outputs'][number],
+): Promise<boolean | undefined> {
+  // A consuming transaction hash is conclusive on any output. The spec says it is never set on a
+  // collateral one, but if that ever changes it is still the cheapest true answer available.
+  if (typeof output.consumed_by_tx === 'string') return Promise.resolve(true)
+  // Its *absence* is only conclusive on an ordinary output.
+  if (!output.collateral) return Promise.resolve(false)
+  return resolveCollateralSpent(client, output.address, txHash, outputIndex)
+}
+
 /** Map one `/txs/{hash}/utxos` output onto the resolved-by-reference domain shape. */
 export function mapResolvedOutput(
   txHash: string,
   outputIndex: number,
   output: TxUtxos['outputs'][number],
+  spent: boolean,
 ): ResolvedUtxo {
   const { value, assets } = splitAmount(output.amount)
   return {
@@ -437,7 +509,7 @@ export function mapResolvedOutput(
     datumHash: output.data_hash ?? undefined,
     inlineDatum: output.inline_datum ?? undefined,
     referenceScriptHash: output.reference_script_hash ?? undefined,
-    // A consuming transaction hash means spent; null or absent means unspent.
-    spent: typeof output.consumed_by_tx === 'string',
+    // Decided by resolveOutputSpent, which knows which source can answer for this output.
+    spent,
   }
 }

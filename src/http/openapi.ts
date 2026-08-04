@@ -659,7 +659,10 @@ export const openapi = {
           'transaction the node rejects and the user sees an unexplained failure. A dApp connector ' +
           "resolving a transaction's inputs needs to see them whether or not they survive.\n\n" +
           'References that are not on chain are simply absent from the result, so it can be ' +
-          'shorter than the request. Order follows the input. Never cached.',
+          'shorter than the request. A reference whose spent state the configured provider cannot ' +
+          'establish is absent for the same reason: on this endpoint a wrong `spent: false` is ' +
+          'acted on, so no answer is safer than a confident wrong one. Order follows the input. ' +
+          'Never cached.',
         requestBody: jsonBody({
           type: 'object',
           required: ['refs'],

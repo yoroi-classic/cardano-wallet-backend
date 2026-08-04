@@ -148,8 +148,35 @@ describe('koios read attempt configuration', () => {
     ['retryBackoffMs overflow', { retryBackoffMs: 2_147_483_648 }],
     ['bodyLimitBytes', { bodyLimitBytes: Number.NaN }],
     ['bodyLimitBytes overflow', { bodyLimitBytes: Number.POSITIVE_INFINITY }],
+    ['timeoutMs zero', { timeoutMs: 0 }],
+    ['timeoutMs negative', { timeoutMs: -1 }],
+    ['timeoutMs fractional', { timeoutMs: 1.5 }],
+    ['heavyTimeoutMs zero', { heavyTimeoutMs: 0 }],
+    ['heavyTimeoutMs negative', { heavyTimeoutMs: -1 }],
+    ['heavyTimeoutMs fractional', { heavyTimeoutMs: 1.5 }],
+    ['retryBackoffMs negative', { retryBackoffMs: -1 }],
+    ['retryBackoffMs fractional', { retryBackoffMs: 1.5 }],
+    ['bodyLimitBytes zero', { bodyLimitBytes: 0 }],
+    ['bodyLimitBytes negative', { bodyLimitBytes: -1 }],
+    ['bodyLimitBytes unsafe integer', { bodyLimitBytes: Number.MAX_SAFE_INTEGER + 1 }],
   ])('rejects invalid %s at construction', (_case, config) => {
     expect(() => testProvider({}, config)).toThrow(ConfigError)
+  })
+
+  it.each([
+    ['timeout minimum', { timeoutMs: 1 }],
+    ['timeout maximum', { timeoutMs: 2_147_483_647 }],
+    ['heavy timeout minimum', { heavyTimeoutMs: 1 }],
+    ['heavy timeout maximum', { heavyTimeoutMs: 2_147_483_647 }],
+    ['backoff minimum', { retryBackoffMs: 0 }],
+    ['backoff maximum', { retryBackoffMs: 2_147_483_647 }],
+    ['body limit minimum', { bodyLimitBytes: 1 }],
+    ['body limit maximum', { bodyLimitBytes: Number.MAX_SAFE_INTEGER }],
+  ])('accepts the %s boundary', async (_case, config) => {
+    const { provider, callsTo } = testProvider({ '/tip': [{ body: [TIP_ROW] }] }, config)
+
+    await expect(provider.getTip()).resolves.toMatchObject({ block: 3_500_000 })
+    expect(callsTo('/tip')).toBe(1)
   })
 })
 

@@ -41,10 +41,19 @@ export async function discover<T>(path: string): Promise<T> {
   if (BLOCKFROST_PROJECT_ID === undefined) {
     throw new Error('BLOCKFROST_PROJECT_ID is not set; this test should have been skipped')
   }
-  const res = await fetch(`${BLOCKFROST_BASE_URL}${path}`, {
-    headers: { accept: 'application/json', project_id: BLOCKFROST_PROJECT_ID },
-    signal: AbortSignal.timeout(DISCOVERY_TIMEOUT_MS),
-  })
+  let res: Response
+  try {
+    res = await fetch(`${BLOCKFROST_BASE_URL}${path}`, {
+      headers: { accept: 'application/json', project_id: BLOCKFROST_PROJECT_ID },
+      // Match the production Blockfrost client: native fetch otherwise forwards this custom
+      // credential header when a configured endpoint redirects to another origin.
+      redirect: 'error',
+      signal: AbortSignal.timeout(DISCOVERY_TIMEOUT_MS),
+    })
+  } catch {
+    // Do not expose the configured URL, redirect target, credential, or native fetch details in CI.
+    throw new Error(`blockfrost discovery request failed for ${path}`)
+  }
   if (!res.ok) {
     throw new Error(`blockfrost discovery failed with ${res.status} for ${path}`)
   }

@@ -18,8 +18,17 @@ export interface BuildSelfPaymentInput {
 }
 
 /**
- * Build and sign a simple self-payment: spend the account's ADA-only UTxOs, send a fixed
- * amount back to the same address, and let CSL compute fee and change. Token UTxOs are
+ * This harness derives one payment key, so it may spend only plain-ADA outputs locked by
+ * that key's address. Account UTxO reads include every derived address sharing the stake
+ * credential; passing that wider set to coin selection could select an input we cannot sign.
+ */
+export function spendableUtxosForAddress(utxos: V1Utxo[], address: string): V1Utxo[] {
+  return utxos.filter((utxo) => utxo.address === address && utxo.assets.length === 0)
+}
+
+/**
+ * Build and sign a simple self-payment: spend the keyed address's ADA-only UTxOs, send a
+ * fixed amount back to that address, and let CSL compute fee and change. Token UTxOs are
  * ignored for now (a later expansion), which keeps this first slice to plain ADA.
  */
 export function buildSelfPayment(input: BuildSelfPaymentInput): BuiltTx {
@@ -36,13 +45,13 @@ export function buildSelfPayment(input: BuildSelfPaymentInput): BuiltTx {
 
   const builder = CSL.TransactionBuilder.new(config)
 
-  const adaOnly = utxos.filter((u) => u.assets.length === 0)
-  if (adaOnly.length === 0) {
-    throw new Error('no ADA-only UTxOs available to spend')
+  const spendable = spendableUtxosForAddress(utxos, address)
+  if (spendable.length === 0) {
+    throw new Error('no ADA-only UTxOs available at the signing address')
   }
 
   const available = CSL.TransactionUnspentOutputs.new()
-  for (const u of adaOnly) {
+  for (const u of spendable) {
     const inputRef = CSL.TransactionInput.new(CSL.TransactionHash.from_hex(u.txHash), u.outputIndex)
     const output = CSL.TransactionOutput.new(
       CSL.Address.from_bech32(u.address),

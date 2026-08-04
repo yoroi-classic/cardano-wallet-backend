@@ -1,11 +1,18 @@
 import { Ajv2020 } from 'ajv/dist/2020.js'
-import addFormats from 'ajv-formats'
+import addFormatsImport from 'ajv-formats'
 import { bech32 } from '@scure/base'
 import { describe, expect, it } from 'vitest'
 import { openapi } from '../../src/http/openapi.js'
 import { buildServer } from '../../src/http/server.js'
 import { createNftcdnSigner } from '../../src/media/nftcdn.js'
 import type { ProtocolParams } from '../../src/domain/types/chain.js'
+import {
+  confirmedTxStatus,
+  expiredTxStatus,
+  pendingTxStatus,
+  rejectedTxStatus,
+  unknownTxStatus,
+} from '../../src/domain/types/transactions.js'
 import type { ChainProvider } from '../../src/providers/provider.js'
 import { fakeProvider } from '../support/fake-provider.js'
 
@@ -19,8 +26,21 @@ import { fakeProvider } from '../support/fake-provider.js'
  * from the real handlers, against the schemas it publishes.
  */
 
+type FormatsPlugin = (instance: Ajv2020) => unknown
+
+// Node's ESM loader exposes this CommonJS package's default import as the callable plugin. Its
+// declaration file also assigns `module.exports`, which TypeScript 6/NodeNext conservatively models
+// as the module namespace instead. Keep that declaration mismatch at the import boundary; runtime
+// callers use the plugin function directly and never depend on a nested `.default` implementation
+// detail.
+const addFormats = addFormatsImport as unknown as FormatsPlugin
+
+function registerFormats(instance: Ajv2020, plugin: FormatsPlugin = addFormats): void {
+  plugin(instance)
+}
+
 const ajv = new Ajv2020({ strict: false, allErrors: true })
-addFormats.default(ajv)
+registerFormats(ajv)
 ajv.addSchema({ ...openapi.components, $id: 'components' })
 
 /** Validate a value against a named schema from the spec. */
@@ -33,11 +53,34 @@ function validate(schemaName: string, value: unknown): string[] {
   return check(value) ? [] : (check.errors ?? []).map((e) => `${e.instancePath} ${e.message}`)
 }
 
+describe('OpenAPI schema format setup', () => {
+  it('accepts the callable default-import shape without requiring a nested default property', () => {
+    const isolated = new Ajv2020({ strict: false })
+    let called = false
+    const callableOnly: FormatsPlugin = (instance) => {
+      called = true
+      return addFormats(instance)
+    }
+
+    expect('default' in callableOnly).toBe(false)
+    registerFormats(isolated, callableOnly)
+
+    expect(called).toBe(true)
+    expect(isolated.validate({ type: 'string', format: 'uri' }, 'https://example.test/path')).toBe(
+      true,
+    )
+    expect(isolated.validate({ type: 'string', format: 'uri' }, 'not a URI')).toBe(false)
+  })
+})
+
 // Well-formed bech32, so the routes' own validation passes and the responses under test are the
 // real ones rather than a 400.
 const STAKE = bech32.encode('stake_test', bech32.toWords(new Uint8Array(29)), 1023)
-const ADDR = (fill: number): string =>
-  bech32.encode('addr_test', bech32.toWords(new Uint8Array(57).fill(fill)), 1023)
+const ADDR = (fill: number): string => {
+  const bytes = new Uint8Array(57).fill(fill)
+  bytes[0] = 0 // Base key-key address on a test network.
+  return bech32.encode('addr_test', bech32.toWords(bytes), 1023)
+}
 const ADDR_VKH = bech32.encode('addr_vkh', bech32.toWords(new Uint8Array(28).fill(3)), 1023)
 const TX_HASH = 'ab'.repeat(32)
 const POLICY = 'a'.repeat(56)
@@ -235,14 +278,38 @@ describe('real responses validate against the schemas the spec publishes', () =>
     eachMatches('WalletTransaction', res.body)
   })
 
-  it('GET /v1/tx/{hash}/status', async () => {
-    const res = await get(
-      { getTxStatus: async () => ({ seen: true, confirmations: 12 }) },
-      `/v1/tx/${TX_HASH}/status`,
-    )
+  it.each([
+    unknownTxStatus(),
+    pendingTxStatus(),
+    confirmedTxStatus(12),
+    rejectedTxStatus(),
+    expiredTxStatus(),
+  ])('GET /v1/tx/{hash}/status validates lifecycle $status', async (status) => {
+    const res = await get({ getTxStatus: async () => status }, `/v1/tx/${TX_HASH}/status`)
 
     expect(res.statusCode).toBe(200)
     expect(validate('TxStatus', res.body)).toEqual([])
+  })
+
+  it('keeps terminal codes paired to their lifecycle state and rejects extra provider fields', () => {
+    expect(
+      validate('TxStatus', {
+        ...rejectedTxStatus(),
+        terminal: {
+          code: 'TX_EXPIRED',
+          reason: 'The transaction validity interval expired before confirmation.',
+        },
+      }),
+    ).not.toEqual([])
+    expect(validate('TxStatus', { ...unknownTxStatus(), rawProviderBody: 'secret' })).not.toEqual(
+      [],
+    )
+    expect(
+      validate('TxStatus', {
+        ...confirmedTxStatus(0),
+        confirmations: Number.MAX_SAFE_INTEGER + 1,
+      }),
+    ).not.toEqual([])
   })
 
   it('POST /v1/assets/info', async () => {

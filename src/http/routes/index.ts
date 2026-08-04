@@ -3,6 +3,7 @@ import type { NftcdnSigner } from '../../media/nftcdn.js'
 import type { PriceProvider } from '../../prices/index.js'
 import type { RemoteConfig } from '../../remote-config/index.js'
 import type { ChainProvider } from '../../providers/provider.js'
+import type { StatusInfo } from '../../domain/types/status.js'
 import { registerAccountRoutes } from './account.js'
 import { registerAddressRoutes } from './addresses.js'
 import { registerAssetRoutes } from './assets.js'
@@ -14,7 +15,7 @@ import { registerMediaRoutes } from './media.js'
 import { registerOpenapiRoutes } from './openapi.js'
 import { registerPoolRoutes } from './pools.js'
 import { registerPriceRoutes } from './price.js'
-import { registerStatusRoutes, type StatusInfo } from './status.js'
+import { registerStatusRoutes } from './status.js'
 import { registerTxRoutes } from './tx.js'
 
 /**
@@ -70,7 +71,7 @@ export const routeRegistrars: readonly RouteRegistrar[] = [
   (app, provider, deps) => registerStatusRoutes(app, provider, deps.info),
   registerChainRoutes,
   registerAccountRoutes,
-  registerAddressRoutes,
+  (app, provider, deps) => registerAddressRoutes(app, provider, deps.info.network),
   registerPoolRoutes,
   registerAssetRoutes,
   (app, _provider, deps) => registerMediaRoutes(app, deps.nftcdn),

@@ -2,13 +2,13 @@ import cors from '@fastify/cors'
 import rateLimit from '@fastify/rate-limit'
 import Fastify, { type FastifyInstance, type FastifyBaseLogger } from 'fastify'
 import { isAppError } from '../domain/errors.js'
+import type { StatusInfo } from '../domain/types/status.js'
 import type { ChainProvider } from '../providers/provider.js'
 import type { NftcdnSigner } from '../media/nftcdn.js'
 import type { PriceProvider } from '../prices/index.js'
 import type { RemoteConfig } from '../remote-config/index.js'
 import { serializeRequest } from './logging.js'
 import { routeRegistrars, type RouteDeps } from './routes/index.js'
-import type { StatusInfo } from './routes/status.js'
 
 export interface RateLimitOptions {
   /** Requests allowed per window, per client. */

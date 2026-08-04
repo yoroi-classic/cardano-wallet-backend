@@ -4,6 +4,7 @@ import {
   discover,
   integrationProvider,
 } from './support/provider-blockfrost.js'
+import { alternatePaymentAddress } from '../support/alternate-payment-address.js'
 
 const skip = BLOCKFROST_PROJECT_ID === undefined
 
@@ -17,7 +18,7 @@ interface AccountAddress {
 
 describe('blockfrost addresses (integration)', () => {
   it.skipIf(skip)(
-    'reports a live, used address as used and an invented one as unused',
+    'reports a live address as used and a checksum-valid alternate as unused',
     async () => {
       // A registered pool's reward account controls at least one real address; pick one at
       // runtime so the test does not rot.
@@ -29,13 +30,14 @@ describe('blockfrost addresses (integration)', () => {
       const usedAddress = owned[0]?.address
       expect(usedAddress).toBeDefined()
 
-      // Same shape, but not a real payment credential: the used-address check has to answer
-      // "no" for this rather than mistaking a well-formed-looking address for a seen one.
-      const invented = (usedAddress as string).replace(/.$/, (c) => (c === 'q' ? 'p' : 'q'))
+      // Same valid address shape/network/delegation credential, but a deterministic alternate
+      // payment credential and a recomputed checksum. Blockfrost can therefore answer the actual
+      // question ("has this address appeared?") rather than rejecting malformed Bech32 first.
+      const unused = alternatePaymentAddress(usedAddress as string)
 
       const result = await integrationProvider().filterUsedAddresses([
         usedAddress as string,
-        invented,
+        unused,
       ])
 
       expect(result).toEqual([usedAddress])

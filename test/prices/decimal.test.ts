@@ -62,11 +62,15 @@ describe('divideDecimalStrings', () => {
   })
 
   it('rejects an oversized numerator before division', () => {
-    expect(() => divideDecimalStrings(oversizedPowerOfTen, '1')).toThrow(RangeError)
+    expect(() => divideDecimalStrings(oversizedPowerOfTen, '1')).toThrow(
+      'cannot divide with a non-finite numerator',
+    )
   })
 
   it('rejects an oversized denominator instead of fabricating a zero result', () => {
-    expect(() => divideDecimalStrings('100', oversizedPowerOfTen)).toThrow(RangeError)
+    expect(() => divideDecimalStrings('100', oversizedPowerOfTen)).toThrow(
+      'cannot divide with a non-finite denominator',
+    )
   })
 
   it('refuses to divide by zero rather than returning Infinity', () => {

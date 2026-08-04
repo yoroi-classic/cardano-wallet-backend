@@ -262,6 +262,25 @@ describe('memory cache', () => {
     await expect(replacement).resolves.toBe('new')
     expect(cache.peek('k')).toBe('new')
   })
+
+  it('clear(prefix) prevents an older namespaced read from repopulating its key', async () => {
+    const cache = createMemoryCache()
+    const oldLoad = deferred<string>()
+    const replacementLoad = deferred<string>()
+    const key = 'provider:koios:preprod:tip'
+
+    const oldAttempt = cache.read(key, 60_000, () => oldLoad.promise)
+    cache.clear('provider:koios:preprod:')
+    const replacement = cache.read(key, 60_000, () => replacementLoad.promise)
+
+    oldLoad.resolve('old')
+    await expect(oldAttempt).resolves.toBe('old')
+    expect(cache.peek(key)).toBeUndefined()
+
+    replacementLoad.resolve('new')
+    await expect(replacement).resolves.toBe('new')
+    expect(cache.peek(key)).toBe('new')
+  })
 })
 
 describe('noCache', () => {

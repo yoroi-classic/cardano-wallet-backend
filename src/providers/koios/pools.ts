@@ -320,10 +320,7 @@ export function createPoolMethods(koios: KoiosClient, deps: PoolMethodDeps = {})
     }))
   }
 
-  function serveUncached(
-    params: PoolListParams,
-    epoch: undefined,
-  ): Promise<PoolInfo[]> {
+  function serveUncached(params: PoolListParams, epoch: undefined): Promise<PoolInfo[]> {
     const { limit, offset, ticker } = params
     const key = `${ticker ?? ''}:${offset}:${limit}`
     const pending = uncachedInFlight.get(key)

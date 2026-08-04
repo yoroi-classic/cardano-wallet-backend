@@ -233,7 +233,7 @@ const stakeWeightedTally = (
 })
 
 const addNumeric = (...values: unknown[]): string =>
-  values.reduce((sum, value) => sum + BigInt(value ?? 0), 0n).toString()
+  values.reduce<bigint>((sum, value) => sum + BigInt(String(value ?? 0)), 0n).toString()
 
 export interface GovernanceMethodDeps {
   /** Cache for the DRep membership list and the off-chain names. Defaults to none. */

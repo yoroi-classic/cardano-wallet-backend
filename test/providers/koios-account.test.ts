@@ -703,11 +703,78 @@ describe('koios filterUsedAddresses', () => {
     })
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
-    const used = await provider.filterUsedAddresses(['addrA', 'addrB', 'addrC'])
+    const used = await provider.filterUsedAddresses(['addrA', 'addrB', 'addrA', 'addrC'])
 
-    expect(used).toEqual(['addrA', 'addrC'])
+    expect(used).toEqual(['addrA', 'addrA', 'addrC'])
     expect(calls[0]?.url).toBe(`${BASE}/address_info`)
-    expect(JSON.parse(String(calls[0]?.body))).toEqual({ _addresses: ['addrA', 'addrB', 'addrC'] })
+    expect(JSON.parse(String(calls[0]?.body))).toEqual({
+      _addresses: ['addrA', 'addrB', 'addrA', 'addrC'],
+    })
+  })
+
+  it('packs large address sets within the shared body budget', async () => {
+    const addresses = Array.from({ length: 200 }, (_, index) =>
+      `addr_test_${index}`.padEnd(80, '0'),
+    )
+    const calls: Call[] = []
+    const fetchImpl: FetchLike = async (url, init) => {
+      calls.push({ url, method: init?.method, body: init?.body })
+      const body = JSON.parse(String(init?.body)) as { _addresses: string[] }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => body._addresses.map((address) => ({ address })),
+        text: async () => '',
+      }
+    }
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.filterUsedAddresses(addresses)).resolves.toEqual(addresses)
+    expect(calls.length).toBeGreaterThan(1)
+    expect(
+      calls.every((call) => Buffer.byteLength(String(call.body)) <= KOIOS_BODY_LIMIT_BYTES),
+    ).toBe(true)
+  })
+
+  it('learns a smaller body limit from 413 and preserves caller order after repacking', async () => {
+    const addresses = Array.from({ length: 6 }, (_, index) => `addr_test_${index}`.padEnd(80, '0'))
+    const usedAddresses = new Set([addresses[1], addresses[4]])
+    const calls: Call[] = []
+    let rejectedOversizedBody = false
+    const fetchImpl: FetchLike = async (url, init) => {
+      calls.push({ url, method: init?.method, body: init?.body })
+      const body = JSON.parse(String(init?.body)) as { _addresses: string[] }
+      if (!rejectedOversizedBody && body._addresses.length > 2) {
+        rejectedOversizedBody = true
+        return {
+          ok: false,
+          status: 413,
+          json: async () => ({}),
+          text: async () =>
+            'Payload too large, body length was 812. Please ensure your request body size is below 248 bytes',
+        }
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () =>
+          body._addresses
+            .filter((address) => usedAddresses.has(address))
+            .map((address) => ({ address })),
+        text: async () => '',
+      }
+    }
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(
+      provider.filterUsedAddresses([addresses[4]!, addresses[0]!, addresses[1]!, addresses[4]!]),
+    ).resolves.toEqual([addresses[4], addresses[1], addresses[4]])
+    expect(rejectedOversizedBody).toBe(true)
+    const sentCounts = calls.map(
+      (call) => (JSON.parse(String(call.body)) as { _addresses: string[] })._addresses.length,
+    )
+    expect(sentCounts[0]).toBe(4)
+    expect(sentCounts.slice(1).every((count) => count <= 2)).toBe(true)
   })
 
   it('returns empty without calling upstream for an empty list', async () => {

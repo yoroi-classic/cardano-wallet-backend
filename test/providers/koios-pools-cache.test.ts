@@ -217,6 +217,34 @@ describe('the pool list survives an upstream wobble', () => {
     expect(cache.size).toBe(0)
   })
 
+  it('coalesces concurrent uncached requests, then refreshes a later request', async () => {
+    const koios = fakeKoios({ tipFails: true })
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let firstPoolInfo = true
+    const fetchImpl: FetchLike = async (url) => {
+      if (url.replace(BASE, '').split('?')[0] === '/pool_info' && firstPoolInfo) {
+        firstPoolInfo = false
+        await gate
+      }
+      return koios.fetchImpl(url)
+    }
+    const p = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    const first = p.getPoolList({ limit: 50, offset: 0 })
+    const second = p.getPoolList({ limit: 50, offset: 0 })
+    await Promise.resolve()
+    expect(koios.countOf('/pool_info')).toBe(0)
+    release()
+    await expect(Promise.all([first, second])).resolves.toHaveLength(2)
+    expect(koios.countOf('/pool_info')).toBe(1)
+
+    await p.getPoolList({ limit: 50, offset: 0 })
+    expect(koios.countOf('/pool_info')).toBe(2)
+  })
+
   it('does not serve an unkeyed stale page after the tip read fails', async () => {
     const koios = fakeKoios({ tipFails: true })
     const p = provider(koios)

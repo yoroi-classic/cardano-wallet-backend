@@ -379,6 +379,9 @@ describe('geckoterminal client — getTokenHistory', () => {
       },
       peek: (key) => memory.peek(key),
       set: (key, value, ttlMs) => memory.set(key, value, ttlMs),
+      generation: () => memory.generation(),
+      setIfGeneration: (key, value, ttlMs, generation) =>
+        memory.setIfGeneration(key, value, ttlMs, generation),
       get size() {
         return memory.size
       },

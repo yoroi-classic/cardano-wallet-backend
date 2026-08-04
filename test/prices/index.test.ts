@@ -22,6 +22,11 @@ function recordingCache(): { cache: Cache; keys: string[] } {
       keys.push(key)
       values.set(key, value)
     },
+    generation: () => 0,
+    setIfGeneration: <T>(key: string, value: T, _ttlMs: number, _generation: number) => {
+      keys.push(key)
+      values.set(key, value)
+    },
     get size() {
       return values.size
     },

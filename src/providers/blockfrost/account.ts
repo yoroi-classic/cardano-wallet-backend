@@ -32,7 +32,9 @@ const accountUtxoRow = z.object({
   reference_script_hash: z.string().nullish(),
 })
 
-function mapUtxo(row: z.infer<typeof accountUtxoRow>, seenUnits: Map<string, string>): Utxo {
+type AccountUtxoRow = z.infer<typeof accountUtxoRow>
+
+function mapUtxo(row: AccountUtxoRow, seenUnits: Map<string, string>): Utxo {
   const { value, assets } = splitAmount(row.amount, seenUnits)
   return {
     txHash: row.tx_hash,
@@ -51,6 +53,70 @@ const UTXO_PAGE_SIZE = 100
 // 5,000 UTxOs is far above any realistic wallet; keeps the walk bounded if a page ever stops
 // shrinking, the same defensive bound the Koios driver uses for its own unbounded lists.
 const UTXO_MAX_PAGES = 50
+// Blockfrost exposes offset pages but no snapshot token for this endpoint. Require two
+// consecutive complete walks to agree, with one extra walk available after observed churn.
+const UTXO_CONSISTENCY_SCANS = 3
+
+interface UtxoScan {
+  rows: AccountUtxoRow[]
+  keys: string[]
+  needsVerification: boolean
+  hasDuplicate: boolean
+}
+
+const utxoKey = (row: AccountUtxoRow): string => `${row.tx_hash}#${row.output_index}`
+
+function sameKeys(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((key, index) => key === right[index])
+}
+
+async function scanAccountUtxos(client: BlockfrostClient, path: string): Promise<UtxoScan> {
+  const rows: AccountUtxoRow[] = []
+  const keys: string[] = []
+  const seen = new Set<string>()
+  let hasDuplicate = false
+
+  const append = (pageRows: AccountUtxoRow[]): void => {
+    for (const row of pageRows) {
+      const key = utxoKey(row)
+      if (seen.has(key)) hasDuplicate = true
+      seen.add(key)
+      keys.push(key)
+      rows.push(row)
+    }
+  }
+
+  for (let page = 1; page <= UTXO_MAX_PAGES; page += 1) {
+    const pageRows = await client.getOrUndefined(
+      z.array(accountUtxoRow),
+      `${path}?count=${UTXO_PAGE_SIZE}&page=${page}&order=asc`,
+    )
+    // A never-seen account answers 404 on page one. A later 404 cannot describe a complete
+    // walk after earlier rows and must fail closed with the other consistency failures.
+    if (pageRows === undefined) {
+      if (page === 1) return { rows: [], keys: [], needsVerification: false, hasDuplicate: false }
+      throw new ProviderError('blockfrost account utxos changed during paged read; retry')
+    }
+    append(pageRows)
+    if (pageRows.length < UTXO_PAGE_SIZE) {
+      return { rows, keys, needsVerification: page > 1, hasDuplicate }
+    }
+  }
+
+  // The cap ran out on a full page, which does not by itself mean anything was missed. Ask
+  // for one more page to tell "ended exactly on the boundary" apart from "genuinely
+  // truncated". The probe must keep count=100 because Blockfrost pagination is offset-based.
+  const probe = await client.getOrUndefined(
+    z.array(accountUtxoRow),
+    `${path}?count=${UTXO_PAGE_SIZE}&page=${UTXO_MAX_PAGES + 1}&order=asc`,
+  )
+  if (probe === undefined || probe.length === 0) {
+    return { rows, keys, needsVerification: true, hasDuplicate }
+  }
+  throw new ProviderError(
+    `blockfrost account utxos exceed this provider's ${UTXO_MAX_PAGES * UTXO_PAGE_SIZE}-utxo scan bound`,
+  )
+}
 
 export function createAccountMethods(client: BlockfrostClient): AccountCapability {
   return {
@@ -86,40 +152,26 @@ export function createAccountMethods(client: BlockfrostClient): AccountCapabilit
 
     async getAccountUtxos(stakeAddress: string): Promise<Utxo[]> {
       const path = `/accounts/${encodeURIComponent(stakeAddress)}/utxos`
-      const rows: z.infer<typeof accountUtxoRow>[] = []
+      let previous = await scanAccountUtxos(client, path)
+      const seenUnits = new Map<string, string>()
+      if (!previous.needsVerification && !previous.hasDuplicate) {
+        return previous.rows.map((row) => mapUtxo(row, seenUnits))
+      }
 
-      for (let page = 1; page <= UTXO_MAX_PAGES; page += 1) {
-        const pageRows = await client.getOrUndefined(
-          z.array(accountUtxoRow),
-          `${path}?count=${UTXO_PAGE_SIZE}&page=${page}`,
-        )
-        // A 404 here means the account has never been seen on chain, so it controls no UTxOs.
-        // Legitimate, not an error, and it can only happen on page 1.
-        if (pageRows === undefined) return []
-        rows.push(...pageRows)
-        if (pageRows.length < UTXO_PAGE_SIZE) {
-          const seenUnits = new Map<string, string>()
-          return rows.map((row) => mapUtxo(row, seenUnits))
+      for (let scan = 2; scan <= UTXO_CONSISTENCY_SCANS; scan += 1) {
+        const current = await scanAccountUtxos(client, path)
+        if (
+          !previous.hasDuplicate &&
+          !current.hasDuplicate &&
+          sameKeys(previous.keys, current.keys)
+        ) {
+          return current.rows.map((row) => mapUtxo(row, seenUnits))
         }
+        previous = current
       }
 
-      // The cap ran out on a full page, which does not by itself mean anything was missed. Ask
-      // for one more page to tell "ended exactly on the boundary" apart from "genuinely
-      // truncated", the same technique the Koios driver uses for its own unbounded lists. The
-      // probe has to keep the same page size: pagination is offset-based (offset = (page-1) *
-      // count), so page 51 only lands on offset 5000 at count=100. Shrinking count to 1 would
-      // probe offset 50 instead and reject any account with more than 50 UTxOs.
-      const probe = await client.getOrUndefined(
-        z.array(accountUtxoRow),
-        `${path}?count=${UTXO_PAGE_SIZE}&page=${UTXO_MAX_PAGES + 1}`,
-      )
-      if (probe === undefined || probe.length === 0) {
-        const seenUnits = new Map<string, string>()
-        return rows.map((row) => mapUtxo(row, seenUnits))
-      }
-      throw new ProviderError(
-        `blockfrost account utxos exceed this provider's ${UTXO_MAX_PAGES * UTXO_PAGE_SIZE}-utxo scan bound`,
-      )
+      // Never include the stake address or output references: both identify the wallet.
+      throw new ProviderError('blockfrost account utxos changed during paged read; retry')
     },
 
     // async so notImplemented()'s synchronous throw becomes a rejected promise rather than

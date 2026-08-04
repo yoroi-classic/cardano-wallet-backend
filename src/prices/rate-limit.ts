@@ -13,11 +13,11 @@
  *
  * ## The algorithm
  *
- * A slot is reserved synchronously (so concurrent callers can never claim the same one), and only
- * the wait until that slot's release is asynchronous. Up to `capacity` calls may go out
- * back-to-back; after that they are paced one per `refillIntervalMs`. This is the standard
- * "theoretical arrival time" formulation, which needs a single number of state and handles any
- * number of overlapping callers without a queue.
+ * The bucket starts with `capacity` tokens and refills one token per `refillIntervalMs`, capped at
+ * capacity. Every caller synchronously checks and spends the live balance; when empty, it waits
+ * only until the next token should exist and then checks again. Rechecking after every wait matters
+ * when the event loop stalls: many expired timers may wake together, but only a full bucket can be
+ * spent at that instant, rather than every old timer becoming a permanent grant.
  */
 export interface TokenBucket {
   /** Resolve once this caller is cleared to make one upstream call, respecting the budget. */
@@ -43,24 +43,29 @@ export function createTokenBucket(options: TokenBucketOptions): TokenBucket {
   const now = options.now ?? Date.now
   const delay = options.delay ?? realDelay
 
-  // The tolerance that lets `capacity` calls precede their paced emission time before any waiting
-  // is required, i.e. the burst.
-  const burst = (capacity - 1) * refillIntervalMs
+  const refillPerMs = 1 / refillIntervalMs
+  let tokens = capacity
+  let lastRefill = now()
 
-  // The emission time already handed out to the most recent caller. Starts in the present, so a
-  // cold bucket grants its first `capacity` calls immediately.
-  let theoreticalArrival = now()
+  function refill(): void {
+    const current = now()
+    const elapsed = current - lastRefill
+    if (elapsed <= 0) return
+    tokens = Math.min(capacity, tokens + elapsed * refillPerMs)
+    lastRefill = current
+  }
 
   return {
-    acquire(): Promise<void> {
-      const t = now()
-      // This caller's emission slot: the later of "now" and the next free slot in the pace.
-      const emitAt = Math.max(theoreticalArrival, t)
-      // Reserve it synchronously before any await, so overlapping callers each get a distinct one.
-      theoreticalArrival = emitAt + refillIntervalMs
-      // It may actually go out `burst` earlier than its emission slot; that is what the burst is.
-      const waitMs = emitAt - burst - t
-      return delay(waitMs)
+    async acquire(): Promise<void> {
+      for (;;) {
+        refill()
+        if (tokens >= 1) {
+          tokens -= 1
+          return
+        }
+        const waitMs = Math.max(1, Math.ceil((1 - tokens) / refillPerMs))
+        await delay(waitMs)
+      }
     },
   }
 }

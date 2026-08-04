@@ -71,7 +71,7 @@ export const routeRegistrars: readonly RouteRegistrar[] = [
   (app, provider, deps) => registerStatusRoutes(app, provider, deps.info),
   registerChainRoutes,
   registerAccountRoutes,
-  registerAddressRoutes,
+  (app, provider, deps) => registerAddressRoutes(app, provider, deps.info.network),
   registerPoolRoutes,
   registerAssetRoutes,
   (app, _provider, deps) => registerMediaRoutes(app, deps.nftcdn),

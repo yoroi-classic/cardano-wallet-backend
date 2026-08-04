@@ -97,7 +97,7 @@ describe('POST /v1/tx/utxos', () => {
     await app.close()
   })
 
-  it('lowercases the hash before looking it up', async () => {
+  it('canonicalizes hash case and leading-zero indices without deduplicating references', async () => {
     const seen: string[][] = []
     const app = await serve({
       getUtxosByRef: async (refs: string[]) => {
@@ -109,10 +109,32 @@ describe('POST /v1/tx/utxos', () => {
     await app.inject({
       method: 'POST',
       url: '/v1/tx/utxos',
-      payload: { refs: [`${'A'.repeat(64)}#0`] },
+      payload: {
+        refs: [`${'A'.repeat(64)}#00001`, `${TX}#1`, `${TX}#00000`, `${TX}#0`],
+      },
     })
 
-    expect(seen[0]).toEqual([`${'a'.repeat(64)}#0`])
+    expect(seen[0]).toEqual([`${TX}#1`, `${TX}#1`, `${TX}#0`, `${TX}#0`])
+    await app.close()
+  })
+
+  it('accepts the maximum provider-supported output index', async () => {
+    const seen: string[][] = []
+    const app = await serve({
+      getUtxosByRef: async (refs: string[]) => {
+        seen.push(refs)
+        return []
+      },
+    })
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/tx/utxos',
+      payload: { refs: [`${TX}#32767`] },
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(seen[0]).toEqual([`${TX}#32767`])
     await app.close()
   })
 
@@ -120,7 +142,14 @@ describe('POST /v1/tx/utxos', () => {
     ['a hash that is too short', 'abc#0'],
     ['a missing index', `${TX}`],
     ['a non-numeric index', `${TX}#x`],
-    ['an index with no bound', `${TX}#999999`],
+    ['a negative index', `${TX}#-1`],
+    ['a signed index', `${TX}#+1`],
+    ['a decimal index', `${TX}#1.0`],
+    ['an index above the provider bound', `${TX}#32768`],
+    ['an index at the ledger maximum but above the provider bound', `${TX}#65535`],
+    ['an unsafe integer index', `${TX}#9007199254740992`],
+    ['an extremely long index', `${TX}#${'9'.repeat(1_000)}`],
+    ['a second separator', `${TX}#1#0`],
     ['a hash that is not hex', `${'z'.repeat(64)}#0`],
   ])('rejects %s', async (_case, ref) => {
     const app = await serve({ getUtxosByRef: async () => [] })

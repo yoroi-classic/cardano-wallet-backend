@@ -108,10 +108,11 @@ export function createAddressMethods(koios: KoiosClient): AddressCapability {
     async filterUsedAddresses(addresses: string[]): Promise<string[]> {
       if (addresses.length === 0) return []
       // Koios address_info returns a row only for addresses seen on chain, so the ones
-      // that come back are the used set. Preserve the caller's order.
-      const rows = await koios.batch(z.array(addressRow), '/address_info', {
-        _addresses: addresses,
-      })
+      // that come back are the used set. Pack against the shared body limit so large valid
+      // address sets inherit the client's proactive chunking and adaptive 413 retry.
+      const rows = await koios.batchAll(addressRow, '/address_info', addresses, (chunk) => ({
+        _addresses: chunk,
+      }))
       const used = new Set(rows.map((r) => r.address))
       return addresses.filter((a) => used.has(a))
     },

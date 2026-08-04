@@ -5,6 +5,7 @@ import { BadRequestError, MalformedUpstreamError, ProviderError } from '../../sr
 
 const BASE = 'https://preprod.koios.rest/api/v1'
 const STAKE = 'stake_test1uqrw9tjymlm8wrz8g8g9q2q0k3s0nq4z9m0q9c0s0'
+const OTHER_STAKE = 'stake_test1uzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz'
 
 interface Call {
   url: string
@@ -90,6 +91,35 @@ describe('koios getAccountState', () => {
       rewardsSum: '0',
       withdrawalsSum: '0',
     })
+  })
+
+  it('canonicalizes an uppercase Bech32 request before querying and mapping', async () => {
+    const { fetchImpl, calls } = fakeFetch({ json: async () => [ROW] })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const state = await provider.getAccountState(STAKE.toUpperCase())
+
+    expect(state.stakeAddress).toBe(STAKE)
+    expect(JSON.parse(String(calls[0]?.body))).toEqual({ _stake_addresses: [STAKE] })
+  })
+
+  it.each([
+    ['one mismatched row', [{ ...ROW, stake_address: OTHER_STAKE }]],
+    ['one noncanonical uppercase row', [{ ...ROW, stake_address: STAKE.toUpperCase() }]],
+    ['duplicate exact rows', [ROW, { ...ROW }]],
+    ['mixed exact and mismatched rows', [ROW, { ...ROW, stake_address: OTHER_STAKE }]],
+    [
+      'multiple mismatched rows',
+      [
+        { ...ROW, stake_address: OTHER_STAKE },
+        { ...ROW, stake_address: `${OTHER_STAKE}x` },
+      ],
+    ],
+  ])('rejects %s as malformed upstream data', async (_case, rows) => {
+    const { fetchImpl } = fakeFetch({ json: async () => rows })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getAccountState(STAKE)).rejects.toBeInstanceOf(MalformedUpstreamError)
   })
 
   it('leaves delegations undefined when Koios returns null', async () => {

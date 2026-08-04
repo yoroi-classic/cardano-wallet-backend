@@ -287,6 +287,40 @@ describe('blockfrost getUtxosByRef — collateral outputs', () => {
     expect(callsTo(/\/addresses\//)).toBe(0)
   })
 
+  it('scans the address once for a reference repeated in the batch', async () => {
+    const { provider: p, callsTo } = provider(
+      { [HASH_A]: [output(0, { collateral: true })] },
+      { [COLLATERAL_ADDR]: [held(HASH_A, 0)] },
+    )
+
+    const utxos = await p.getUtxosByRef([`${HASH_A}#0`, `${HASH_A}#0`])
+
+    // Both references still answered, in the caller's order, off one scan.
+    expect(utxos.map((u) => u.spent)).toEqual([false, false])
+    expect(callsTo(/\/addresses\//)).toBe(1)
+  })
+
+  it('scans once per distinct output when one transaction has two collateral references', async () => {
+    const { provider: p, callsTo } = provider(
+      {
+        [HASH_A]: [
+          output(0, { collateral: true }),
+          output(1, { collateral: true, address: 'addr_out_1' }),
+        ],
+      },
+      { addr_out_0: [held(HASH_A, 0)], addr_out_1: [] },
+    )
+
+    const utxos = await p.getUtxosByRef([`${HASH_A}#0`, `${HASH_A}#1`, `${HASH_A}#0`])
+
+    expect(utxos.map((u) => [u.outputIndex, u.spent])).toEqual([
+      [0, false],
+      [1, true],
+      [0, false],
+    ])
+    expect(callsTo(/\/addresses\//)).toBe(2)
+  })
+
   it('costs an ordinary output no extra request', async () => {
     const { provider: p, callsTo } = provider({ [HASH_A]: [output(0), output(1)] })
 

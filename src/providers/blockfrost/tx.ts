@@ -45,6 +45,11 @@ function parseRef(ref: string): OutputRef | undefined {
   return { ref, hash: hash.toLowerCase(), index }
 }
 
+/** Identifies the output a reference points at, so two references to it resolve their state once. */
+function spentKey(ref: OutputRef): string {
+  return `${ref.hash}#${ref.index}`
+}
+
 // Blockfrost's `/tx/submit` answers with a bare JSON string (the tx hash), not an object.
 const txHashSchema = z.string().regex(/^[0-9a-fA-F]{64}$/)
 
@@ -149,15 +154,21 @@ export function createTxMethods(client: BlockfrostClient): TxCapability {
       })
 
       // Only a collateral output makes a second request here; an ordinary one is already answered
-      // by the transaction read above. Paced under the same ceiling as the reads that fed it.
-      const spentStates = await mapWithConcurrency(
-        found,
-        REF_LOOKUP_CONCURRENCY,
-        ({ ref, output }) => resolveOutputSpent(client, ref.hash, ref.index, output),
+      // by the transaction read above. Paced under the same ceiling as the reads that fed it, and
+      // resolved once per distinct *output* rather than once per reference: the same way several
+      // references into one transaction shared a single read above, a reference repeated in the
+      // batch must not repeat that output's address scan.
+      const bySpentKey = new Map<string, { ref: OutputRef; output: TxUtxos['outputs'][number] }>()
+      for (const entry of found) bySpentKey.set(spentKey(entry.ref), entry)
+      const distinct = [...bySpentKey.values()]
+      const states = await mapWithConcurrency(distinct, REF_LOOKUP_CONCURRENCY, ({ ref, output }) =>
+        resolveOutputSpent(client, ref.hash, ref.index, output),
       )
+      const spentByKey = new Map<string, boolean | undefined>()
+      distinct.forEach((entry, i) => spentByKey.set(spentKey(entry.ref), states[i]))
 
-      return found.flatMap(({ ref, output }, i) => {
-        const spent = spentStates[i]
+      return found.flatMap(({ ref, output }) => {
+        const spent = spentByKey.get(spentKey(ref))
         // Blockfrost could not establish the spent state. Absent, for the same reason the walk
         // refuses to guess: an output wrongly reported unspent is the one a wallet acts on.
         if (spent === undefined) return []

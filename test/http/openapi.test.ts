@@ -506,8 +506,8 @@ describe('real responses validate against the schemas the spec publishes', () =>
   it('GET /v1/governance/proposals', async () => {
     const res = await get(
       {
-        getProposals: async () => [
-          {
+        getProposals: async () => {
+          const proposal = {
             proposalId: 'gov_action1jr0g04rwvdz3rrqpm30vwqd5mnjky8l68v0e3g74t6e5apw6wwfqq37hpcl',
             txHash: TX_HASH,
             index: 0,
@@ -533,8 +533,15 @@ describe('real responses validate against the schemas the spec publishes', () =>
               no: 0,
               abstain: 0,
             },
-          },
-        ],
+          }
+          const { committeeVotes: _committeeVotes, ...proposalWithoutCommitteeVotes } = proposal
+          const noCommitteeVoteProposal = {
+            ...proposalWithoutCommitteeVotes,
+            proposalId: 'gov_action1w2w64uh7g6q8x4n0m3v6q7f9r2s5t8u1y4z7c0d3e6f9h2j5k8m1p4s7v0x3',
+            type: 'NewCommittee' as const,
+          }
+          return [proposal, noCommitteeVoteProposal]
+        },
       },
       '/v1/governance/proposals',
     )

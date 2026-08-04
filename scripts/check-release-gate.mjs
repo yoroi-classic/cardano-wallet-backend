@@ -94,7 +94,7 @@ assert.throws(
     assertReleaseJobCondition(
       workflow.replace(
         'github.event.workflow_run.head_repository.full_name == github.repository\n',
-        'github.event.workflow_run.head_repository.full_name == github.repository\n        || github.event.workflow_run.conclusion == \'failure\'\n',
+        "github.event.workflow_run.head_repository.full_name == github.repository\n        || github.event.workflow_run.conclusion == 'failure'\n",
       ),
     ),
   /invalid indentation|release job must run only/,
@@ -110,9 +110,10 @@ assert.throws(
 )
 assert.throws(
   () =>
-    assert.deepEqual(releaseJobNames(`${workflow}\n  "publish":\n    permissions:\n      contents: write\n`), [
-      'tag',
-    ]),
+    assert.deepEqual(
+      releaseJobNames(`${workflow}\n  "publish":\n    permissions:\n      contents: write\n`),
+      ['tag'],
+    ),
   /Expected values to be strictly deep-equal/,
   'release gate must reject quoted additional release jobs',
 )

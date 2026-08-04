@@ -232,6 +232,16 @@ describe('memory cache', () => {
     expect(cache.peek('price:ada')).toBe('price')
   })
 
+  it('setIfGeneration keeps unrelated namespace writes after a clear', () => {
+    const cache = createMemoryCache()
+    const providerGeneration = cache.generation('provider:')
+
+    cache.clear('price:')
+    cache.setIfGeneration('provider:koios:tip', 'tip', 60_000, providerGeneration)
+
+    expect(cache.peek('provider:koios:tip')).toBe('tip')
+  })
+
   it('clear() prevents an older attempt from caching or deleting its replacement', async () => {
     const cache = createMemoryCache()
     const oldLoad = deferred<string>()

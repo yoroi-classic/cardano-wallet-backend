@@ -92,7 +92,7 @@ export interface Cache {
   set<T>(key: string, value: T, ttlMs: number): void
 
   /** Token for guarding a batch write against a clear that happened while upstream was awaited. */
-  generation(): number
+  generation(key?: string): number
 
   /** Store only when the supplied generation is still current. */
   setIfGeneration<T>(key: string, value: T, ttlMs: number, generation: number): void
@@ -147,7 +147,8 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
   function generationFor(key: string): number {
     let latest = clearGenerations.get('') ?? 0
     for (const [prefix, clearedAt] of clearGenerations) {
-      if (prefix !== '' && key.startsWith(prefix) && clearedAt > latest) latest = clearedAt
+      if (prefix !== '' && (key.startsWith(prefix) || prefix.startsWith(key)) && clearedAt > latest)
+        latest = clearedAt
     }
     return latest
   }
@@ -241,12 +242,12 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
       evict()
     },
 
-    generation(): number {
-      return clearGeneration
+    generation(key = ''): number {
+      return generationFor(key)
     },
 
     setIfGeneration<T>(key: string, value: T, ttlMs: number, generation: number): void {
-      if (generation !== clearGeneration) return
+      if (generation !== generationFor(key)) return
       entries.set(key, { value, expiresAt: now() + ttlMs, usableUntil: now() + ttlMs })
       evict()
     },
@@ -297,7 +298,7 @@ export const noCache: Cache = {
     return undefined
   },
   set<T>(_key: string, _value: T, _ttlMs: number): void {},
-  generation(): number {
+  generation(_key?: string): number {
     return 0
   },
   setIfGeneration<T>(_key: string, _value: T, _ttlMs: number, _generation: number): void {},

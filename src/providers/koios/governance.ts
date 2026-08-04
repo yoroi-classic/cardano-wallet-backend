@@ -341,7 +341,12 @@ export function createGovernanceMethods(
     }
     if (missing.length === 0) return byHex
 
-    const generation = cache.generation()
+    const generations = new Map(
+      missing.flatMap((id) => {
+        const hex = drepCredentialHex(id)
+        return hex === undefined ? [] : [[hex, cache.generation(`gov:drep-meta:${hex}`)] as const]
+      }),
+    )
     const toBody = (chunk: string[]): unknown => ({ _drep_ids: chunk })
     for (const chunk of packBySize(missing, toBody, koios.bodyLimit)) {
       try {
@@ -351,7 +356,11 @@ export function createGovernanceMethods(
           if (hex === undefined) continue
           const fields = drepMetaFields(row.meta_json)
           byHex.set(hex, fields)
-          metadataCache.set(hex, fields, generation)
+          metadataCache.set(
+            hex,
+            fields,
+            generations.get(hex) ?? cache.generation(`gov:drep-meta:${hex}`),
+          )
         }
       } catch {
         // Names for this chunk are simply unavailable. The DReps still resolve, and nothing is

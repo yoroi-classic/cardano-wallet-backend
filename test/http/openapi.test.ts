@@ -556,6 +556,7 @@ describe('real responses validate against the schemas the spec publishes', () =>
       no: 0,
       abstain: 0,
     })
+    expect((res.body as Record<string, unknown>[])[1]).not.toHaveProperty('committeeVotes')
     expect(
       validate('CommitteeVoteTally', {
         yes: 3,

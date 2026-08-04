@@ -687,6 +687,9 @@ describe('koios getTxHistory', () => {
 
     const [tx] = await provider.getTxHistory(STAKE)
 
+    // Assert that the requested transaction was returned; an empty /account_txs fixture would
+    // otherwise make this pass without exercising the mapper at all.
+    expect(tx?.txHash).toBe(TX_INFO[1]?.tx_hash)
     expect(tx?.ttl).toBeUndefined()
   })
 

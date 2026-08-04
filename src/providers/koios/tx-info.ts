@@ -32,7 +32,7 @@ const certRow = z.object({ index: z.number(), type: z.string() })
 
 const MAX_SAFE_TTL = BigInt(Number.MAX_SAFE_INTEGER)
 const invalidAfter = z
-  .union([z.number().int().nonnegative().safe(), z.string().regex(/^(?:0|[1-9]\d*)$/)])
+  .union([z.number().int().nonnegative(), z.string().regex(/^(?:0|[1-9]\d*)$/)])
   .transform((value) => {
     // Koios exposes this ledger Word64 as a decimal string. Keep accepting every
     // canonical Word64-shaped value, but omit values that cannot be represented by

@@ -47,7 +47,7 @@ describe('provider factory cache ownership', () => {
       },
       peek: (key) => memory.peek(key),
       set: (key, value, ttlMs) => memory.set(key, value, ttlMs),
-      generation: () => memory.generation(),
+      generation: (key) => memory.generation(key),
       setIfGeneration: (key, value, ttlMs, generation) =>
         memory.setIfGeneration(key, value, ttlMs, generation),
       get size() {

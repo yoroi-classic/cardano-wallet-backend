@@ -64,14 +64,79 @@ describe('blockfrost tx — happy path', () => {
 
     const status = await provider.getTxStatus(TX_HASH)
 
-    expect(status).toEqual({ seen: true, confirmations: 4698 })
+    expect(status).toEqual({
+      status: 'confirmed',
+      seen: true,
+      confirmations: 4698,
+      overlayAction: 'reconcile',
+    })
   })
 
-  it('getTxStatus reports unseen for a transaction not yet on chain, without calling /blocks', async () => {
-    const { provider, callsTo } = testProvider({ [`/txs/${TX_HASH}`]: [{ status: 404 }] })
+  it('getTxStatus positively reports a transaction in the hosted mempool as pending', async () => {
+    const { provider, callsTo } = testProvider({
+      [`/txs/${TX_HASH}`]: [{ status: 404 }],
+      [`/mempool/${TX_HASH}`]: [{ tx: { hash: TX_HASH }, inputs: ['not projected'] }],
+    })
 
-    await expect(provider.getTxStatus(TX_HASH)).resolves.toEqual({ seen: false, confirmations: 0 })
+    await expect(provider.getTxStatus(TX_HASH)).resolves.toEqual({
+      status: 'pending',
+      seen: false,
+      confirmations: 0,
+      overlayAction: 'retain',
+    })
     expect(callsTo('/blocks/')).toBe(0)
+  })
+
+  it('keeps a transaction unknown when neither chain nor mempool has positive evidence', async () => {
+    const { provider, callsTo } = testProvider({
+      [`/txs/${TX_HASH}`]: [{ status: 404 }],
+      [`/mempool/${TX_HASH}`]: [{ status: 404 }],
+    })
+
+    await expect(provider.getTxStatus(TX_HASH)).resolves.toEqual({
+      status: 'unknown',
+      seen: false,
+      confirmations: 0,
+      overlayAction: 'retain',
+    })
+    expect(callsTo('/blocks/')).toBe(0)
+  })
+
+  it.each([400, 403, 500])(
+    'keeps a transaction unknown when the optional mempool lookup returns %s',
+    async (status) => {
+      const { provider, callsTo } = testProvider({
+        [`/txs/${TX_HASH}`]: [{ status: 404 }],
+        [`/mempool/${TX_HASH}`]: [{ status }],
+      })
+
+      await expect(provider.getTxStatus(TX_HASH)).resolves.toEqual({
+        status: 'unknown',
+        seen: false,
+        confirmations: 0,
+        overlayAction: 'retain',
+      })
+      expect(callsTo('/blocks/')).toBe(0)
+      expect(callsTo(`/mempool/${TX_HASH}`)).toBe(status >= 500 ? 3 : 1)
+    },
+  )
+
+  it('does not invent rejection or expiry after a previously pending transaction disappears', async () => {
+    const { provider } = testProvider({
+      [`/txs/${TX_HASH}`]: [{ status: 404 }],
+      [`/mempool/${TX_HASH}`]: [{ tx: { hash: TX_HASH } }, { status: 404 }],
+    })
+
+    await expect(provider.getTxStatus(TX_HASH)).resolves.toMatchObject({
+      status: 'pending',
+      overlayAction: 'retain',
+    })
+    await expect(provider.getTxStatus(TX_HASH)).resolves.toEqual({
+      status: 'unknown',
+      seen: false,
+      confirmations: 0,
+      overlayAction: 'retain',
+    })
   })
 })
 
@@ -106,6 +171,24 @@ describe('blockfrost tx — unhappy path', () => {
     const { provider } = testProvider({ [`/txs/${TX_HASH}`]: [{ status: 500 }] })
 
     await expect(provider.getTxStatus(TX_HASH)).rejects.toBeInstanceOf(ProviderError)
+  })
+
+  it('does not accept mempool content for a different transaction', async () => {
+    const { provider } = testProvider({
+      [`/txs/${TX_HASH}`]: [{ status: 404 }],
+      [`/mempool/${TX_HASH}`]: [{ tx: { hash: 'ab'.repeat(32) } }],
+    })
+
+    await expect(provider.getTxStatus(TX_HASH)).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+
+  it("rejects a confirmation count outside JavaScript's safe integer range", async () => {
+    const { provider } = testProvider({
+      [`/txs/${TX_HASH}`]: [{ block: BLOCK_HASH }],
+      [`/blocks/${BLOCK_HASH}`]: [{ confirmations: Number.MAX_SAFE_INTEGER + 1 }],
+    })
+
+    await expect(provider.getTxStatus(TX_HASH)).rejects.toBeInstanceOf(MalformedUpstreamError)
   })
 
   it('getUtxosByRef is not implemented yet', async () => {

@@ -86,6 +86,21 @@ describe('E2E Koios pool discovery', () => {
     timeoutSpy.mockRestore()
   })
 
+  it('sanitizes non-timeout fetch failures', async () => {
+    const fetchImpl: PoolListFetch = vi.fn(async () => {
+      throw new TypeError(
+        'Request cannot be constructed from a URL that includes credentials: https://user:password@example.test/api/v1/pool_list',
+      )
+    })
+
+    await expect(
+      discoverRegisteredPoolId('https://user:password@example.test/api/v1', fetchImpl),
+    ).rejects.toThrow('Koios pool_list request failed')
+    await expect(
+      discoverRegisteredPoolId('https://user:password@example.test/api/v1', fetchImpl),
+    ).rejects.not.toThrow('password')
+  })
+
   it('reports an empty successful list as missing pool discovery data', async () => {
     const fetchImpl: PoolListFetch = async () => ({
       ok: true,
@@ -99,14 +114,30 @@ describe('E2E Koios pool discovery', () => {
   })
 
   it('returns the discovered pool id from a successful response', async () => {
-    const fetchImpl: PoolListFetch = async () => ({
+    const fetchImpl: PoolListFetch = vi.fn(async () => ({
       ok: true,
       status: 200,
       json: async () => [{ pool_id_bech32: 'pool1example' }],
-    })
+    }))
 
     await expect(discoverRegisteredPoolId('https://example.test/api/v1/', fetchImpl)).resolves.toBe(
       'pool1example',
     )
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://example.test/api/v1/pool_list?pool_status=eq.registered&limit=1',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    )
+  })
+
+  it('rejects a successful non-list response', async () => {
+    const fetchImpl: PoolListFetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ 0: { pool_id_bech32: 'pool1notfromalist' } }),
+    })
+
+    await expect(
+      discoverRegisteredPoolId('https://example.test/api/v1', fetchImpl),
+    ).rejects.toThrow('could not find a registered pool on-chain to exercise pool info')
   })
 })

@@ -24,9 +24,22 @@ export async function discoverRegisteredPoolId(
   fetchImpl: PoolListFetch = globalThis.fetch,
 ): Promise<string> {
   const base = koiosBase.replace(/\/+$/, '')
-  const res = await fetchImpl(`${base}/pool_list?pool_status=eq.registered&limit=1`, {
-    signal: AbortSignal.timeout(DISCOVERY_TIMEOUT_MS),
-  })
+  let res: PoolListResponse
+  try {
+    res = await fetchImpl(`${base}/pool_list?pool_status=eq.registered&limit=1`, {
+      signal: AbortSignal.timeout(DISCOVERY_TIMEOUT_MS),
+    })
+  } catch (err) {
+    if (
+      err !== null &&
+      typeof err === 'object' &&
+      'name' in err &&
+      (err.name === 'AbortError' || err.name === 'TimeoutError')
+    ) {
+      throw err
+    }
+    throw new Error('Koios pool_list request failed')
+  }
 
   // Check status before consuming either body representation. Koios error pages are not pool
   // lists, and their contents may include proxy diagnostics that do not belong in the E2E log.

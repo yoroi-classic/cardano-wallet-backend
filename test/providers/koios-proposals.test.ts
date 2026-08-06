@@ -34,7 +34,7 @@ const summaryRow = (overrides: Record<string, unknown> = {}) => ({
   drep_abstain_votes_cast: 1,
   drep_yes_vote_power: '9999999999999999999', // over 2^53 on purpose
   drep_no_vote_power: '412587729509084',
-  drep_active_abstain_vote_power: '100000000000000',
+  drep_active_abstain_vote_power: '9000000000000000',
   drep_always_abstain_vote_power: '402481959468417',
   pool_yes_votes_cast: 1,
   pool_no_votes_cast: 0,
@@ -107,7 +107,7 @@ describe('koios getProposals', () => {
       // Voting power is lovelace: it exceeds 2^53 and must survive as digits, not as a float.
       yesPower: '9999999999999999999',
       noPower: '412587729509084',
-      abstainPower: '502481959468417',
+      abstainPower: '9402481959468417',
     })
     expect(p?.poolVotes?.yes).toBe(1)
     expect(p?.poolVotes?.abstainPower).toBe('7')
@@ -142,6 +142,32 @@ describe('koios getProposals', () => {
       expect(p).not.toHaveProperty('poolVotes')
     },
   )
+
+  it.each(['ParameterChange', 'HardForkInitiation', 'NoConfidence', 'InfoAction'] as const)(
+    'keeps pool votes for %s, where pools can vote',
+    async (type) => {
+      const [p] = await provider({
+        proposals: [proposalRow({ proposal_type: type })],
+        summary: [summaryRow()],
+      }).getProposals({ limit: 20, offset: 0 })
+
+      expect(p?.poolVotes).toMatchObject({ yes: 1, no: 0, abstain: 0 })
+    },
+  )
+
+  it.each([
+    'ParameterChange',
+    'HardForkInitiation',
+    'TreasuryWithdrawals',
+    'NewConstitution',
+  ] as const)('keeps committee votes for %s, where the committee can vote', async (type) => {
+    const [p] = await provider({
+      proposals: [proposalRow({ proposal_type: type })],
+      summary: [summaryRow()],
+    }).getProposals({ limit: 20, offset: 0 })
+
+    expect(p?.committeeVotes).toEqual({ yes: 3, no: 1, abstain: 3 })
+  })
 
   // Upstream reports a proposal's fate as four separate nullable epoch fields. Deriving the status
   // here is what stops every client reimplementing the same precedence rules, subtly differently.

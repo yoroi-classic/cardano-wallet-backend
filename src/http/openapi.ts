@@ -1508,7 +1508,11 @@ export const openapi = {
               'decides the outcome.** Parse with BigInt.',
           },
           noPower: LOVELACE,
-          abstainPower: LOVELACE,
+          abstainPower: {
+            ...LOVELACE,
+            description:
+              'Total abstain voting power, including explicitly cast abstain power and power assigned to always/passive abstain. It can exceed the abstain vote count.',
+          },
         },
       },
 
@@ -1591,7 +1595,10 @@ export const openapi = {
               'unknown, which is not the same as false.** Check it before showing `title` or ' +
               '`abstract`: those are attacker-supplied text a user reads right before voting.',
           },
-          drepVotes: { $ref: '#/components/schemas/VoteTally' },
+          drepVotes: {
+            $ref: '#/components/schemas/VoteTally',
+            description: 'DRep votes by count and voting power.',
+          },
           poolVotes: {
             $ref: '#/components/schemas/VoteTally',
             description:

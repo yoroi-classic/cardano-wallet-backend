@@ -125,9 +125,9 @@ export interface Proposal {
    */
   metadataValid?: boolean
 
-  /** How the DReps have voted so far. */
+  /** How DReps have voted so far; abstainPower includes always-abstain delegation. */
   drepVotes?: VoteTally
-  /** How the stake pool operators have voted so far. */
+  /** How stake pool operators have voted so far; abstainPower includes passive abstain delegation. */
   poolVotes?: VoteTally
   /**
    * How the constitutional committee has voted so far, by member count. Committee members each

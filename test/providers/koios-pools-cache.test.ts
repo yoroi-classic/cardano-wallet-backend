@@ -119,20 +119,23 @@ describe('the pool list is cached', () => {
   // snapshot. It is fixed for five days and then moves all at once, and a duration would be wrong
   // in both directions.
   it('rescans when the epoch turns over, and not before', async () => {
+    let t = 1_000
     const koios = fakeKoios({ epoch: 300 })
-    const cache = createMemoryCache()
+    const cache = createMemoryCache({ now: () => t })
     const p = provider(koios, cache)
 
     await p.getPoolList({ limit: 50, offset: 0 })
     expect(koios.countOf('/pool_list')).toBe(1)
 
-    // A new epoch. The cached tip has to age out before anyone notices, so clear it as the TTL
-    // would; what is under test is the ranking key, not the tip TTL.
+    // Expire only the ten-second tip entry. The old epoch's page is still live for another 79
+    // seconds, so this proves the new epoch key prevents reusing it rather than merely proving a
+    // cleared cache misses.
     koios.state.epoch = 301
-    cache.clear()
+    t += 11_000
 
     await p.getPoolList({ limit: 50, offset: 0 })
     expect(koios.countOf('/pool_list')).toBe(2)
+    expect(koios.countOf('/pool_info')).toBe(2)
   })
 
   it('does not cache a ticker search', async () => {
@@ -243,6 +246,45 @@ describe('the pool list survives an upstream wobble', () => {
 
     await p.getPoolList({ limit: 50, offset: 0 })
     expect(koios.countOf('/pool_info')).toBe(2)
+  })
+
+  it('does not pin a failed uncached read once upstream recovers', async () => {
+    const koios = fakeKoios({ tipFails: true })
+    const p = provider(koios, createMemoryCache())
+    koios.breakUpstream()
+
+    const burst = await Promise.allSettled(
+      Array.from({ length: 5 }, () => p.getPoolList({ limit: 50, offset: 0 })),
+    )
+    expect(burst.every((result) => result.status === 'rejected')).toBe(true)
+
+    koios.fixUpstream()
+    await expect(p.getPoolList({ limit: 50, offset: 0 })).resolves.toHaveLength(2)
+  })
+
+  it('does not serve one uncached page to a concurrent request for another', async () => {
+    const koios = fakeKoios({ tipFails: true })
+    const p = provider(koios, createMemoryCache())
+
+    const [first, second] = await Promise.all([
+      p.getPoolList({ limit: 1, offset: 0 }),
+      p.getPoolList({ limit: 1, offset: 1 }),
+    ])
+
+    expect(first[0]?.poolId).not.toBe(second[0]?.poolId)
+    expect(koios.countOf('/pool_list')).toBe(2)
+  })
+
+  it('does not serve an unfiltered page to a concurrent ticker search', async () => {
+    const koios = fakeKoios({ tipFails: true })
+    const p = provider(koios, createMemoryCache())
+
+    await Promise.all([
+      p.getPoolList({ limit: 50, offset: 0 }),
+      p.getPoolList({ limit: 50, offset: 0, ticker: 'ADA' }),
+    ])
+
+    expect(koios.countOf('/pool_list')).toBe(2)
   })
 
   it('does not serve an unkeyed stale page after the tip read fails', async () => {

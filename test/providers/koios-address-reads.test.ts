@@ -713,6 +713,104 @@ describe('koios getTxHistoryByAddresses', () => {
     expect(calls.map((call) => new URL(call.url).searchParams.get('offset'))).toEqual(['0', '50'])
   })
 
+  it('rejects an out-of-order page', async () => {
+    const rows = Array.from({ length: 51 }, (_, block) => ({
+      tx_hash: `order-${block}`,
+      block_height: block,
+      block_time: block * 10,
+      epoch_no: 1,
+    }))
+    const fetchImpl: FetchLike = async (url) => {
+      if (url.includes('/tx_info')) throw new Error('details must not be requested')
+      const offset = Number(new URL(url).searchParams.get('offset'))
+      const page = offset === 0 ? rows.slice(0, 50) : [{ ...rows[0], tx_hash: 'order-bad' }]
+      const end = offset + page.length - 1
+      return {
+        ok: true,
+        status: 206,
+        headers: { get: (name) => (name === 'content-range' ? `${offset}-${end}/51` : null) },
+        json: async () => page,
+        text: async () => '',
+      }
+    }
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    await expect(provider.getTxHistoryByAddresses([BYRON_A])).rejects.toThrow(
+      'koios returned an out-of-order page for /address_txs',
+    )
+  })
+
+  it('rejects a non-contiguous page', async () => {
+    const rows = Array.from({ length: 51 }, (_, block) => ({
+      tx_hash: `contiguous-${block}`,
+      block_height: block,
+      block_time: block * 10,
+      epoch_no: 1,
+    }))
+    const fetchImpl: FetchLike = async (url) => {
+      if (url.includes('/tx_info')) throw new Error('details must not be requested')
+      const offset = Number(new URL(url).searchParams.get('offset'))
+      const page = rows.slice(offset, offset + 50)
+      const start = offset === 50 ? 51 : 0
+      const end = start + page.length - 1
+      const total = offset === 50 ? 52 : 51
+      return {
+        ok: true,
+        status: 206,
+        headers: { get: (name) => (name === 'content-range' ? `${start}-${end}/${total}` : null) },
+        json: async () => page,
+        text: async () => '',
+      }
+    }
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    await expect(provider.getTxHistoryByAddresses([BYRON_A])).rejects.toThrow(
+      'koios returned a non-contiguous page for /address_txs',
+    )
+  })
+
+  it('rejects an incomplete 200 response with a partial Content-Range', async () => {
+    const rows = Array.from({ length: 50 }, (_, block) => ({
+      tx_hash: `partial-${block}`,
+      block_height: block,
+      block_time: block * 10,
+      epoch_no: 1,
+    }))
+    const fetchImpl: FetchLike = async (url) => {
+      if (url.includes('/tx_info')) throw new Error('details must not be requested')
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (name) => (name === 'content-range' ? '0-49/60' : null) },
+        json: async () => rows,
+        text: async () => '',
+      }
+    }
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    await expect(provider.getTxHistoryByAddresses([BYRON_A])).rejects.toThrow(
+      'koios returned an incomplete successful response for /address_txs',
+    )
+  })
+
+  it('rejects a full page without Content-Range', async () => {
+    const rows = Array.from({ length: 50 }, (_, block) => ({
+      tx_hash: `unranged-${block}`,
+      block_height: block,
+      block_time: block * 10,
+      epoch_no: 1,
+    }))
+    const fetchImpl: FetchLike = async (url) => {
+      if (url.includes('/tx_info')) throw new Error('details must not be requested')
+      return { ok: true, status: 200, json: async () => rows, text: async () => '' }
+    }
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    await expect(provider.getTxHistoryByAddresses([BYRON_A])).rejects.toThrow(
+      'koios returned a full page without Content-Range for /address_txs',
+    )
+  })
+
   it('returns empty and skips tx_info when no address has transactions', async () => {
     const { fetchImpl, calls } = fakeFetchByPath({ '/address_txs': [] })
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })

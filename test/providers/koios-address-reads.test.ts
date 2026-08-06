@@ -468,7 +468,7 @@ describe('koios getTxHistoryByAddresses', () => {
   })
 
   it('keeps a validated prefix when an upstream total changes in the unconsumed tail', async () => {
-    const stale = Array.from({ length: 60 }, (_, block) => ({
+    const stale = Array.from({ length: 61 }, (_, block) => ({
       tx_hash: `stale-${block}`,
       block_height: block,
       block_time: block * 10,
@@ -503,11 +503,11 @@ describe('koios getTxHistoryByAddresses', () => {
       }
       return {
         ok: true,
-        status: 200,
+        status: 206,
         // The rows in the requested prefix are unchanged, but the count sampled by Koios moved
-        // because one tail row was indexed between requests. The short 200 page is complete for
-        // this read and must not cause a whole-read retry.
-        headers: { get: (name) => (name === 'content-range' ? '50-59/61' : null) },
+        // because one tail row was indexed between requests. PostgREST still answers 206 for
+        // this short final page, and the range itself proves the stream is complete.
+        headers: { get: (name) => (name === 'content-range' ? '50-60/61' : null) },
         json: async () => stale.slice(50),
         text: async () => '',
       }
@@ -527,6 +527,87 @@ describe('koios getTxHistoryByAddresses', () => {
         .filter((call) => call.url.includes('/address_txs'))
         .map((call) => new URL(call.url).searchParams.get('offset')),
     ).toEqual(['0', '50'])
+  })
+
+  it('restarts the complete read after a malformed page', async () => {
+    const rows = Array.from({ length: 60 }, (_, block) => ({
+      tx_hash: `retry-${block}`,
+      block_height: block,
+      block_time: block * 10,
+      epoch_no: 1,
+    }))
+    const calls: string[] = []
+    let firstAttempt = true
+    const fetchImpl: FetchLike = async (url, init) => {
+      if (url.includes('/tx_info')) {
+        const hashes = (JSON.parse(String(init?.body)) as { _tx_hashes: string[] })._tx_hashes
+        return {
+          ok: true,
+          status: 200,
+          json: async () => hashes.map((hash) => txInfoRowFor(hash, Number(hash.split('-')[1]))),
+          text: async () => '',
+        }
+      }
+      const offset = Number(new URL(url).searchParams.get('offset'))
+      calls.push(String(offset))
+      const page = rows.slice(offset, offset + 50)
+      const responsePage = firstAttempt && offset === 50 ? [...page].reverse() : page
+      if (offset === 50) firstAttempt = false
+      const end = offset + responsePage.length - 1
+      return {
+        ok: true,
+        status: 206,
+        headers: { get: (name) => (name === 'content-range' ? `${offset}-${end}/60` : null) },
+        json: async () => responsePage,
+        text: async () => '',
+      }
+    }
+    const provider = createKoiosProvider({
+      baseUrl: BASE,
+      fetchImpl,
+      readAttempts: 2,
+      retryBackoffMs: 0,
+    })
+
+    await expect(provider.getTxHistoryByAddresses([BYRON_A])).resolves.toHaveLength(50)
+    expect(calls).toEqual(['0', '50', '0', '50'])
+  })
+
+  it('stops after the read-attempt budget when malformed pages persist', async () => {
+    const rows = Array.from({ length: 60 }, (_, block) => ({
+      tx_hash: `budget-${block}`,
+      block_height: block,
+      block_time: block * 10,
+      epoch_no: 1,
+    }))
+    const offsets: string[] = []
+    const fetchImpl: FetchLike = async (url) => {
+      const offset = Number(new URL(url).searchParams.get('offset'))
+      offsets.push(String(offset))
+      if (url.includes('/tx_info'))
+        return { ok: true, status: 200, json: async () => [], text: async () => '' }
+      const page = rows.slice(offset, offset + 50)
+      const responsePage = offset === 50 ? [...page].reverse() : page
+      const end = offset + responsePage.length - 1
+      return {
+        ok: true,
+        status: 206,
+        headers: { get: (name) => (name === 'content-range' ? `${offset}-${end}/60` : null) },
+        json: async () => responsePage,
+        text: async () => '',
+      }
+    }
+    const provider = createKoiosProvider({
+      baseUrl: BASE,
+      fetchImpl,
+      readAttempts: 2,
+      retryBackoffMs: 0,
+    })
+
+    await expect(provider.getTxHistoryByAddresses([BYRON_A])).rejects.toBeInstanceOf(
+      MalformedUpstreamError,
+    )
+    expect(offsets).toEqual(['0', '50', '0', '50'])
   })
 
   it('k-way merges sparse packed streams and counts shared transactions once', async () => {

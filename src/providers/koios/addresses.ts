@@ -64,7 +64,6 @@ interface AddressHistoryStream {
   offset: number
   done: boolean
   last?: AddressTxRow
-  expectedTotal?: number
 }
 
 function compareAddressTxRows(left: AddressTxRow, right: AddressTxRow): number {
@@ -116,25 +115,22 @@ async function fillAddressHistoryStream(
     if (stream.offset !== 0 || page.length !== 0) {
       throw new MalformedUpstreamError(`koios returned rows for an empty Content-Range on ${path}`)
     }
-    stream.expectedTotal = 0
     stream.done = true
   } else {
     const range = response.range
     if (range.start !== stream.offset || page.length !== range.end - range.start + 1) {
       throw new MalformedUpstreamError(`koios returned a non-contiguous page for ${path}`)
     }
-    stream.expectedTotal = range.total
     stream.offset = range.end + 1
     if (stream.offset > HISTORY_MAX_LIST_ROWS) {
       throw new MalformedUpstreamError(
         `koios paged result exceeds ${HISTORY_MAX_LIST_ROWS} rows for ${path}`,
       )
     }
-    // A moving total is harmless when it only changes the unconsumed tail. Page shape and
-    // Content-Range continuity still protect the prefix. A short 200 page is the provider's
-    // completion signal even when its count was sampled from a different snapshot; a short 206
-    // page with a larger total remains an incomplete response and is rejected below.
-    stream.done = stream.offset === range.total || (page.length < limit && response.status === 200)
+    // PostgREST uses 206 for every partial response, including a short final page. Completion
+    // is therefore determined by the range total; accepting a short 200 page would allow an
+    // upstream that omitted rows to be mistaken for a complete history.
+    stream.done = stream.offset === range.total
     if (!stream.done && response.status !== 206) {
       throw new MalformedUpstreamError(
         `koios returned an incomplete successful response for ${path}`,

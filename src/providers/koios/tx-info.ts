@@ -30,6 +30,17 @@ const txIoRow = z.object({
 const withdrawalRow = z.object({ stake_addr: z.string(), amount: numeric })
 const certRow = z.object({ index: z.number(), type: z.string() })
 
+const MAX_SAFE_TTL = BigInt(Number.MAX_SAFE_INTEGER)
+const invalidAfter = z
+  .union([z.number().int().nonnegative(), z.string().regex(/^(?:0|[1-9]\d*)$/)])
+  .transform((value) => {
+    // Koios exposes this ledger Word64 as a decimal string. Keep accepting every
+    // canonical Word64-shaped value, but omit values that cannot be represented by
+    // the public number-based transaction contract instead of rejecting the row.
+    if (typeof value === 'string' && BigInt(value) > MAX_SAFE_TTL) return undefined
+    return Number(value)
+  })
+
 // Koios certificate type -> our normalized kind. Unrecognized types fall to 'other'.
 const CERT_KIND: Record<string, CertificateKind> = {
   stake_registration: 'stake_registration',
@@ -57,7 +68,7 @@ export const txInfoRow = z.object({
   tx_timestamp: z.number(),
   tx_block_index: z.number(),
   fee: numeric,
-  invalid_after: numeric.nullish(),
+  invalid_after: invalidAfter.nullish(),
   inputs: z.array(txIoRow).nullish(),
   outputs: z.array(txIoRow).nullish(),
   withdrawals: z.array(withdrawalRow).nullish(),
@@ -91,7 +102,7 @@ export function mapTx(row: z.infer<typeof txInfoRow>): WalletTransaction {
     epoch: row.epoch_no,
     blockTime: row.tx_timestamp,
     fee: String(row.fee),
-    ttl: row.invalid_after != null ? Number(row.invalid_after) : undefined,
+    ttl: row.invalid_after ?? undefined,
     inputs: (row.inputs ?? []).map(mapTxIo),
     outputs: (row.outputs ?? []).map(mapTxIo),
     withdrawals,

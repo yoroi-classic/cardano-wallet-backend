@@ -2,10 +2,11 @@ import { describe, expect, it } from 'vitest'
 import {
   createGeckoTerminalClient,
   DEFAULT_GECKOTERMINAL_BASE_URL,
+  TOKEN_POOL_TTL_MS,
 } from '../../src/prices/geckoterminal.js'
 import type { FetchLike } from '../../src/prices/http.js'
 import type { TokenBucket } from '../../src/prices/rate-limit.js'
-import { createMemoryCache } from '../../src/cache/index.js'
+import { createMemoryCache, type Cache } from '../../src/cache/index.js'
 import {
   MalformedUpstreamError,
   ProviderError,
@@ -98,8 +99,51 @@ function multiResponse(...entries: Array<{ subject: string; pools: ReturnType<ty
   return { data, included }
 }
 
-function client(cache?: ReturnType<typeof createMemoryCache>, fetchImpl?: FetchLike) {
+function client(cache?: Cache, fetchImpl?: FetchLike) {
   return createGeckoTerminalClient({ cache, fetchImpl })
+}
+
+function changingPoolFetch(
+  addresses: string[],
+  candlesByAddress: Record<string, number[][]>,
+): { fetchImpl: FetchLike; urls: string[] } {
+  let selection = 0
+  const urls: string[] = []
+  const fetchImpl: FetchLike = async (url) => {
+    urls.push(url)
+    const address = addresses[Math.min(selection, addresses.length - 1)]
+
+    let body: unknown
+    if (url.includes('/tokens/multi/')) {
+      selection += 1
+      body = multiResponse({
+        subject: SUBJECT,
+        pools: [pool({ address })],
+      })
+    } else if (url.includes(`/tokens/${SUBJECT}/pools`)) {
+      selection += 1
+      body = poolsResponse(pool({ address }))
+    } else {
+      const selected = Object.keys(candlesByAddress).find((candidate) =>
+        url.toLowerCase().includes(`/pools/${candidate.toLowerCase()}/ohlcv/`),
+      )
+      body = {
+        data: {
+          attributes: {
+            ohlcv_list: selected === undefined ? [] : candlesByAddress[selected],
+          },
+        },
+      }
+    }
+
+    return {
+      ok: true,
+      status: 200,
+      json: async () => body,
+      text: async () => JSON.stringify(body),
+    }
+  }
+  return { fetchImpl, urls }
 }
 
 describe('geckoterminal client — happy path (24h)', () => {
@@ -209,6 +253,39 @@ describe('geckoterminal client — happy path (7d/30d)', () => {
 
     expect(urls.find((u) => u.includes('/ohlcv/day'))).toContain('limit=30')
   })
+
+  it.each(['7d', '30d'] as const)(
+    'fetches %s activity from a newly selected pool while old candles are still live',
+    async (window) => {
+      let now = 1_000
+      const oldCandles = [
+        [200, 0.1, 0.2, 0.1, 0.2, 10],
+        [100, 0.1, 0.1, 0.1, 0.1, 10],
+      ]
+      const newCandles = [
+        [200, 0.3, 0.4, 0.3, 0.4, 20],
+        [100, 0.2, 0.3, 0.2, 0.3, 20],
+      ]
+      const { fetchImpl, urls } = changingPoolFetch(['pool-old', 'pool-new'], {
+        'pool-old': oldCandles,
+        'pool-new': newCandles,
+      })
+      const provider = client(createMemoryCache({ now: () => now }), fetchImpl)
+
+      const [oldActivity] = await provider.getTokenActivity([SUBJECT], window)
+      now += TOKEN_POOL_TTL_MS
+      const [newActivity] = await provider.getTokenActivity([SUBJECT], window)
+      const callsAfterChange = urls.length
+      const [samePoolHit] = await provider.getTokenActivity([SUBJECT], window)
+
+      expect(oldActivity?.priceAda).toBe('0.2')
+      expect(newActivity?.priceAda).toBe('0.4')
+      expect(samePoolHit).toEqual(newActivity)
+      expect(urls).toHaveLength(callsAfterChange)
+      expect(urls.filter((url) => url.includes('/pools/pool-old/ohlcv/day'))).toHaveLength(1)
+      expect(urls.filter((url) => url.includes('/pools/pool-new/ohlcv/day'))).toHaveLength(1)
+    },
+  )
 })
 
 describe('geckoterminal client — getTokenHistory', () => {
@@ -252,6 +329,86 @@ describe('geckoterminal client — getTokenHistory', () => {
     expect(ohlcvUrl).toContain(`/ohlcv/${timeframe}?`)
     expect(ohlcvUrl).toContain(aggregate)
     expect(ohlcvUrl).toContain(limit)
+  })
+
+  it('fetches chart candles from a newly selected pool while the old chart is still live', async () => {
+    let now = 1_000
+    const { fetchImpl, urls } = changingPoolFetch(['pool-old', 'pool-new'], {
+      'pool-old': [[100, 0.1, 0.1, 0.1, 0.1, 10]],
+      'pool-new': [[100, 0.2, 0.2, 0.2, 0.2, 20]],
+    })
+    const provider = client(createMemoryCache({ now: () => now }), fetchImpl)
+
+    const oldHistory = await provider.getTokenHistory(SUBJECT, '6m')
+    now += TOKEN_POOL_TTL_MS
+    const newHistory = await provider.getTokenHistory(SUBJECT, '6m')
+    const callsAfterChange = urls.length
+    const samePoolHit = await provider.getTokenHistory(SUBJECT, '6m')
+
+    expect(oldHistory[0]?.close).toBe(0.1)
+    expect(newHistory[0]?.close).toBe(0.2)
+    expect(samePoolHit).toEqual(newHistory)
+    expect(urls).toHaveLength(callsAfterChange)
+    expect(urls.filter((url) => url.includes('/pools/pool-old/ohlcv/day'))).toHaveLength(1)
+    expect(urls.filter((url) => url.includes('/pools/pool-new/ohlcv/day'))).toHaveLength(1)
+  })
+
+  it('uses one cache entry for equivalent spellings of the same selected pool', async () => {
+    let now = 1_000
+    const { fetchImpl, urls } = changingPoolFetch(['POOL-SAME', 'pool-same'], {
+      'POOL-SAME': [[100, 0.1, 0.1, 0.1, 0.1, 10]],
+    })
+    const provider = client(createMemoryCache({ now: () => now }), fetchImpl)
+
+    const first = await provider.getTokenHistory(SUBJECT, '6m')
+    now += TOKEN_POOL_TTL_MS
+    const second = await provider.getTokenHistory(SUBJECT, '6m')
+
+    expect(second).toEqual(first)
+    expect(urls.filter((url) => url.toLowerCase().includes('/ohlcv/day'))).toHaveLength(1)
+    expect(urls.filter((url) => url.includes(`/tokens/${SUBJECT}/pools`))).toHaveLength(2)
+  })
+
+  it('uses only a one-way pool identity, never an upstream URL or raw pool address, in keys', async () => {
+    const memory = createMemoryCache()
+    const keys: string[] = []
+    const cache: Cache = {
+      read: (key, policy, load) => {
+        keys.push(key)
+        return memory.read(key, policy, load)
+      },
+      peek: (key) => memory.peek(key),
+      set: (key, value, ttlMs) => memory.set(key, value, ttlMs),
+      generation: (key) => memory.generation(key),
+      setIfGeneration: (key, value, ttlMs, generation) =>
+        memory.setIfGeneration(key, value, ttlMs, generation),
+      get size() {
+        return memory.size
+      },
+      clear: () => memory.clear(),
+    }
+    const rawPoolAddress = 'pool-sensitive-address'
+    const { fetchImpl } = changingPoolFetch([rawPoolAddress], {
+      [rawPoolAddress]: [[100, 0.1, 0.1, 0.1, 0.1, 10]],
+    })
+    const upstreamWithCredential = 'https://user:SECRET@example.test/api/v2'
+    const provider = createGeckoTerminalClient({
+      baseUrl: upstreamWithCredential,
+      cache,
+      cacheNamespace: 'preview',
+      fetchImpl,
+    })
+
+    await provider.getTokenHistory(SUBJECT, '6m')
+
+    const candleKey = keys.find((key) => key.includes(':ohlcv:'))
+    expect(candleKey).toMatch(
+      new RegExp(`^price:token:ohlcv:preview:${SUBJECT}:pool:[0-9a-f]{64}:history:6m$`),
+    )
+    expect(keys).toContain(`price:token:pool:preview:${SUBJECT}`)
+    expect(candleKey).not.toContain(rawPoolAddress)
+    expect(candleKey).not.toContain('SECRET')
+    expect(candleKey).not.toContain('example.test')
   })
 })
 

@@ -69,20 +69,41 @@ The summary:
 | POST   | `/v1/assets/info`             | token metadata for `{ subjects: [...] }` (registry + on-chain), input order  |
 | POST   | `/v1/assets/media`            | signed NFTCDN image/metadata URLs for `{ fingerprints: [...], size? }`       |
 | GET    | `/v1/assets/{fp}/image`       | 302 to a signed, resized NFTCDN image (`?size=`)                             |
-| GET    | `/v1/price/ada`               | reserved ADA price shape; validates then returns `501`                       |
-| GET    | `/v1/price/ada/history`       | reserved ADA price history shape; validates then returns `501`               |
-| POST   | `/v1/price/tokens`            | reserved token price/activity shape; validates then returns `501`            |
-| POST   | `/v1/price/tokens/history`    | reserved token price history shape; validates then returns `501`             |
+| GET    | `/v1/price/ada`               | ADA fiat price and 24h change per currency, from CoinGecko                   |
+| GET    | `/v1/price/ada/history`       | ADA fiat OHLC history per currency, from CoinGecko                           |
+| POST   | `/v1/price/tokens`            | native-token price and activity in ADA, from GeckoTerminal                   |
+| POST   | `/v1/price/tokens/history`    | native-token OHLC history in ADA, from GeckoTerminal                         |
 | POST   | `/v1/tx/submit`               | `{ txHash }` from `{ "cbor": "<hex tx>" }`                                   |
 | POST   | `/v1/tx/utxos`                | transaction outputs for `{ refs: ["txHash#index", ...] }`, including `spent` |
 | GET    | `/v1/governance/dreps`        | neutral page of registered DReps: `?limit=&offset=`                          |
 | POST   | `/v1/governance/dreps/info`   | DRep info for `{ drepIds: [...] }`, in input order                           |
 | GET    | `/v1/governance/proposals`    | Conway governance actions with derived status and vote tallies               |
-| GET    | `/v1/tx/{hash}/status`        | `{ seen, confirmations }`                                                    |
+| GET    | `/v1/tx/{hash}/status`        | lifecycle state and pending-overlay action                                   |
 
 Errors come back as `{ "error": { "code", "message" } }` with a stable status code
 (`502` upstream error, `504` upstream timeout, `429` rate limited, `400` bad request,
 `404` unknown route, `500` otherwise).
+
+### Transaction lifecycle and pending overlays
+
+`GET /v1/tx/{hash}/status` reports one provider-neutral lifecycle state:
+
+- `pending` is a positive mempool observation. `unknown` is only an inconclusive absence. Both
+  return `overlayAction: "retain"`; a wallet must keep spent inputs hidden and keep its pending
+  change available.
+- `confirmed` returns `overlayAction: "reconcile"`. Refresh authoritative current-state UTxOs and
+  remove the overlay only after that state incorporates the transaction.
+- `rejected` and `expired` are reserved for positive terminal proof. They return
+  `overlayAction: "rollback"` and a stable `TX_REJECTED` or `TX_EXPIRED` terminal code. Raw
+  provider response bodies are never returned.
+
+Provider absence is deliberately not terminal. Koios exposes only on-chain confirmation depth, so
+an unconfirmed hash is `unknown`. Hosted Blockfrost can report a transaction submitted through its
+own mempool as `pending`; a miss remains `unknown`, including on compatible/self-hosted deployments
+without that hosted index. Neither provider currently has durable rejection evidence or retains
+enough signed validity data after mempool eviction to prove expiry. Consequently neither reports
+`rejected` or `expired` today. Clients must retain overlays until a provider positively confirms a
+state that permits reconciliation or rollback.
 
 ## Client migration status
 
@@ -91,9 +112,10 @@ The migration audit in issue #71 is not a request to recreate every Emurgo-hoste
 remote-config, media, and contract routes. The remaining blockers are product or provider
 decisions:
 
-- Price data is reserved but not implemented. `/v1/price/*` validates request and response shapes,
-  then returns `501 NOT_IMPLEMENTED` until a market-data provider is chosen. Both clients need this
-  for fiat values.
+- Price data is implemented: CoinGecko supplies ADA fiat prices and history, while GeckoTerminal
+  supplies native-token prices and history in ADA. Production startup always wires both upstreams;
+  a server built without a price provider, primarily in tests, validates the request and returns
+  `501 NOT_IMPLEMENTED`.
 - NFT traits are returned from `/v1/assets/info`, but trait rarity is not. Rarity needs a
   collection-wide index; it cannot be computed from a one-asset chain read.
 - Catalyst endpoints (`fundInfo` and `lastBlockBySlot`) have no `/v1` replacement yet. Decide

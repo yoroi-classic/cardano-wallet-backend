@@ -69,6 +69,7 @@ config:
   rateLimitMax: 120
   rateLimitWindowMs: 60000
   koiosUrl: ''
+  blockfrostUrl: ''
   remoteConfig:
     enabled: true
     url: ''
@@ -76,6 +77,7 @@ config:
 secrets:
   existingSecret: ''
   koiosTokenKey: KOIOS_TOKEN
+  blockfrostProjectIdKey: BLOCKFROST_PROJECT_ID
   nftcdnSubdomainKey: NFTCDN_SUBDOMAIN
   nftcdnKeyKey: NFTCDN_KEY
 

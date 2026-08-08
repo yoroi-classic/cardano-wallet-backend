@@ -47,12 +47,12 @@ const RANGE_TO_DAYS: Record<PriceRange, string> = {
 }
 
 // CoinGecko's `/simple/price` nests every requested currency, plus a `<currency>_24h_change`
-// sibling for each, plus `last_updated_at`, all as sibling numeric fields under the coin id. The
-// currency codes are caller-chosen and therefore dynamic, so this is validated as "every value
-// under `cardano` is a number" rather than naming each key, which tolerates whichever currencies
-// were actually asked for while still rejecting a genuinely malformed (non-numeric) entry.
+// sibling for each, plus `last_updated_at`, all as sibling fields under the coin id. CoinGecko can
+// return null for stale or unavailable optional data. The currency codes are caller-chosen and
+// therefore dynamic, so this validates every value as either a finite number or null rather than
+// naming each key, while still rejecting genuinely malformed entries.
 const simplePriceSchema = z.object({
-  cardano: z.record(z.string(), z.number().finite()),
+  cardano: z.record(z.string(), z.number().finite().nullable()),
 })
 
 const ohlcSchema = z.array(
@@ -116,19 +116,21 @@ export function createCoingeckoClient(config: CoingeckoConfig = {}): CoingeckoCl
           // or delisted fiat) is simply absent from its response rather than an error. Omitting it
           // here too is the honest move: the alternative, a price of 0, is exactly the invented
           // number this whole surface exists to refuse.
-          if (price !== undefined) prices[currency] = price
+          if (typeof price === 'number') prices[currency] = price
           const change = row[`${lower}_24h_change`]
-          if (change !== undefined) changePercent24h[currency] = change
+          if (typeof change === 'number') changePercent24h[currency] = change
         }
 
         // `last_updated_at` is CoinGecko's own timestamp for when the quote was taken, and using
         // it (rather than our own request time) matters specifically because this response is
         // cached: every request served from cache would otherwise report itself as fresher than
-        // it is. It is only absent if CoinGecko changes its response shape, in which case falling
-        // back to now is a reasonable degradation of a freshness *hint*, not of the price itself.
+        // it is. When it is absent or null, falling back to now is a reasonable degradation of a
+        // freshness *hint*, not of the price itself.
         const lastUpdatedAt = row.last_updated_at
         const asOf =
-          lastUpdatedAt !== undefined ? Math.floor(lastUpdatedAt) : Math.floor(Date.now() / 1000)
+          typeof lastUpdatedAt === 'number'
+            ? Math.floor(lastUpdatedAt)
+            : Math.floor(Date.now() / 1000)
 
         return { prices, changePercent24h, asOf }
       })

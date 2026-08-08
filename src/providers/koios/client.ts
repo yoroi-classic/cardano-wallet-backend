@@ -1,6 +1,11 @@
 import { z } from 'zod'
 import type { ErrorCode } from '../../domain/errors.js'
-import { MalformedUpstreamError, ProviderError, ProviderTimeoutError } from '../../domain/errors.js'
+import {
+  ConfigError,
+  MalformedUpstreamError,
+  ProviderError,
+  ProviderTimeoutError,
+} from '../../domain/errors.js'
 import { KOIOS_BODY_LIMIT_BYTES, packBySize } from './schema.js'
 
 /** A minimal fetch signature so tests can inject a fake without pulling in DOM types. */
@@ -61,6 +66,9 @@ export interface KoiosConfig {
   /**
    * Attempts per read, including the first. 1 disables retrying.
    *
+   * Must be a safe integer from 1 through 100. 0 is rejected rather than treated as "make no request":
+   * callers that want no retries use 1, because every read still needs its first attempt.
+   *
    * Bounded on purpose: an upstream that is genuinely down should surface as down rather than as
    * a hang. Every attempt can burn the full `timeoutMs`, so the longest a caller can wait is
    * roughly `readAttempts * timeoutMs` plus backoff. Raising this trades the caller's patience
@@ -89,8 +97,12 @@ interface RequestInit {
 }
 
 const DEFAULT_READ_ATTEMPTS = 3
+// A retry budget past ~100 only turns a dead upstream into a longer hang. Keep this aligned with
+// the Blockfrost provider so a hand-built config cannot create an effectively endless request loop.
+const MAX_READ_ATTEMPTS = 100
 const DEFAULT_BACKOFF_MS = 150
 const DEFAULT_TIMEOUT_MS = 10_000
+const MAX_TIMER_MS = 2_147_483_647
 const KOIOS_PAGE_SIZE = 1_000
 const KOIOS_MAX_PAGED_ROWS = 100_000
 
@@ -98,6 +110,14 @@ interface ResponseWithMetadata {
   data: unknown
   status: number
   contentRange: string | null
+}
+
+export type KoiosContentRange = { start: number; end: number; total: number } | { total: 0 } | null
+
+export interface KoiosBatchPage<Row> {
+  rows: Row[]
+  status: number
+  range: KoiosContentRange
 }
 
 /**
@@ -165,6 +185,13 @@ export interface KoiosClient {
   /** A read: fetch, validate, and retry a transient upstream failure. */
   get<T>(schema: z.ZodType<T>, path: string): Promise<T>
 
+  /**
+   * Retry a composed multi-request read from its beginning. A page-level retry cannot repair a
+   * result set that changed between offsets, so incremental readers use this around the whole
+   * stream walk and create fresh cursors on every attempt.
+   */
+  readWithRetry<T>(path: string, load: () => Promise<T>): Promise<T>
+
   /** A read of a single row, where an empty response is itself malformed. */
   getFirst<T>(schema: z.ZodType<T>, path: string): Promise<T>
 
@@ -173,6 +200,17 @@ export interface KoiosClient {
    * but it is a read: it has no effect upstream, and it is retried like one.
    */
   batch<T>(schema: z.ZodType<T>, path: string, body: unknown): Promise<T>
+
+  /**
+   * Make one validated batch-page request without its own retry. This belongs inside
+   * `readWithRetry`, so any Content-Range or shape failure restarts the complete logical read
+   * rather than retrying one offset against an older prefix.
+   */
+  batchPageOnce<Row>(
+    rowSchema: z.ZodType<Row>,
+    path: string,
+    body: unknown,
+  ): Promise<KoiosBatchPage<Row>>
 
   /**
    * A paged batch read. Koios/PostgREST caps large result sets and answers partial requests with
@@ -250,15 +288,63 @@ function limitFrom413(err: unknown): number | undefined {
   return Number.isSafeInteger(limit) && limit > 0 ? limit : undefined
 }
 
+function asReadAttempts(value: number | undefined): number {
+  const attempts = value ?? DEFAULT_READ_ATTEMPTS
+  if (!Number.isSafeInteger(attempts) || attempts < 1 || attempts > MAX_READ_ATTEMPTS) {
+    throw new RangeError(
+      `readAttempts must be a safe integer in [1, ${MAX_READ_ATTEMPTS}]; use 1 to disable retries`,
+    )
+  }
+  return attempts
+}
+
+function asBoundedNumber(
+  value: number | undefined,
+  fallback: number,
+  name: string,
+  min: number,
+  max: number,
+): number {
+  const result = value ?? fallback
+  if (!Number.isSafeInteger(result) || result < min || result > max) {
+    throw new ConfigError(`koios ${name} must be a safe integer in [${min}, ${max}]`)
+  }
+  return result
+}
+
 export function createKoiosClient(config: KoiosConfig): KoiosClient {
   const baseUrl = config.baseUrl.replace(/\/+$/, '')
-  const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS
-  const heavyTimeoutMs = config.heavyTimeoutMs ?? HEAVY_TIMEOUT_MS
+  const timeoutMs = asBoundedNumber(
+    config.timeoutMs,
+    DEFAULT_TIMEOUT_MS,
+    'timeoutMs',
+    1,
+    MAX_TIMER_MS,
+  )
+  const heavyTimeoutMs = asBoundedNumber(
+    config.heavyTimeoutMs,
+    HEAVY_TIMEOUT_MS,
+    'heavyTimeoutMs',
+    1,
+    MAX_TIMER_MS,
+  )
   const doFetch: FetchLike = config.fetchImpl ?? (globalThis.fetch as unknown as FetchLike)
   // Not a constant, because upstream may tell us it is smaller. See batchAll.
-  let bodyLimit = config.bodyLimitBytes ?? KOIOS_BODY_LIMIT_BYTES
-  const readAttempts = Math.max(1, config.readAttempts ?? DEFAULT_READ_ATTEMPTS)
-  const backoffMs = config.retryBackoffMs ?? DEFAULT_BACKOFF_MS
+  let bodyLimit = asBoundedNumber(
+    config.bodyLimitBytes,
+    KOIOS_BODY_LIMIT_BYTES,
+    'bodyLimitBytes',
+    1,
+    Number.MAX_SAFE_INTEGER,
+  )
+  const readAttempts = asReadAttempts(config.readAttempts)
+  const backoffMs = asBoundedNumber(
+    config.retryBackoffMs,
+    DEFAULT_BACKOFF_MS,
+    'retryBackoffMs',
+    0,
+    MAX_TIMER_MS,
+  )
   const delay =
     config.delayImpl ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)))
 
@@ -385,10 +471,7 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
     })
   }
 
-  function parseContentRange(
-    value: string,
-    path: string,
-  ): { start: number; end: number; total: number } | { total: 0 } {
+  function parseContentRange(value: string, path: string): Exclude<KoiosContentRange, null> {
     if (value === '*/0') return { total: 0 }
 
     const match = /^(\d+)-(\d+)\/(\d+)$/.exec(value)
@@ -448,6 +531,8 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
       return read(path, async () => parse(schema, await request(path), path))
     },
 
+    readWithRetry: read,
+
     getFirst<T>(schema: z.ZodType<T>, path: string): Promise<T> {
       return read(path, async () => {
         const rows = parse(z.array(z.unknown()), await request(path), path)
@@ -459,6 +544,27 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
     },
 
     batch,
+
+    async batchPageOnce<Row>(
+      rowSchema: z.ZodType<Row>,
+      path: string,
+      body: unknown,
+    ): Promise<KoiosBatchPage<Row>> {
+      const response = await requestWithMetadata(path, {
+        method: 'POST',
+        body: JSON.stringify(body),
+        contentType: 'application/json',
+        headers: {
+          prefer: 'count=exact',
+        },
+      })
+      return {
+        rows: parse(z.array(rowSchema), response.data, path),
+        status: response.status,
+        range:
+          response.contentRange === null ? null : parseContentRange(response.contentRange, path),
+      }
+    },
 
     batchAllPages<Row>(
       rowSchema: z.ZodType<Row>,

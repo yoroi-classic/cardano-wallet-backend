@@ -26,17 +26,17 @@ export interface BlockfrostProviderOptions extends BlockfrostConfig {
  * mapping, parsing) with a module per capability composed on top, mirroring the Koios provider's
  * shape exactly.
  *
- * Chain reads (`getTip`, `getProtocolParams`), stake-account state and UTxOs, the used-address
- * check, and transaction submit/status are real. Asset metadata, governance (DRep info/list and
- * proposals), and stake-pool (info/list) reads are now real as well, matching the Koios provider's
- * output shape as far as Blockfrost's API allows (see the individual capability modules for the
- * documented gaps, e.g. Blockfrost decoding CIP-68 datums server-side rather than exposing them,
- * and offering no proposal vote-summary endpoint).
+ * Chain reads (`getTip`, `getProtocolParams`), stake-account state and UTxOs, transaction and
+ * reward history, the address reads (used-address check, UTxOs and tx history by address),
+ * UTxO-by-reference, and transaction submit/status are real. Asset metadata, governance (DRep
+ * info/list and proposals), and stake-pool (info/list) reads are now real as well, matching the
+ * Koios provider's output shape as far as Blockfrost's API allows (see the individual capability
+ * modules for the documented gaps, e.g. Blockfrost decoding CIP-68 datums server-side rather than
+ * exposing them, and offering no proposal vote-summary endpoint).
  *
- * Still stubbed with `NotImplementedError`: full transaction history and reward history, arbitrary
- * UTxO-by-reference resolution, and the address-set reads (payment-credential filter, UTxOs and tx
- * history by address). Those may be landing in a parallel PR — see the account/addresses capability
- * modules and issue #4's status comment for exactly what is left.
+ * The one read still answering `NotImplementedError` is `filterUsedPaymentCredentials`, and not
+ * because it is unbuilt: Blockfrost has no payment-credential index to serve it from. The addresses
+ * capability module records the detail, and issue #111 tracks it.
  */
 export function createBlockfrostProvider(options: BlockfrostProviderOptions): ChainProvider {
   const { cache = noCache, ...config } = options

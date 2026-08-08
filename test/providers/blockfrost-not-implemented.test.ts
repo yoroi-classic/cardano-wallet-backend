@@ -16,31 +16,26 @@ function testProvider() {
 }
 
 /**
- * The capabilities this PR deliberately does not cover: full transaction/reward history and
- * resolving an arbitrary UTxO by reference. Each answers `NotImplementedError` (501) rather than a
- * generic error or a silently empty result — see issue #4's status comment for what a follow-up PR
- * should pick up. Asset, governance, and pool reads used to live here; they are real as of this PR
- * and are covered by their own suites.
+ * The one capability this driver still does not cover is `filterUsedPaymentCredentials`, and not
+ * because it is unbuilt: Blockfrost has no payment-credential index to serve it from. It answers
+ * `NotImplementedError` (501) rather than a generic error or a silently empty result. Asset,
+ * governance and pool reads, transaction/reward history and utxo-by-reference used to live here and
+ * are now implemented, each covered by its own suite.
  */
 describe('blockfrost provider — capabilities not yet implemented', () => {
-  it('getTxHistory', async () => {
+  it('filterUsedPaymentCredentials', async () => {
     const provider = testProvider()
-    await expect(provider.getTxHistory('stake_test1abc')).rejects.toBeInstanceOf(
+    await expect(provider.filterUsedPaymentCredentials(['a'.repeat(56)])).rejects.toBeInstanceOf(
       NotImplementedError,
     )
   })
 
-  it('getRewardHistory', async () => {
+  it('filterUsedPaymentCredentials names the missing payment-credential index', async () => {
     const provider = testProvider()
-    await expect(provider.getRewardHistory('stake_test1abc')).rejects.toBeInstanceOf(
-      NotImplementedError,
-    )
-  })
-
-  it('getUtxosByRef', async () => {
-    const provider = testProvider()
-    await expect(provider.getUtxosByRef([`${'a'.repeat(64)}#0`])).rejects.toBeInstanceOf(
-      NotImplementedError,
+    // The message must state the real reason rather than the generic "not built yet", so issue #111
+    // can record that this is a provider limitation, not a follow-up.
+    await expect(provider.filterUsedPaymentCredentials(['a'.repeat(56)])).rejects.toThrow(
+      /payment-credential index/,
     )
   })
 })

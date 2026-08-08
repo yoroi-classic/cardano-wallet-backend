@@ -161,6 +161,7 @@ export interface PoolMethodDeps {
 
 export function createPoolMethods(koios: KoiosClient, deps: PoolMethodDeps = {}): PoolCapability {
   const cache = deps.cache ?? noCache
+  const uncachedInFlight = new Map<string, Promise<PoolInfo[]>>()
 
   /**
    * The epoch to key the cache on, or `undefined` if we could not find out.
@@ -319,6 +320,19 @@ export function createPoolMethods(koios: KoiosClient, deps: PoolMethodDeps = {})
     }))
   }
 
+  function serveUncached(params: PoolListParams, epoch: undefined): Promise<PoolInfo[]> {
+    const { limit, offset, ticker } = params
+    const key = `${ticker ?? ''}:${offset}:${limit}`
+    const pending = uncachedInFlight.get(key)
+    if (pending !== undefined) return pending
+
+    const attempt = servePage(params, epoch).finally(() => {
+      uncachedInFlight.delete(key)
+    })
+    uncachedInFlight.set(key, attempt)
+    return attempt
+  }
+
   return {
     getPoolInfo(poolIds: string[]): Promise<PoolInfo[]> {
       return poolInfoByIds(poolIds)
@@ -335,8 +349,9 @@ export function createPoolMethods(koios: KoiosClient, deps: PoolMethodDeps = {})
       // Keyed on the epoch as well as the page, so the ranking underneath cannot change without
       // the page key changing with it.
       const epoch = await cacheEpoch()
-      const key = `pools:page:${epoch ?? 'none'}:${ticker ?? ''}:${offset}:${limit}`
+      if (epoch === undefined) return serveUncached({ limit, offset, ticker }, epoch)
 
+      const key = `pools:page:${epoch}:${ticker ?? ''}:${offset}:${limit}`
       return cache.read(key, { ttlMs: PAGE_TTL_MS, staleIfErrorMs: PAGE_STALE_IF_ERROR_MS }, () =>
         servePage({ limit, offset, ticker }, epoch),
       )

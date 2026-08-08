@@ -76,12 +76,16 @@ export type ProposalType = (typeof PROPOSAL_TYPES)[number]
  */
 export type ProposalStatus = 'open' | 'ratified' | 'enacted' | 'dropped' | 'expired'
 
-/** How a body of voters split on a proposal. Voting power is lovelace, as a string. */
-export interface VoteTally {
+/** Votes cast by each choice, without claiming a stake-based weighting. */
+export interface VoteCountTally {
   /** Votes cast, by count. */
   yes: number
   no: number
   abstain: number
+}
+
+/** How a stake-weighted body of voters split on a proposal. Voting power is lovelace. */
+export interface VoteTally extends VoteCountTally {
   /** Voting power behind each, in lovelace. This, not the count, is what decides the outcome. */
   yesPower: string
   noPower: string
@@ -129,12 +133,16 @@ export interface Proposal {
    */
   metadataValid?: boolean
 
-  /** How the DReps have voted so far. */
+  /** How DReps have voted so far; abstainPower includes always-abstain delegation. */
   drepVotes?: VoteTally
-  /** How the stake pool operators have voted so far. */
+  /** How stake pool operators have voted so far; abstainPower includes passive abstain delegation. */
   poolVotes?: VoteTally
-  /** How the constitutional committee has voted so far. */
-  committeeVotes?: VoteTally
+  /**
+   * How the constitutional committee has voted so far, by member count. Committee members each
+   * have one vote; unlike DReps and stake pools, their votes are not weighted by lovelace.
+   * Absent for `NewCommittee` and `NoConfidence`, where the committee has no vote.
+   */
+  committeeVotes?: VoteCountTally
 }
 
 /** Query for a page of the proposal list. */

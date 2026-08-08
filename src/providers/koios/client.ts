@@ -112,6 +112,14 @@ interface ResponseWithMetadata {
   contentRange: string | null
 }
 
+export type KoiosContentRange = { start: number; end: number; total: number } | { total: 0 } | null
+
+export interface KoiosBatchPage<Row> {
+  rows: Row[]
+  status: number
+  range: KoiosContentRange
+}
+
 /**
  * Endpoints that are slow upstream, and how long to give them.
  *
@@ -177,6 +185,13 @@ export interface KoiosClient {
   /** A read: fetch, validate, and retry a transient upstream failure. */
   get<T>(schema: z.ZodType<T>, path: string): Promise<T>
 
+  /**
+   * Retry a composed multi-request read from its beginning. A page-level retry cannot repair a
+   * result set that changed between offsets, so incremental readers use this around the whole
+   * stream walk and create fresh cursors on every attempt.
+   */
+  readWithRetry<T>(path: string, load: () => Promise<T>): Promise<T>
+
   /** A read of a single row, where an empty response is itself malformed. */
   getFirst<T>(schema: z.ZodType<T>, path: string): Promise<T>
 
@@ -185,6 +200,17 @@ export interface KoiosClient {
    * but it is a read: it has no effect upstream, and it is retried like one.
    */
   batch<T>(schema: z.ZodType<T>, path: string, body: unknown): Promise<T>
+
+  /**
+   * Make one validated batch-page request without its own retry. This belongs inside
+   * `readWithRetry`, so any Content-Range or shape failure restarts the complete logical read
+   * rather than retrying one offset against an older prefix.
+   */
+  batchPageOnce<Row>(
+    rowSchema: z.ZodType<Row>,
+    path: string,
+    body: unknown,
+  ): Promise<KoiosBatchPage<Row>>
 
   /**
    * A paged batch read. Koios/PostgREST caps large result sets and answers partial requests with
@@ -445,10 +471,7 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
     })
   }
 
-  function parseContentRange(
-    value: string,
-    path: string,
-  ): { start: number; end: number; total: number } | { total: 0 } {
+  function parseContentRange(value: string, path: string): Exclude<KoiosContentRange, null> {
     if (value === '*/0') return { total: 0 }
 
     const match = /^(\d+)-(\d+)\/(\d+)$/.exec(value)
@@ -508,6 +531,8 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
       return read(path, async () => parse(schema, await request(path), path))
     },
 
+    readWithRetry: read,
+
     getFirst<T>(schema: z.ZodType<T>, path: string): Promise<T> {
       return read(path, async () => {
         const rows = parse(z.array(z.unknown()), await request(path), path)
@@ -519,6 +544,27 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
     },
 
     batch,
+
+    async batchPageOnce<Row>(
+      rowSchema: z.ZodType<Row>,
+      path: string,
+      body: unknown,
+    ): Promise<KoiosBatchPage<Row>> {
+      const response = await requestWithMetadata(path, {
+        method: 'POST',
+        body: JSON.stringify(body),
+        contentType: 'application/json',
+        headers: {
+          prefer: 'count=exact',
+        },
+      })
+      return {
+        rows: parse(z.array(rowSchema), response.data, path),
+        status: response.status,
+        range:
+          response.contentRange === null ? null : parseContentRange(response.contentRange, path),
+      }
+    },
 
     batchAllPages<Row>(
       rowSchema: z.ZodType<Row>,

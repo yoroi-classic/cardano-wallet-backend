@@ -1,4 +1,6 @@
 import type { Cache } from '../cache/index.js'
+import { ProviderError } from '../domain/errors.js'
+import type { ProtocolParams } from '../domain/types/chain.js'
 import type { ChainProvider } from './provider.js'
 
 /**
@@ -28,6 +30,16 @@ export const TIP_CACHE_KEY = 'chain:tip'
  * its key is current.
  */
 export const PROTOCOL_PARAMS_TTL_MS = 6 * 24 * 60 * 60 * 1000
+
+class ProtocolParamsEpochMismatchError extends Error {
+  constructor(
+    readonly tipEpoch: number,
+    readonly paramsEpoch: number,
+  ) {
+    super(`protocol parameters for epoch ${paramsEpoch} do not match tip epoch ${tipEpoch}`)
+    this.name = 'ProtocolParamsEpochMismatchError'
+  }
+}
 
 /**
  * Wrap a provider so the chain-wide reads are cached.
@@ -70,6 +82,57 @@ export function withCache(provider: ChainProvider, cache: Cache): ChainProvider 
   const getTip: ChainProvider['getTip'] = () =>
     cache.read(TIP_CACHE_KEY, TIP_TTL_MS, () => provider.getTip())
 
+  const readProtocolParamsForEpoch = (epoch: number): Promise<ProtocolParams> =>
+    cache.read(`chain:protocol-params:${epoch}`, PROTOCOL_PARAMS_TTL_MS, async () => {
+      const params = await provider.getProtocolParams()
+      if (params.epoch !== epoch) {
+        throw new ProtocolParamsEpochMismatchError(epoch, params.epoch)
+      }
+      return params
+    })
+
+  // Epoch-boundary recovery is shared independently of the normal epoch-keyed cache read. The
+  // first mismatched caller bypasses the cached tip and retries one complete tip/parameter pair;
+  // concurrent callers wait on that same pair rather than stampeding both upstream endpoints.
+  let protocolParamsRecovery: Promise<ProtocolParams> | undefined
+  const recoverProtocolParams = (): Promise<ProtocolParams> => {
+    if (protocolParamsRecovery !== undefined) return protocolParamsRecovery
+
+    const tipGeneration = cache.generation(TIP_CACHE_KEY)
+    // The epoch is not known until the refresh returns. Capture the subtree token so a clear of
+    // either that subtree or the eventual epoch key invalidates the write.
+    const paramsGeneration = cache.generation('chain:protocol-params:')
+
+    const attempt = (async (): Promise<ProtocolParams> => {
+      const freshTip = await provider.getTip()
+      const freshParams = await provider.getProtocolParams()
+      if (freshParams.epoch !== freshTip.epoch) {
+        throw new ProviderError(
+          `protocol parameters for epoch ${freshParams.epoch} do not match refreshed tip epoch ${freshTip.epoch}`,
+        )
+      }
+
+      // Publish and return the pair recovery already verified. Going back through read() here
+      // could join an older in-flight read for the refreshed epoch and replace this successful
+      // recovery with that read's failure.
+      cache.setIfGeneration(TIP_CACHE_KEY, freshTip, TIP_TTL_MS, tipGeneration)
+      cache.setIfGeneration(
+        `chain:protocol-params:${freshTip.epoch}`,
+        freshParams,
+        PROTOCOL_PARAMS_TTL_MS,
+        paramsGeneration,
+      )
+      return freshParams
+    })()
+
+    protocolParamsRecovery = attempt
+    const clearRecovery = (): void => {
+      if (protocolParamsRecovery === attempt) protocolParamsRecovery = undefined
+    }
+    void attempt.then(clearRecovery, clearRecovery)
+    return attempt
+  }
+
   return {
     ...provider,
 
@@ -85,9 +148,12 @@ export function withCache(provider: ChainProvider, cache: Cache): ChainProvider 
     // rather than once per request, and nothing on the hot path.
     getProtocolParams: async () => {
       const { epoch } = await getTip()
-      return cache.read(`chain:protocol-params:${epoch}`, PROTOCOL_PARAMS_TTL_MS, () =>
-        provider.getProtocolParams(),
-      )
+      try {
+        return await readProtocolParamsForEpoch(epoch)
+      } catch (error) {
+        if (!(error instanceof ProtocolParamsEpochMismatchError)) throw error
+        return recoverProtocolParams()
+      }
     },
   }
 }

@@ -215,6 +215,46 @@ describe('koios provider — unhappy path', () => {
     await expect(provider.getTip()).rejects.toBeInstanceOf(MalformedUpstreamError)
   })
 
+  it.each([0, Number.MAX_SAFE_INTEGER])(
+    'accepts tip counters at the safe integer boundary %s',
+    async (value) => {
+      const rows = [
+        {
+          ...TIP_ROWS[0],
+          epoch_no: value,
+          abs_slot: value,
+          block_no: value,
+        },
+      ]
+      const { fetchImpl } = fakeFetch({ json: async () => rows })
+      const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+      await expect(provider.getTip()).resolves.toMatchObject({
+        epoch: value,
+        slot: value,
+        block: value,
+      })
+    },
+  )
+
+  it.each([
+    ['epoch_no', -1],
+    ['epoch_no', 1.5],
+    ['epoch_no', Number.MAX_SAFE_INTEGER + 1],
+    ['abs_slot', -1],
+    ['abs_slot', 1.5],
+    ['abs_slot', Number.MAX_SAFE_INTEGER + 1],
+    ['block_no', -1],
+    ['block_no', 1.5],
+    ['block_no', Number.MAX_SAFE_INTEGER + 1],
+  ] as const)('rejects malformed tip counter %s=%s', async (field, value) => {
+    const rows = [{ ...TIP_ROWS[0], [field]: value }]
+    const { fetchImpl } = fakeFetch({ json: async () => rows })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getTip()).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+
   it('rejects a non-numeric protocol-param value as malformed', async () => {
     const rows = [{ ...EPOCH_PARAM_ROWS[0], key_deposit: 'not-a-number' }]
     const { fetchImpl } = fakeFetch({ json: async () => rows })
@@ -297,6 +337,46 @@ describe('koios provider — upstream value integrity', () => {
     expect(state.balance).toBe('7682048683977123456')
   })
 
+  it.each([
+    ['lowercase', 'ab'.repeat(32)],
+    ['uppercase', 'AB'.repeat(32)],
+    ['mixed case', 'aB'.repeat(32)],
+  ])(
+    'canonicalizes a %s status hash before querying and matching',
+    async (_case, requestedHash) => {
+      const canonical = requestedHash.toLowerCase()
+      const bodies: Array<{ _tx_hashes: string[] }> = []
+      const fetchImpl: FetchLike = async (_url, init) => {
+        bodies.push(JSON.parse(String(init?.body)) as { _tx_hashes: string[] })
+        return {
+          ok: true,
+          status: 200,
+          json: async () => [{ tx_hash: canonical, num_confirmations: 0 }],
+          text: async () => '',
+        }
+      }
+      const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+      await expect(provider.getTxStatus(requestedHash)).resolves.toMatchObject({
+        seen: true,
+        confirmations: 0,
+      })
+      expect(bodies).toEqual([{ _tx_hashes: [canonical] }])
+    },
+  )
+
+  it('matches a non-canonical upstream hash without changing transaction identity', async () => {
+    const { fetchImpl } = fakeFetch({
+      json: async () => [{ tx_hash: TX_HASH.toUpperCase(), num_confirmations: 1 }],
+    })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getTxStatus(TX_HASH)).resolves.toMatchObject({
+      seen: true,
+      confirmations: 1,
+    })
+  })
+
   it('does not report another transaction’s confirmations as this one’s', async () => {
     // A mismatched tx_status row must not be read as the requested tx, or a wallet would
     // tell someone a payment landed when it did not.
@@ -313,14 +393,25 @@ describe('koios provider — upstream value integrity', () => {
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
     await expect(provider.getTxStatus(TX_HASH)).resolves.toEqual({
+      status: 'unknown',
       seen: false,
       confirmations: 0,
+      overlayAction: 'retain',
     })
   })
 
   it('rejects a negative confirmation count', async () => {
     const { fetchImpl } = fakeFetch({
       json: async () => [{ tx_hash: TX_HASH, num_confirmations: -3 }],
+    })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getTxStatus(TX_HASH)).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+
+  it("rejects a confirmation count outside JavaScript's safe integer range", async () => {
+    const { fetchImpl } = fakeFetch({
+      json: async () => [{ tx_hash: TX_HASH, num_confirmations: Number.MAX_SAFE_INTEGER + 1 }],
     })
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
@@ -339,14 +430,34 @@ describe('koios provider — asset identifiers', () => {
     },
   ]
 
-  it('accepts an asset with an empty name, which is a real and common token', async () => {
+  it.each([
+    ['empty', ''],
+    ['one byte', '00'],
+    ['even length', '414243'],
+    ['mixed case', 'aB12Cd'],
+    ['32 bytes', 'ab'.repeat(32)],
+  ])('accepts a %s asset name and preserves its spelling', async (_case, assetName) => {
     // A policy's unnamed asset is valid on chain, so the boundary must not demand a name.
-    const { fetchImpl } = fakeFetch({ json: async () => utxoWith('a'.repeat(56), '') })
+    const policyId = 'a'.repeat(56)
+    const { fetchImpl } = fakeFetch({ json: async () => utxoWith(policyId, assetName) })
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
     const [utxo] = await provider.getAccountUtxos('stake_test1abc')
 
-    expect(utxo?.assets).toEqual([{ policyId: 'a'.repeat(56), assetName: '', quantity: '1' }])
+    expect(utxo?.assets).toEqual([{ policyId, assetName, quantity: '1' }])
+  })
+
+  it.each([
+    ['odd length', 'a'],
+    ['non-hex', '0g'],
+    ['over 32 bytes', 'ab'.repeat(33)],
+  ])('rejects a %s asset name as malformed upstream data', async (_case, assetName) => {
+    const { fetchImpl } = fakeFetch({ json: async () => utxoWith('a'.repeat(56), assetName) })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    await expect(provider.getAccountUtxos('stake_test1abc')).rejects.toBeInstanceOf(
+      MalformedUpstreamError,
+    )
   })
 
   it('rejects an empty policy id, which is never valid', async () => {

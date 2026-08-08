@@ -199,6 +199,16 @@ describe('koios getUtxosByRef', () => {
     expect(resolved.map((u) => `${u.txHash}#${u.outputIndex}`)).toEqual([`${TX}#0`, `${TX_2}#1`])
   })
 
+  it('preserves repeated canonical references in the request and result order', async () => {
+    const { fetchImpl, calls } = fakeFetch(async () => [utxo(TX, 1, false)])
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const resolved = await provider.getUtxosByRef([`${TX}#1`, `${TX}#1`])
+
+    expect(JSON.parse(String(calls[0]?.body))._utxo_refs).toEqual([`${TX}#1`, `${TX}#1`])
+    expect(resolved.map((u) => `${u.txHash}#${u.outputIndex}`)).toEqual([`${TX}#1`, `${TX}#1`])
+  })
+
   it('returns [] without calling upstream for an empty batch', async () => {
     const { fetchImpl, calls } = fakeFetch(async () => [])
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })

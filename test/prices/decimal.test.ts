@@ -54,11 +54,35 @@ describe('toDecimalString', () => {
 })
 
 describe('divideDecimalStrings', () => {
+  const largestPowerOfTen = `1${'0'.repeat(308)}`
+  const oversizedPowerOfTen = `1${'0'.repeat(309)}`
+
   it('divides two decimal strings and formats the result', () => {
     expect(divideDecimalStrings('96650.3017183848', '0.163485')).toBe('591187.5812361061')
   })
 
+  it('rejects an oversized numerator before division', () => {
+    expect(() => divideDecimalStrings(oversizedPowerOfTen, '1')).toThrowError(RangeError)
+    expect(() => divideDecimalStrings(oversizedPowerOfTen, '1')).toThrow(
+      'cannot divide with a non-finite numerator',
+    )
+  })
+
+  it('rejects an oversized denominator instead of fabricating a zero result', () => {
+    expect(() => divideDecimalStrings('100', oversizedPowerOfTen)).toThrowError(RangeError)
+    expect(() => divideDecimalStrings('100', oversizedPowerOfTen)).toThrow(
+      'cannot divide with a non-finite denominator',
+    )
+  })
+
   it('refuses to divide by zero rather than returning Infinity', () => {
-    expect(() => divideDecimalStrings('100', '0')).toThrow(RangeError)
+    expect(() => divideDecimalStrings('100', '0')).toThrowError(RangeError)
+    expect(() => divideDecimalStrings('100', '0')).toThrow('cannot divide by a zero denominator')
+  })
+
+  it('keeps finite boundary operands in plain-decimal notation', () => {
+    expect(divideDecimalStrings(largestPowerOfTen, largestPowerOfTen)).toBe('1')
+    expect(divideDecimalStrings(largestPowerOfTen, '1')).toBe(largestPowerOfTen)
+    expect(divideDecimalStrings('1', largestPowerOfTen)).toBe(`0.${'0'.repeat(307)}1`)
   })
 })

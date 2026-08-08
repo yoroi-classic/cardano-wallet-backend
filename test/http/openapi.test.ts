@@ -6,6 +6,13 @@ import { openapi } from '../../src/http/openapi.js'
 import { buildServer } from '../../src/http/server.js'
 import { createNftcdnSigner } from '../../src/media/nftcdn.js'
 import type { ProtocolParams } from '../../src/domain/types/chain.js'
+import {
+  confirmedTxStatus,
+  expiredTxStatus,
+  pendingTxStatus,
+  rejectedTxStatus,
+  unknownTxStatus,
+} from '../../src/domain/types/transactions.js'
 import type { ChainProvider } from '../../src/providers/provider.js'
 import { fakeProvider } from '../support/fake-provider.js'
 
@@ -68,9 +75,14 @@ describe('OpenAPI schema format setup', () => {
 
 // Well-formed bech32, so the routes' own validation passes and the responses under test are the
 // real ones rather than a 400.
-const STAKE = bech32.encode('stake_test', bech32.toWords(new Uint8Array(29)), 1023)
-const ADDR = (fill: number): string =>
-  bech32.encode('addr_test', bech32.toWords(new Uint8Array(57).fill(fill)), 1023)
+const STAKE_BYTES = new Uint8Array(29)
+STAKE_BYTES[0] = 0xe0
+const STAKE = bech32.encode('stake_test', bech32.toWords(STAKE_BYTES), 1023)
+const ADDR = (fill: number): string => {
+  const bytes = new Uint8Array(57).fill(fill)
+  bytes[0] = 0 // Base key-key address on a test network.
+  return bech32.encode('addr_test', bech32.toWords(bytes), 1023)
+}
 const ADDR_VKH = bech32.encode('addr_vkh', bech32.toWords(new Uint8Array(28).fill(3)), 1023)
 const TX_HASH = 'ab'.repeat(32)
 const POLICY = 'a'.repeat(56)
@@ -149,7 +161,10 @@ describe('real responses validate against the schemas the spec publishes', () =>
     url: string,
     payload?: object,
   ): Promise<{ statusCode: number; body: unknown }> {
-    const app = await buildServer({ provider: fakeProvider(provider) })
+    const app = await buildServer({
+      provider: fakeProvider(provider),
+      info: { version: 'test', network: 'preprod', provider: 'fake' },
+    })
     const res = await app.inject({ method, url, ...(payload === undefined ? {} : { payload }) })
     await app.close()
     return { statusCode: res.statusCode, body: res.json() }
@@ -268,14 +283,38 @@ describe('real responses validate against the schemas the spec publishes', () =>
     eachMatches('WalletTransaction', res.body)
   })
 
-  it('GET /v1/tx/{hash}/status', async () => {
-    const res = await get(
-      { getTxStatus: async () => ({ seen: true, confirmations: 12 }) },
-      `/v1/tx/${TX_HASH}/status`,
-    )
+  it.each([
+    unknownTxStatus(),
+    pendingTxStatus(),
+    confirmedTxStatus(12),
+    rejectedTxStatus(),
+    expiredTxStatus(),
+  ])('GET /v1/tx/{hash}/status validates lifecycle $status', async (status) => {
+    const res = await get({ getTxStatus: async () => status }, `/v1/tx/${TX_HASH}/status`)
 
     expect(res.statusCode).toBe(200)
     expect(validate('TxStatus', res.body)).toEqual([])
+  })
+
+  it('keeps terminal codes paired to their lifecycle state and rejects extra provider fields', () => {
+    expect(
+      validate('TxStatus', {
+        ...rejectedTxStatus(),
+        terminal: {
+          code: 'TX_EXPIRED',
+          reason: 'The transaction validity interval expired before confirmation.',
+        },
+      }),
+    ).not.toEqual([])
+    expect(validate('TxStatus', { ...unknownTxStatus(), rawProviderBody: 'secret' })).not.toEqual(
+      [],
+    )
+    expect(
+      validate('TxStatus', {
+        ...confirmedTxStatus(0),
+        confirmations: Number.MAX_SAFE_INTEGER + 1,
+      }),
+    ).not.toEqual([])
   })
 
   it('POST /v1/assets/info', async () => {
@@ -539,8 +578,8 @@ describe('real responses validate against the schemas the spec publishes', () =>
   it('GET /v1/governance/proposals', async () => {
     const res = await get(
       {
-        getProposals: async () => [
-          {
+        getProposals: async () => {
+          const proposal = {
             proposalId: 'gov_action1jr0g04rwvdz3rrqpm30vwqd5mnjky8l68v0e3g74t6e5apw6wwfqq37hpcl',
             txHash: TX_HASH,
             index: 0,
@@ -561,8 +600,20 @@ describe('real responses validate against the schemas the spec publishes', () =>
               noPower: '0',
               abstainPower: '0',
             },
-          },
-        ],
+            committeeVotes: {
+              yes: 3,
+              no: 0,
+              abstain: 0,
+            },
+          }
+          const noCommitteeVoteProposal = {
+            ...proposal,
+            proposalId: 'gov_action1w2w64uh7g6q8x4n0m3v6q7f9r2s5t8u1y4z7c0d3e6f9h2j5k8m1p4s7v0x3',
+            type: 'NewCommittee' as const,
+            committeeVotes: undefined,
+          }
+          return [proposal, noCommitteeVoteProposal]
+        },
       },
       '/v1/governance/proposals',
     )
@@ -572,6 +623,22 @@ describe('real responses validate against the schemas the spec publishes', () =>
     expect((res.body as { drepVotes: { yesPower: string } }[])[0]?.drepVotes.yesPower).toBe(
       '9999999999999999999',
     )
+    expect((res.body as { committeeVotes: Record<string, unknown> }[])[0]?.committeeVotes).toEqual({
+      yes: 3,
+      no: 0,
+      abstain: 0,
+    })
+    expect((res.body as Record<string, unknown>[])[1]).not.toHaveProperty('committeeVotes')
+    expect(
+      validate('CommitteeVoteTally', {
+        yes: 3,
+        no: 0,
+        abstain: 0,
+        yesPower: '0',
+        noPower: '0',
+        abstainPower: '0',
+      }),
+    ).not.toEqual([])
   })
 
   it('POST /v1/assets/media', async () => {

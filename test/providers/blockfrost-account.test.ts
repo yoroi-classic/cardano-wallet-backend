@@ -41,9 +41,14 @@ function utxoRow(overrides: Record<string, unknown> = {}): Record<string, unknow
 }
 
 /** Scripts one JSON response per call to a given path, repeating the last one after that. */
-function scriptedFetch(script: Record<string, unknown[]>): { fetchImpl: FetchLike } {
+function scriptedFetch(script: Record<string, unknown[]>): {
+  fetchImpl: FetchLike
+  calls: string[]
+} {
   const served = new Map<string, number>()
+  const calls: string[] = []
   const fetchImpl: FetchLike = async (url) => {
+    calls.push(url)
     const path = Object.keys(script).find((p) => url.includes(p))
     if (path === undefined) throw new Error(`test script has no answer for ${url}`)
     const answers = script[path] as unknown[]
@@ -56,7 +61,7 @@ function scriptedFetch(script: Record<string, unknown[]>): { fetchImpl: FetchLik
     }
     return { ok: true, status: 200, json: async () => answer, text: async () => '' }
   }
-  return { fetchImpl }
+  return { fetchImpl, calls }
 }
 
 function testProvider(script: Record<string, unknown[]>) {
@@ -109,9 +114,10 @@ describe('blockfrost account — happy path', () => {
         { unit: `${policyId}${assetName}`, quantity: '12' },
       ],
     })
-    const provider = testProvider({
+    const { fetchImpl, calls } = scriptedFetch({
       [`/accounts/${STAKE}/utxos`]: [[utxoRow(), assetUtxo]],
     })
+    const provider = createBlockfrostProvider({ baseUrl: BASE, projectId: PROJECT_ID, fetchImpl })
 
     const utxos = await provider.getAccountUtxos(STAKE)
 
@@ -131,6 +137,28 @@ describe('blockfrost account — happy path', () => {
         assets: [{ policyId, assetName, quantity: '12' }],
       },
     ])
+    expect(calls).toHaveLength(1)
+  })
+
+  it('preserves the accepted hex casing of a native-asset unit in provider output', async () => {
+    const policyId = 'aB'.repeat(28)
+    const assetName = 'DeAd'
+    const provider = testProvider({
+      [`/accounts/${STAKE}/utxos`]: [
+        [
+          utxoRow({
+            amount: [
+              { unit: 'lovelace', quantity: '42000000' },
+              { unit: `${policyId}${assetName}`, quantity: '12' },
+            ],
+          }),
+        ],
+      ],
+    })
+
+    const [utxo] = await provider.getAccountUtxos(STAKE)
+
+    expect(utxo?.assets).toEqual([{ policyId, assetName, quantity: '12' }])
   })
 
   it('getAccountUtxos reports no utxos, not an error, for a never-used account', async () => {
@@ -144,12 +172,92 @@ describe('blockfrost account — happy path', () => {
       utxoRow({ tx_hash: `${i}`.padStart(64, '0'), output_index: 0 }),
     )
     const shortPage = [utxoRow({ tx_hash: 'b'.repeat(64), output_index: 2 })]
-    const provider = testProvider({ [`/accounts/${STAKE}/utxos`]: [fullPage, shortPage] })
+    const provider = testProvider({
+      [`/accounts/${STAKE}/utxos`]: [fullPage, shortPage, fullPage, shortPage],
+    })
 
     const utxos = await provider.getAccountUtxos(STAKE)
 
     expect(utxos).toHaveLength(101)
     expect(utxos[100]?.txHash).toBe('b'.repeat(64))
+  })
+})
+
+describe('blockfrost account — paged UTxO consistency', () => {
+  const rows = (from: number, toInclusive: number): Record<string, unknown>[] =>
+    Array.from({ length: toInclusive - from + 1 }, (_value, offset) =>
+      utxoRow({ tx_hash: `${from + offset}`.padStart(64, '0'), output_index: 0 }),
+    )
+
+  function sequencedProvider(pageRows: unknown[]): {
+    provider: ReturnType<typeof createBlockfrostProvider>
+    calls: string[]
+  } {
+    const { fetchImpl, calls } = scriptedFetch({ [`/accounts/${STAKE}/utxos`]: pageRows })
+    return {
+      provider: createBlockfrostProvider({ baseUrl: BASE, projectId: PROJECT_ID, fetchImpl }),
+      calls,
+    }
+  }
+
+  it('retries a deletion-shifted gap and returns only two matching complete scans', async () => {
+    const oldFirstPage = rows(0, 99)
+    const currentFirstPage = rows(1, 100)
+    const currentLastPage = rows(101, 101)
+    const { provider, calls } = sequencedProvider([
+      // Output 0 is spent after page one. Offset 100 now skips output 100.
+      oldFirstPage,
+      currentLastPage,
+      // The next two complete walks see the stable current set and may be returned.
+      currentFirstPage,
+      currentLastPage,
+      currentFirstPage,
+      currentLastPage,
+    ])
+
+    const utxos = await provider.getAccountUtxos(STAKE)
+
+    expect(utxos).toHaveLength(101)
+    expect(utxos[0]?.txHash).toBe('1'.padStart(64, '0'))
+    expect(utxos[100]?.txHash).toBe('101'.padStart(64, '0'))
+    expect(calls).toHaveLength(6)
+    expect(calls.every((url) => url.includes('order=asc'))).toBe(true)
+  })
+
+  it('fails closed after three continuously changing complete scans', async () => {
+    const { provider, calls } = sequencedProvider([
+      rows(0, 99),
+      rows(100, 100),
+      rows(1, 100),
+      rows(101, 101),
+      rows(2, 101),
+      rows(102, 102),
+    ])
+
+    await expect(provider.getAccountUtxos(STAKE)).rejects.toThrow(
+      'blockfrost account utxos changed during paged read; retry',
+    )
+    expect(calls).toHaveLength(6)
+  })
+
+  it('never accepts matching scans that duplicate an output across a page boundary', async () => {
+    const firstPage = rows(0, 99)
+    const duplicatedBoundary = rows(99, 100)
+    const { provider, calls } = sequencedProvider([
+      firstPage,
+      duplicatedBoundary,
+      firstPage,
+      duplicatedBoundary,
+      firstPage,
+      duplicatedBoundary,
+    ])
+
+    const error = await provider.getAccountUtxos(STAKE).catch((caught: unknown) => caught)
+
+    expect(error).toBeInstanceOf(ProviderError)
+    expect(String(error)).not.toContain(STAKE)
+    expect(String(error)).not.toContain('0'.repeat(64))
+    expect(calls).toHaveLength(6)
   })
 })
 
@@ -230,6 +338,58 @@ describe('blockfrost account — unhappy path', () => {
     const provider = testProvider({ [`/accounts/${STAKE}/utxos`]: [[dup]] })
 
     await expect(provider.getAccountUtxos(STAKE)).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+
+  it('rejects case-variant encodings of the same native-asset unit as duplicates', async () => {
+    const lowercaseUnit = `${'ab'.repeat(28)}6e7574636f696e`
+    const dup = utxoRow({
+      amount: [
+        { unit: 'lovelace', quantity: '1000000' },
+        { unit: lowercaseUnit, quantity: '5' },
+        { unit: lowercaseUnit.toUpperCase(), quantity: '7' },
+      ],
+    })
+    const provider = testProvider({ [`/accounts/${STAKE}/utxos`]: [[dup]] })
+
+    await expect(provider.getAccountUtxos(STAKE)).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+
+  it.each([
+    ['lowercase then uppercase', false],
+    ['uppercase then lowercase', true],
+  ])('rejects case-variant native-asset units across UTxO rows (%s)', async (_order, reversed) => {
+    const lowercaseUnit = `${'ab'.repeat(28)}6e7574636f696e`
+    const units = reversed
+      ? [lowercaseUnit.toUpperCase(), lowercaseUnit]
+      : [lowercaseUnit, lowercaseUnit.toUpperCase()]
+    const rows = units.map((unit, index) =>
+      utxoRow({
+        tx_hash: `${index + 1}`.padStart(64, '0'),
+        amount: [
+          { unit: 'lovelace', quantity: '1000000' },
+          { unit, quantity: String(index + 5) },
+        ],
+      }),
+    )
+    const provider = testProvider({ [`/accounts/${STAKE}/utxos`]: [rows] })
+
+    await expect(provider.getAccountUtxos(STAKE)).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+
+  it('allows the same native-asset spelling in separate UTxO rows', async () => {
+    const unit = `${'ab'.repeat(28)}6e7574636f696e`
+    const rows = [0, 1].map((index) =>
+      utxoRow({
+        tx_hash: `${index + 1}`.padStart(64, '0'),
+        amount: [
+          { unit: 'lovelace', quantity: '1000000' },
+          { unit, quantity: String(index + 5) },
+        ],
+      }),
+    )
+    const provider = testProvider({ [`/accounts/${STAKE}/utxos`]: [rows] })
+
+    await expect(provider.getAccountUtxos(STAKE)).resolves.toHaveLength(2)
   })
 
   it('rejects a second lovelace entry rather than letting it overwrite the real ada value', async () => {

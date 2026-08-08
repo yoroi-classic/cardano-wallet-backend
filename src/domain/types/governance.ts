@@ -76,12 +76,16 @@ export type ProposalType = (typeof PROPOSAL_TYPES)[number]
  */
 export type ProposalStatus = 'open' | 'ratified' | 'enacted' | 'dropped' | 'expired'
 
-/** How a body of voters split on a proposal. Voting power is lovelace, as a string. */
-export interface VoteTally {
+/** Votes cast by each choice, without claiming a stake-based weighting. */
+export interface VoteCountTally {
   /** Votes cast, by count. */
   yes: number
   no: number
   abstain: number
+}
+
+/** How a stake-weighted body of voters split on a proposal. Voting power is lovelace. */
+export interface VoteTally extends VoteCountTally {
   /** Voting power behind each, in lovelace. This, not the count, is what decides the outcome. */
   yesPower: string
   noPower: string
@@ -97,8 +101,16 @@ export interface Proposal {
   index: number
   type: ProposalType
   status: ProposalStatus
-  /** The epoch it was proposed in, and the one it expires in if nothing happens. */
-  proposedEpoch: number
+  /**
+   * The epoch it was proposed in, and the one it expires in if nothing happens.
+   *
+   * `proposedEpoch` is optional because not every provider can source it. Koios reports it
+   * directly; Blockfrost exposes no proposed epoch and only the current `gov_action_lifetime`
+   * parameter, which cannot be used to derive a historical proposal's epoch (the parameter can
+   * change between the proposal and now). Rather than fabricate a value from the wrong-era
+   * parameter, a provider that cannot source it leaves it absent.
+   */
+  proposedEpoch?: number
   expiryEpoch?: number
   /** Whichever of ratified/enacted/dropped/expired actually happened, if any. */
   decidedEpoch?: number
@@ -121,12 +133,16 @@ export interface Proposal {
    */
   metadataValid?: boolean
 
-  /** How the DReps have voted so far. */
+  /** How DReps have voted so far; abstainPower includes always-abstain delegation. */
   drepVotes?: VoteTally
-  /** How the stake pool operators have voted so far. */
+  /** How stake pool operators have voted so far; abstainPower includes passive abstain delegation. */
   poolVotes?: VoteTally
-  /** How the constitutional committee has voted so far. */
-  committeeVotes?: VoteTally
+  /**
+   * How the constitutional committee has voted so far, by member count. Committee members each
+   * have one vote; unlike DReps and stake pools, their votes are not weighted by lovelace.
+   * Absent for `NewCommittee` and `NoConfidence`, where the committee has no vote.
+   */
+  committeeVotes?: VoteCountTally
 }
 
 /** Query for a page of the proposal list. */

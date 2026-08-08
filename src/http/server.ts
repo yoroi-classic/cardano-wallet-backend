@@ -7,7 +7,7 @@ import type { ChainProvider } from '../providers/provider.js'
 import type { NftcdnSigner } from '../media/nftcdn.js'
 import type { PriceProvider } from '../prices/index.js'
 import type { RemoteConfig } from '../remote-config/index.js'
-import { serializeRequest } from './logging.js'
+import { scrubMessage, serializeRequest } from './logging.js'
 import { routeRegistrars, type RouteDeps } from './routes/index.js'
 
 export interface RateLimitOptions {
@@ -115,8 +115,13 @@ export async function buildServer(opts: BuildServerOptions): Promise<FastifyInst
   }
 
   app.setErrorHandler((error, request, reply) => {
+    // Our own errors name the upstream path that failed, and some upstream paths have to carry a
+    // wallet identifier (see scrubMessage). The endpoint is the useful part of the message and it
+    // survives; the identifier does not need to travel back out in a body.
     if (isAppError(error)) {
-      reply.code(error.statusCode).send({ error: { code: error.code, message: error.message } })
+      reply
+        .code(error.statusCode)
+        .send({ error: { code: error.code, message: scrubMessage(error.message) } })
       return
     }
 
@@ -129,7 +134,7 @@ export async function buildServer(opts: BuildServerOptions): Promise<FastifyInst
       reply.code(statusCode).send({
         error: {
           code: statusCode === 429 ? 'RATE_LIMITED' : 'BAD_REQUEST',
-          message: message ?? 'bad request',
+          message: message === undefined ? 'bad request' : scrubMessage(message),
         },
       })
       return

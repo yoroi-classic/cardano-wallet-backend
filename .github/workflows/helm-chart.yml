@@ -7,12 +7,14 @@ on:
       - 'charts/**'
       - '.github/workflows/helm-chart.yml'
       - 'scripts/check-helm-concurrency.mjs'
+      - 'scripts/test-helm-blockfrost.sh'
   pull_request:
     branches: [development, preview, preprod, main]
     paths:
       - 'charts/**'
       - '.github/workflows/helm-chart.yml'
       - 'scripts/check-helm-concurrency.mjs'
+      - 'scripts/test-helm-blockfrost.sh'
 
 permissions:
   contents: read
@@ -26,7 +28,7 @@ jobs:
       cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: Check validation concurrency policy
@@ -43,6 +45,22 @@ jobs:
 
       - name: Lint chart
         run: helm lint charts/cardano-wallet-backend
+
+      - name: Test Blockfrost chart wiring
+        env:
+          TRUSTED_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            if git cat-file -e "$TRUSTED_BASE_SHA:scripts/test-helm-blockfrost.sh" 2>/dev/null; then
+              git show "$TRUSTED_BASE_SHA:scripts/test-helm-blockfrost.sh" \
+                > "$RUNNER_TEMP/test-helm-blockfrost.sh"
+              bash "$RUNNER_TEMP/test-helm-blockfrost.sh"
+            else
+              scripts/test-helm-blockfrost.sh
+            fi
+          else
+            scripts/test-helm-blockfrost.sh
+          fi
 
       - name: Package chart
         run: helm package charts/cardano-wallet-backend --destination "${RUNNER_TEMP}"
@@ -66,6 +84,13 @@ jobs:
       - name: Validate secret-backed chart
         run: |
           helm template cardano-wallet-backend charts/cardano-wallet-backend \
+            --set secrets.existingSecret=cardano-wallet-backend-secrets \
+          | kubectl apply --dry-run=server -f -
+
+      - name: Validate Blockfrost chart
+        run: |
+          helm template cardano-wallet-backend charts/cardano-wallet-backend \
+            --set config.provider=blockfrost \
             --set secrets.existingSecret=cardano-wallet-backend-secrets \
           | kubectl apply --dry-run=server -f -
 
@@ -99,7 +124,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: Set up Helm

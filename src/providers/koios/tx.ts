@@ -1,6 +1,11 @@
 import { z } from 'zod'
 import { BadRequestError, MalformedUpstreamError } from '../../domain/errors.js'
-import type { ResolvedUtxo, TxStatus } from '../../domain/types/transactions.js'
+import {
+  confirmedTxStatus,
+  unknownTxStatus,
+  type ResolvedUtxo,
+  type TxStatus,
+} from '../../domain/types/transactions.js'
 import type { TxCapability } from '../capabilities/tx.js'
 import type { KoiosClient } from './client.js'
 import { assetItem, mapAssets, numeric } from './schema.js'
@@ -8,7 +13,7 @@ import { assetItem, mapAssets, numeric } from './schema.js'
 const txStatusRow = z.object({
   tx_hash: z.string(),
   // A confirmation count is a number of blocks on top: a whole, non-negative one.
-  num_confirmations: z.number().int().nonnegative().nullish(),
+  num_confirmations: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullish(),
 })
 
 const txHashRow = z.string().regex(/^[0-9a-fA-F]{64}$/)
@@ -48,19 +53,26 @@ export function createTxMethods(koios: KoiosClient): TxCapability {
     },
 
     async getTxStatus(hash: string): Promise<TxStatus> {
-      const rows = await koios.batch(z.array(txStatusRow), '/tx_status', { _tx_hashes: [hash] })
+      const normalizedHash = hash.toLowerCase()
+      const rows = await koios.batch(z.array(txStatusRow), '/tx_status', {
+        _tx_hashes: [normalizedHash],
+      })
 
       // Match the row to the hash we asked about rather than trusting rows[0]. A
       // mismatched response would otherwise report another transaction's confirmations as
       // this one's, which for a wallet means telling someone a payment landed when it did
-      // not. No rows at all is legitimate: the transaction isn't on chain yet.
-      const row = rows.find((r) => r.tx_hash === hash)
+      // not. Hex case does not change transaction identity, so compare canonical spellings even
+      // if a non-canonical upstream instance echoes uppercase. No rows at all is legitimate: the
+      // transaction isn't on chain yet.
+      const row = rows.find((r) => r.tx_hash.toLowerCase() === normalizedHash)
       if (rows.length > 0 && row === undefined) {
         throw new MalformedUpstreamError('koios returned tx_status rows for a different tx')
       }
 
       const confirmations = row?.num_confirmations ?? null
-      return { seen: confirmations !== null, confirmations: confirmations ?? 0 }
+      // Koios indexes only on-chain transactions. A null is neither a mempool answer nor proof
+      // of rejection/expiry, so it must remain unknown and keep the caller's overlay intact.
+      return confirmations === null ? unknownTxStatus() : confirmedTxStatus(confirmations)
     },
 
     async getUtxosByRef(refs: string[]): Promise<ResolvedUtxo[]> {

@@ -575,10 +575,19 @@ export const openapi = {
       get: {
         tags: ['tx'],
         operationId: 'getTxStatus',
-        summary: 'Whether a transaction is on chain, and how deep',
+        summary: 'Provider-neutral transaction lifecycle',
         description:
-          '`seen: false` means it is not on chain: still pending, or it never landed. The two are ' +
-          'not distinguishable from here, which is why a client keeps its own pending overlay.\n\n' +
+          '`pending` is a positive mempool observation. `unknown` means the provider cannot ' +
+          'distinguish propagation, eviction, rejection, or expiry; absence is never treated as ' +
+          'terminal evidence. Clients **must retain their pending overlay** for both states. ' +
+          '`confirmed` tells a client to refresh authoritative UTxOs and reconcile the overlay. ' +
+          'Only `rejected` or `expired`, each with a stable sanitized terminal code, permits a ' +
+          'rollback.\n\n' +
+          'Provider limits: Koios exposes only on-chain confirmation depth, so an unconfirmed ' +
+          'hash is `unknown`. Hosted Blockfrost can positively report transactions submitted ' +
+          'through its own mempool as `pending`; a mempool miss is still `unknown`. Neither ' +
+          'provider currently exposes durable proof of rejection or enough signed validity data ' +
+          'after mempool eviction to prove expiry, so neither invents those terminal states.\n\n' +
           'Never cached.',
         parameters: [
           {
@@ -659,7 +668,10 @@ export const openapi = {
           'transaction the node rejects and the user sees an unexplained failure. A dApp connector ' +
           "resolving a transaction's inputs needs to see them whether or not they survive.\n\n" +
           'References that are not on chain are simply absent from the result, so it can be ' +
-          'shorter than the request. Order follows the input. Never cached.',
+          'shorter than the request. A reference whose spent state the configured provider cannot ' +
+          'establish is absent for the same reason: on this endpoint a wrong `spent: false` is ' +
+          'acted on, so no answer is safer than a confident wrong one. Order follows the input. ' +
+          'Never cached.',
         requestBody: jsonBody({
           type: 'object',
           required: ['refs'],
@@ -668,8 +680,10 @@ export const openapi = {
               type: 'array',
               items: {
                 type: 'string',
-                pattern: '^[0-9a-fA-F]{64}#\\d{1,5}$',
-                description: 'An output reference: `<txHash>#<outputIndex>`.',
+                pattern:
+                  '^[0-9a-fA-F]{64}#(?:[0-9]{1,4}|0[0-9]{4}|[12][0-9]{4}|3[01][0-9]{3}|32[0-6][0-9]{2}|327[0-5][0-9]|3276[0-7])$',
+                description:
+                  'An output reference: `<txHash>#<outputIndex>`, where outputIndex is 0..32767 (leading zeros are accepted).',
               },
               minItems: 1,
               maxItems: 100,
@@ -960,7 +974,11 @@ export const openapi = {
         in: 'path',
         required: true,
         schema: { type: 'string', pattern: '^stake(_test)?1[0-9a-z]+$' },
-        description: 'Bech32 stake address. Identifies the whole wallet.',
+        description:
+          'Bech32 Shelley reward address identifying the whole wallet. The address network must ' +
+          'match the deployment: mainnet addresses use network id 1 and testnet addresses use ' +
+          'network id 0. Preprod and preview both use network id 0 and cannot be distinguished ' +
+          'from the address; use /v1/status to identify the configured deployment.',
       },
     },
 
@@ -1264,8 +1282,8 @@ export const openapi = {
           policyId: HEX(28, 'Minting policy id'),
           assetName: {
             type: 'string',
-            pattern: '^[0-9a-fA-F]{0,64}$',
-            description: 'Hex. May be empty.',
+            pattern: '^(?:[0-9a-fA-F]{2}){0,32}$',
+            description: 'Hex byte string. May be empty.',
           },
           quantity: { type: 'string', pattern: '^\\d+$', description: 'Parse with BigInt.' },
         },
@@ -1367,16 +1385,103 @@ export const openapi = {
       },
 
       TxStatus: {
-        type: 'object',
-        required: ['seen', 'confirmations'],
-        properties: {
-          seen: { type: 'boolean', description: 'Whether the transaction is on chain at all.' },
-          confirmations: {
-            type: 'integer',
-            minimum: 0,
-            description: 'Blocks on top. 0 when unseen.',
+        description:
+          'Transaction lifecycle plus the safe action for a wallet pending-UTxO overlay. `seen` ' +
+          'and `confirmations` remain for backwards compatibility.',
+        oneOf: [
+          {
+            type: 'object',
+            additionalProperties: false,
+            required: ['status', 'seen', 'confirmations', 'overlayAction'],
+            properties: {
+              status: { type: 'string', enum: ['unknown', 'pending'] },
+              seen: { type: 'boolean', const: false },
+              confirmations: { type: 'integer', const: 0 },
+              overlayAction: {
+                type: 'string',
+                const: 'retain',
+                description: 'Keep spent inputs hidden and pending change available.',
+              },
+            },
           },
-        },
+          {
+            type: 'object',
+            additionalProperties: false,
+            required: ['status', 'seen', 'confirmations', 'overlayAction'],
+            properties: {
+              status: { type: 'string', const: 'confirmed' },
+              seen: { type: 'boolean', const: true },
+              confirmations: {
+                type: 'integer',
+                minimum: 0,
+                maximum: Number.MAX_SAFE_INTEGER,
+                description: 'Blocks on top; zero when included in the current tip block.',
+              },
+              overlayAction: {
+                type: 'string',
+                const: 'reconcile',
+                description:
+                  'Refresh authoritative current-state UTxOs, then remove the incorporated overlay.',
+              },
+            },
+          },
+          {
+            type: 'object',
+            additionalProperties: false,
+            required: ['status', 'seen', 'confirmations', 'overlayAction', 'terminal'],
+            properties: {
+              status: { type: 'string', const: 'rejected' },
+              seen: { type: 'boolean', const: false },
+              confirmations: { type: 'integer', const: 0 },
+              overlayAction: {
+                type: 'string',
+                const: 'rollback',
+                description: 'Discard the overlay and refresh authoritative current-state UTxOs.',
+              },
+              terminal: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['code', 'reason'],
+                properties: {
+                  code: { type: 'string', const: 'TX_REJECTED' },
+                  reason: {
+                    type: 'string',
+                    const: 'The transaction was definitively rejected.',
+                    description: 'Stable sanitized text, never a raw provider response.',
+                  },
+                },
+              },
+            },
+          },
+          {
+            type: 'object',
+            additionalProperties: false,
+            required: ['status', 'seen', 'confirmations', 'overlayAction', 'terminal'],
+            properties: {
+              status: { type: 'string', const: 'expired' },
+              seen: { type: 'boolean', const: false },
+              confirmations: { type: 'integer', const: 0 },
+              overlayAction: {
+                type: 'string',
+                const: 'rollback',
+                description: 'Discard the overlay and refresh authoritative current-state UTxOs.',
+              },
+              terminal: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['code', 'reason'],
+                properties: {
+                  code: { type: 'string', const: 'TX_EXPIRED' },
+                  reason: {
+                    type: 'string',
+                    const: 'The transaction validity interval expired before confirmation.',
+                    description: 'Stable sanitized text, never a raw provider response.',
+                  },
+                },
+              },
+            },
+          },
+        ],
       },
 
       TokenMetadata: {
@@ -1387,8 +1492,8 @@ export const openapi = {
           policyId: HEX(28, 'Minting policy id'),
           assetName: {
             type: 'string',
-            pattern: '^[0-9a-fA-F]{0,64}$',
-            description: 'Hex. May be empty.',
+            pattern: '^(?:[0-9a-fA-F]{2}){0,32}$',
+            description: 'Hex byte string. May be empty.',
           },
           assetNameAscii: {
             type: 'string',
@@ -1508,7 +1613,29 @@ export const openapi = {
               'decides the outcome.** Parse with BigInt.',
           },
           noPower: LOVELACE,
-          abstainPower: LOVELACE,
+          abstainPower: {
+            ...LOVELACE,
+            description:
+              'Total abstain voting power, including explicitly cast abstain power and power assigned to always/passive abstain. It can exceed the abstain vote count.',
+          },
+        },
+      },
+
+      CommitteeVoteTally: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['yes', 'no', 'abstain'],
+        description:
+          'Constitutional committee votes by member count. Each current committee member has ' +
+          'one vote; these votes are not weighted by lovelace.',
+        properties: {
+          yes: { type: 'integer', minimum: 0, description: 'Committee members voting yes.' },
+          no: { type: 'integer', minimum: 0, description: 'Committee members voting no.' },
+          abstain: {
+            type: 'integer',
+            minimum: 0,
+            description: 'Committee members explicitly abstaining.',
+          },
         },
       },
 
@@ -1573,9 +1700,21 @@ export const openapi = {
               'unknown, which is not the same as false.** Check it before showing `title` or ' +
               '`abstract`: those are attacker-supplied text a user reads right before voting.',
           },
-          drepVotes: { $ref: '#/components/schemas/VoteTally' },
-          poolVotes: { $ref: '#/components/schemas/VoteTally' },
-          committeeVotes: { $ref: '#/components/schemas/VoteTally' },
+          drepVotes: {
+            $ref: '#/components/schemas/VoteTally',
+            description: 'DRep votes by count and voting power.',
+          },
+          poolVotes: {
+            $ref: '#/components/schemas/VoteTally',
+            description:
+              'Stake-pool votes. Absent for `TreasuryWithdrawals` and `NewConstitution`, where pools have no vote, or when the tally is unavailable.',
+          },
+          committeeVotes: {
+            $ref: '#/components/schemas/CommitteeVoteTally',
+            description:
+              'Committee votes by member count. Absent for `NewCommittee` and `NoConfidence`, ' +
+              'where the constitutional committee has no vote, or when the tally is unavailable.',
+          },
         },
       },
 

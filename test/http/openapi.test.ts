@@ -75,7 +75,9 @@ describe('OpenAPI schema format setup', () => {
 
 // Well-formed bech32, so the routes' own validation passes and the responses under test are the
 // real ones rather than a 400.
-const STAKE = bech32.encode('stake_test', bech32.toWords(new Uint8Array(29)), 1023)
+const STAKE_BYTES = new Uint8Array(29)
+STAKE_BYTES[0] = 0xe0
+const STAKE = bech32.encode('stake_test', bech32.toWords(STAKE_BYTES), 1023)
 const ADDR = (fill: number): string => {
   const bytes = new Uint8Array(57).fill(fill)
   bytes[0] = 0 // Base key-key address on a test network.
@@ -159,7 +161,10 @@ describe('real responses validate against the schemas the spec publishes', () =>
     url: string,
     payload?: object,
   ): Promise<{ statusCode: number; body: unknown }> {
-    const app = await buildServer({ provider: fakeProvider(provider) })
+    const app = await buildServer({
+      provider: fakeProvider(provider),
+      info: { version: 'test', network: 'preprod', provider: 'fake' },
+    })
     const res = await app.inject({ method, url, ...(payload === undefined ? {} : { payload }) })
     await app.close()
     return { statusCode: res.statusCode, body: res.json() }

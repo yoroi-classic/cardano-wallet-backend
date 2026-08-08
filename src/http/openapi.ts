@@ -974,7 +974,11 @@ export const openapi = {
         in: 'path',
         required: true,
         schema: { type: 'string', pattern: '^stake(_test)?1[0-9a-z]+$' },
-        description: 'Bech32 stake address. Identifies the whole wallet.',
+        description:
+          'Bech32 Shelley reward address identifying the whole wallet. The address network must ' +
+          'match the deployment: mainnet addresses use network id 1 and testnet addresses use ' +
+          'network id 0. Preprod and preview both use network id 0 and cannot be distinguished ' +
+          'from the address; use /v1/status to identify the configured deployment.',
       },
     },
 

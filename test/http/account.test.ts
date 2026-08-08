@@ -8,8 +8,15 @@ import type { Utxo, WalletTransaction } from '../../src/domain/types/transaction
 import { ProviderError } from '../../src/domain/errors.js'
 import { fakeProvider } from '../support/fake-provider.js'
 
-// A well-formed (valid checksum) preprod stake address for the happy path.
-const STAKE = bech32.encode('stake_test', bech32.toWords(new Uint8Array(29)), 1023)
+const stakeAddress = (prefix: 'stake' | 'stake_test', header: number, length = 29) => {
+  const bytes = new Uint8Array(length)
+  bytes[0] = header
+  return bech32.encode(prefix, bech32.toWords(bytes), 1023)
+}
+
+// A reward key-hash address on preprod: type 14 and network id 0.
+const STAKE = stakeAddress('stake_test', 0xe0)
+const TEST_INFO = { version: 'test', network: 'preprod', provider: 'fake' }
 
 const STATE: AccountState = {
   stakeAddress: STAKE,
@@ -40,7 +47,7 @@ afterEach(async () => {
 
 describe('account routes', () => {
   it('GET /v1/account/:stake/state returns account state', async () => {
-    app = await buildServer({ provider: providerWith({}) })
+    app = await buildServer({ provider: providerWith({}), info: TEST_INFO })
     const res = await app.inject({ method: 'GET', url: `/v1/account/${STAKE}/state` })
 
     expect(res.statusCode).toBe(200)
@@ -48,7 +55,7 @@ describe('account routes', () => {
   })
 
   it('GET /v1/account/:stake/utxos returns utxos', async () => {
-    app = await buildServer({ provider: providerWith({}) })
+    app = await buildServer({ provider: providerWith({}), info: TEST_INFO })
     const res = await app.inject({ method: 'GET', url: `/v1/account/${STAKE}/utxos` })
 
     expect(res.statusCode).toBe(200)
@@ -64,6 +71,7 @@ describe('account routes', () => {
           return structuredClone(STATE)
         },
       }),
+      info: TEST_INFO,
     })
     const res = await app.inject({ method: 'GET', url: '/v1/account/not-a-stake/state' })
 
@@ -73,12 +81,110 @@ describe('account routes', () => {
   })
 
   it('rejects a stake address with a bad checksum', async () => {
-    app = await buildServer({ provider: providerWith({}) })
+    app = await buildServer({ provider: providerWith({}), info: TEST_INFO })
     // Flip the last character to break the bech32 checksum.
     const broken = STAKE.slice(0, -1) + (STAKE.endsWith('q') ? 'p' : 'q')
     const res = await app.inject({ method: 'GET', url: `/v1/account/${broken}/state` })
 
     expect(res.statusCode).toBe(400)
+  })
+
+  it.each([
+    ['a payment-address header', 'preprod', stakeAddress('stake_test', 0x00)],
+    ['a 28-byte payload', 'preprod', stakeAddress('stake_test', 0xe0, 28)],
+    ['a 30-byte payload', 'preprod', stakeAddress('stake_test', 0xe0, 30)],
+    [
+      'invalid 5-bit padding',
+      'preprod',
+      bech32.encode(
+        'stake_test',
+        [...bech32.toWords(new Uint8Array([0xe0, ...new Uint8Array(28)])), 31],
+        1023,
+      ),
+    ],
+    [
+      'a non-stake HRP',
+      'preprod',
+      bech32.encode(
+        'addr_test',
+        bech32.toWords(new Uint8Array([0xe0, ...new Uint8Array(28)])),
+        1023,
+      ),
+    ],
+    ['a mainnet HRP with a testnet header', 'preprod', stakeAddress('stake', 0xe0)],
+    ['a testnet HRP with a mainnet header', 'preprod', stakeAddress('stake_test', 0xe1)],
+    ['a mainnet address on preprod', 'preprod', stakeAddress('stake', 0xe1)],
+    ['a testnet address on mainnet', 'mainnet', stakeAddress('stake_test', 0xe0)],
+    ['a testnet address on an unknown network', 'staging', stakeAddress('stake_test', 0xe0)],
+  ])(
+    'rejects %s on every account route without an upstream call',
+    async (_case, network, invalid) => {
+      const calls: string[] = []
+      app = await buildServer({
+        provider: providerWith({
+          getAccountState: async () => {
+            calls.push('state')
+            return structuredClone(STATE)
+          },
+          getAccountUtxos: async () => {
+            calls.push('utxos')
+            return []
+          },
+          getTxHistory: async () => {
+            calls.push('txs')
+            return []
+          },
+          getRewardHistory: async () => {
+            calls.push('rewards')
+            return []
+          },
+        }),
+        info: { version: 'test', network, provider: 'fake' },
+      })
+
+      for (const suffix of ['state', 'utxos', 'txs', 'rewards']) {
+        const res = await app.inject({ method: 'GET', url: `/v1/account/${invalid}/${suffix}` })
+        expect(res.statusCode).toBe(400)
+        expect(res.json()).toEqual({
+          error: { code: 'BAD_REQUEST', message: 'invalid stake address' },
+        })
+      }
+      expect(calls).toEqual([])
+    },
+  )
+
+  it.each([
+    ['a testnet reward key address on preprod', 'preprod', stakeAddress('stake_test', 0xe0)],
+    ['a testnet reward script address on preview', 'preview', stakeAddress('stake_test', 0xf0)],
+    ['a mainnet reward key address', 'mainnet', stakeAddress('stake', 0xe1)],
+    ['a mainnet reward script address', 'mainnet', stakeAddress('stake', 0xf1)],
+  ])('accepts %s on the configured network', async (_case, network, stake) => {
+    const seen: string[] = []
+    app = await buildServer({
+      provider: providerWith({
+        getAccountState: async (value) => {
+          seen.push(value)
+          return { ...structuredClone(STATE), stakeAddress: value }
+        },
+      }),
+      info: { version: 'test', network, provider: 'fake' },
+    })
+
+    const res = await app.inject({ method: 'GET', url: `/v1/account/${stake}/state` })
+
+    expect(res.statusCode).toBe(200)
+    expect(seen).toEqual([stake])
+  })
+
+  it('uses the shared testnet network id for both preprod and preview', async () => {
+    const stake = stakeAddress('stake_test', 0xe0)
+
+    for (const network of ['preprod', 'preview']) {
+      app = await buildServer({ provider: providerWith({}), info: { ...TEST_INFO, network } })
+      const res = await app.inject({ method: 'GET', url: `/v1/account/${stake}/state` })
+      expect(res.statusCode).toBe(200)
+      await app.close()
+    }
   })
 
   it('maps a provider error to 502', async () => {
@@ -88,6 +194,7 @@ describe('account routes', () => {
           throw new ProviderError('koios down', { upstreamStatus: 503 })
         },
       }),
+      info: TEST_INFO,
     })
     const res = await app.inject({ method: 'GET', url: `/v1/account/${STAKE}/utxos` })
 
@@ -111,7 +218,10 @@ describe('account routes', () => {
         certificates: [],
       },
     ]
-    app = await buildServer({ provider: providerWith({ getTxHistory: async () => TXS }) })
+    app = await buildServer({
+      provider: providerWith({ getTxHistory: async () => TXS }),
+      info: TEST_INFO,
+    })
     const res = await app.inject({ method: 'GET', url: `/v1/account/${STAKE}/txs` })
 
     expect(res.statusCode).toBe(200)
@@ -119,7 +229,7 @@ describe('account routes', () => {
   })
 
   it('rejects a non-numeric or empty after with 400', async () => {
-    app = await buildServer({ provider: providerWith({}) })
+    app = await buildServer({ provider: providerWith({}), info: TEST_INFO })
 
     const nonNumeric = await app.inject({
       method: 'GET',

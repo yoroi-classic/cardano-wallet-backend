@@ -94,6 +94,16 @@ interface RequestInit {
   body?: string | Uint8Array
   contentType?: string
   headers?: Record<string, string>
+  /**
+   * The path to name in errors when it must differ from the path actually fetched.
+   *
+   * Keyset paging puts the cursor in the query string, and that cursor is one of the caller's own
+   * transaction output references. Every message below is read twice in public: once as the body of
+   * the 502 the http layer builds from it, and once as the retry warn line, which is written at the
+   * shipped default `LOG_LEVEL=info`. `scrubPath` in http/logging.ts only redacts path segments, so
+   * it cannot help with a query string. Fetch the real path, name this one.
+   */
+  displayPath?: string
 }
 
 const DEFAULT_READ_ATTEMPTS = 3
@@ -373,6 +383,7 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
     init: RequestInit = {},
   ): Promise<ResponseWithMetadata> {
     const url = `${baseUrl}${path}`
+    const named = init.displayPath ?? path
     const headers: Record<string, string> = { accept: 'application/json', ...init.headers }
     if (config.token) headers.authorization = `Bearer ${config.token}`
     if (init.contentType) headers['content-type'] = init.contentType
@@ -388,14 +399,14 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
       })
     } catch (cause) {
       if (cause instanceof Error && cause.name === 'TimeoutError') {
-        throw new ProviderTimeoutError(`koios request timed out: ${path}`, cause)
+        throw new ProviderTimeoutError(`koios request timed out: ${named}`, cause)
       }
-      throw new ProviderError(`koios request failed: ${path}`, { cause })
+      throw new ProviderError(`koios request failed: ${named}`, { cause })
     }
 
     if (!res.ok) {
       const body = await res.text().catch(() => '')
-      throw new ProviderError(`koios returned ${res.status} for ${path}`, {
+      throw new ProviderError(`koios returned ${res.status} for ${named}`, {
         upstreamStatus: res.status,
         cause: body.slice(0, 500),
       })
@@ -409,9 +420,9 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
       }
     } catch (cause) {
       if (cause instanceof Error && cause.name === 'TimeoutError') {
-        throw new ProviderTimeoutError(`koios response timed out: ${path}`, cause)
+        throw new ProviderTimeoutError(`koios response timed out: ${named}`, cause)
       }
-      throw new MalformedUpstreamError(`koios returned invalid json for ${path}`, cause)
+      throw new MalformedUpstreamError(`koios returned invalid json for ${named}`, cause)
     }
   }
 
@@ -566,6 +577,8 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
         headers: {
           prefer: 'count=exact',
         },
+        // The cursor rides in pagePath. Errors and the retry log name the base path instead.
+        displayPath: path,
       })
       const page = parse(z.array(rowSchema), response.data, path)
       pageCount += 1

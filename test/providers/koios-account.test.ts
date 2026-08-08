@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
-import { createKoiosProvider, type FetchLike } from '../../src/providers/koios/index.js'
+import {
+  createKoiosProvider,
+  type FetchLike,
+  type RetryEvent,
+} from '../../src/providers/koios/index.js'
 import { createKoiosClient } from '../../src/providers/koios/client.js'
 import { KOIOS_BODY_LIMIT_BYTES } from '../../src/providers/koios/schema.js'
 import { BadRequestError, MalformedUpstreamError, ProviderError } from '../../src/domain/errors.js'
@@ -562,6 +566,65 @@ describe('koios getAccountUtxos', () => {
     await expect(provider.getAccountUtxos(STAKE)).rejects.toThrow(
       'koios paged result exceeds 100000 rows',
     )
+  })
+
+  // The cursor is one of the caller's own output references, and a failed page reports the path it
+  // fetched. Without a separate display path it leaves the process twice: in the 502 body the http
+  // layer builds from this message, and in the retry warn line at the default LOG_LEVEL.
+  const CURSOR_HASH = 'c'.repeat(64)
+
+  function failingCursorPageFetch(): FetchLike {
+    return async (url) => {
+      if (new URL(url).searchParams.get('or') === null) {
+        return {
+          ok: true,
+          status: 206,
+          headers: { get: (name) => (name === 'content-range' ? '0-0/2' : null) },
+          json: async () => [{ ...ROW, tx_hash: CURSOR_HASH }],
+          text: async () => '',
+        }
+      }
+      return {
+        ok: false,
+        status: 502,
+        headers: { get: () => null },
+        json: async () => ({}),
+        text: async () => 'upstream unavailable',
+      }
+    }
+  }
+
+  it('keeps the keyset cursor out of the error a failed page raises', async () => {
+    const provider = createKoiosProvider({
+      baseUrl: BASE,
+      fetchImpl: failingCursorPageFetch(),
+      readAttempts: 1,
+    })
+
+    const error = await provider.getAccountUtxos(STAKE).catch((err: unknown) => err)
+
+    expect(error).toBeInstanceOf(ProviderError)
+    expect((error as Error).message).toBe(
+      'koios returned 502 for /account_utxos?order=tx_hash.asc,tx_index.asc',
+    )
+    expect((error as Error).message).not.toContain(CURSOR_HASH)
+  })
+
+  it('keeps the keyset cursor out of the retry log', async () => {
+    const retries: RetryEvent[] = []
+    const provider = createKoiosProvider({
+      baseUrl: BASE,
+      fetchImpl: failingCursorPageFetch(),
+      readAttempts: 2,
+      retryBackoffMs: 0,
+      onRetry: (event) => retries.push(event),
+    })
+
+    await expect(provider.getAccountUtxos(STAKE)).rejects.toBeInstanceOf(ProviderError)
+
+    expect(retries).toHaveLength(1)
+    expect(retries[0]!.path).toBe('/account_utxos?order=tx_hash.asc,tx_index.asc')
+    expect(retries[0]!.message).not.toContain(CURSOR_HASH)
   })
 })
 

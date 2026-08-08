@@ -54,6 +54,8 @@ spec:
               value: {{ .Values.config.cacheEnabled | quote }}
             - name: CORS_ORIGINS
               value: {{ .Values.config.corsOrigins | quote }}
+            - name: TRUST_PROXY
+              value: {{ .Values.config.trustProxy | quote }}
             - name: RATE_LIMIT_MAX
               value: {{ .Values.config.rateLimitMax | quote }}
             - name: RATE_LIMIT_WINDOW_MS

@@ -34,8 +34,8 @@ const accountUtxoRow = z.object({
 
 type AccountUtxoRow = z.infer<typeof accountUtxoRow>
 
-function mapUtxo(row: AccountUtxoRow): Utxo {
-  const { value, assets } = splitAmount(row.amount)
+function mapUtxo(row: AccountUtxoRow, seenUnits: Map<string, string>): Utxo {
+  const { value, assets } = splitAmount(row.amount, seenUnits)
   return {
     txHash: row.tx_hash,
     outputIndex: row.output_index,
@@ -217,7 +217,10 @@ export function createAccountMethods(client: BlockfrostClient): AccountCapabilit
     async getAccountUtxos(stakeAddress: string): Promise<Utxo[]> {
       const path = `/accounts/${encodeURIComponent(stakeAddress)}/utxos`
       let previous = await scanAccountUtxos(client, path)
-      if (!previous.needsVerification && !previous.hasDuplicate) return previous.rows.map(mapUtxo)
+      const seenUnits = new Map<string, string>()
+      if (!previous.needsVerification && !previous.hasDuplicate) {
+        return previous.rows.map((row) => mapUtxo(row, seenUnits))
+      }
 
       for (let scan = 2; scan <= UTXO_CONSISTENCY_SCANS; scan += 1) {
         const current = await scanAccountUtxos(client, path)
@@ -226,7 +229,7 @@ export function createAccountMethods(client: BlockfrostClient): AccountCapabilit
           !current.hasDuplicate &&
           sameKeys(previous.keys, current.keys)
         ) {
-          return current.rows.map(mapUtxo)
+          return current.rows.map((row) => mapUtxo(row, seenUnits))
         }
         previous = current
       }

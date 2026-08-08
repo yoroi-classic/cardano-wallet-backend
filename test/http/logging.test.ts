@@ -68,6 +68,11 @@ describe('scrubPath', () => {
 
 describe('scrubMessage', () => {
   const ADDRESS = 'addr_test1qqehkck0lajq8gr28t9uxnuvgcqrc6ry3f4muzpp6v0k7lqjqfr4cmv7lx'
+  // Byron addresses are base58, so nothing that recognizes bech32 or hex sees them, and the
+  // address routes still accept them. Both eras, since the shapes differ.
+  const BYRON_ICARUS = 'Ae2tdPwUPEZFRbyhz3cpfC2CumGzNkFBN2L42rcUc2yjQpEkxDbkPodpMAi'
+  const BYRON_DAEDALUS =
+    'DdzFFzCqrht9W56zJGEFvHHywdeXZiGVYGqVhoZj6SRrS9o2HNLmorEzZhKm7khqfBKvCaTKGLtTnQSToxuvdzJTkQqcAf6f2ErxbSKS'
 
   it('redacts the stake key Koios requires in the query string, keeping the endpoint', () => {
     expect(scrubMessage(`koios returned 502 for /account_txs?_stake_address=${STAKE}`)).toBe(
@@ -79,10 +84,12 @@ describe('scrubMessage', () => {
     ['a testnet stake key', `koios request failed: /account_txs?_stake_address=${STAKE_TEST}`],
     ['a payment address', `blockfrost returned 502 for /addresses/${ADDRESS}/utxos`],
     ['a transaction hash', `koios returned invalid json for /tx_info?_tx_hash=${TX_HASH}`],
+    ['an Icarus Byron address', `blockfrost returned 502 for /addresses/${BYRON_ICARUS}/utxos`],
+    ['a Daedalus Byron address', `blockfrost request failed: /addresses/${BYRON_DAEDALUS}`],
   ])('redacts %s', (_case, message) => {
     const scrubbed = scrubMessage(message)
     expect(scrubbed).toContain('[redacted]')
-    for (const identifier of [STAKE_TEST, ADDRESS, TX_HASH]) {
+    for (const identifier of [STAKE_TEST, ADDRESS, TX_HASH, BYRON_ICARUS, BYRON_DAEDALUS]) {
       expect(scrubbed).not.toContain(identifier)
     }
   })
@@ -100,6 +107,9 @@ describe('scrubMessage', () => {
       'koios paged result exceeds 100000 rows for /pool_list',
       'koios returned 502 for /pool_info?_pool_bech32=pool1pu5jlj4q9w9jlxeu370a3c9myx47md5j5m2str0naunn2q3lkdy',
       'koios returned 502 for /drep_info?_drep_id=drep1y2v6qsjqzq8xkqz8k5vqz9k2v6qsjqzq8xkqz8k5vqz9kqk8h9x',
+      // Long, but broken by ordinary punctuation and spacing, so the base58 rule cannot span it.
+      'koios returned a duplicate row across pages for /account_utxos?order=tx_hash.asc,tx_index.asc',
+      'koios request timed out: /credential_txs after 3 attempts against a slow upstream instance',
     ]) {
       expect(scrubMessage(message)).toBe(message)
     }

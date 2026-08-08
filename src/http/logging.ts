@@ -25,6 +25,8 @@
  * this is more than it is.
  */
 
+import { isByronAddress } from '../domain/byron-address.js'
+
 const REDACTED = '[redacted]'
 const MAX_DECODE_PASSES = 3
 
@@ -86,6 +88,20 @@ const WALLET_BECH32 = /\b(?:stake|addr)(?:_test)?1[0-9a-z]{20,}/gi
 const HASH_HEX = /\b[0-9a-f]{64}\b/gi
 
 /**
+ * Candidate Byron addresses: base58 runs long enough to be one.
+ *
+ * Byron addresses are still live. `isByronAddress` validates them and the address routes accept
+ * them, so a `cardano-bip44` wallet's reads reach Blockfrost as `/addresses/{base58}/utxos` and
+ * fail with the address in the message like any other. Being base58, they match neither pattern
+ * above.
+ *
+ * This only finds candidates. Shape alone is not enough to decide: a DRep id is 57 base58-legal
+ * characters, so a rule that redacted every long run would also redact public register ids that
+ * make a failure diagnosable. Each match is confirmed with the real decoder below.
+ */
+const BYRON_CANDIDATE = /\b[1-9A-HJ-NP-Za-km-z]{40,}\b/g
+
+/**
  * A message with any wallet identifier removed, for the two places an upstream failure is repeated
  * in public: the response body the error handler builds from it, and the retry warn line.
  *
@@ -99,7 +115,12 @@ const HASH_HEX = /\b[0-9a-f]{64}\b/gi
  * `koios returned 502 for /account_txs?_stake_address=[redacted]`.
  */
 export function scrubMessage(message: string): string {
-  return message.replace(WALLET_BECH32, REDACTED).replace(HASH_HEX, REDACTED)
+  // Bech32 first: those addresses can contain `0` and `l`, which base58 does not, so running the
+  // Byron pass first would leave behind the parts of one it could not span.
+  return message
+    .replace(WALLET_BECH32, REDACTED)
+    .replace(HASH_HEX, REDACTED)
+    .replace(BYRON_CANDIDATE, (candidate) => (isByronAddress(candidate) ? REDACTED : candidate))
 }
 
 /**

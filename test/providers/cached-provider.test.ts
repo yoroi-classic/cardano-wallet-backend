@@ -212,6 +212,23 @@ describe('cached provider', () => {
     expect(getProtocolParams).toHaveBeenCalledTimes(3)
   })
 
+  it('does not repopulate protocol params after that namespace is cleared during recovery', async () => {
+    const freshTip = deferred<typeof TIP>()
+    const getTip = vi.fn(() => freshTip.promise)
+    const getProtocolParams = vi.fn().mockResolvedValue({ epoch: 200 } as never)
+    const cache = createMemoryCache()
+    cache.set(TIP_CACHE_KEY, { ...TIP, epoch: 199 }, 60_000)
+    const provider = withCache(fakeProvider({ getTip, getProtocolParams }), cache)
+
+    const recovering = provider.getProtocolParams()
+    await vi.waitFor(() => expect(getTip).toHaveBeenCalledTimes(1))
+    cache.clear('chain:protocol-params:')
+    freshTip.resolve({ ...TIP, epoch: 200 })
+
+    await expect(recovering).resolves.toEqual({ epoch: 200 })
+    expect(cache.peek('chain:protocol-params:200')).toBeUndefined()
+  })
+
   it('does not cache an upstream failure', async () => {
     const getTip = vi
       .fn<() => Promise<typeof TIP>>()

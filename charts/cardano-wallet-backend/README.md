@@ -30,7 +30,7 @@ image that your cluster can pull:
 ```bash
 helm upgrade --install cardano-wallet-backend \
   oci://ghcr.io/yoroi-classic/charts/cardano-wallet-backend \
-  --version 0.1.1 \
+  --version 0.1.2 \
   --set image.repository=YOUR_IMAGE_REPOSITORY \
   --set image.tag=YOUR_IMAGE_TAG
 ```
@@ -76,6 +76,28 @@ kubectl create secret generic cardano-wallet-backend-secrets \
 helm upgrade --install cardano-wallet-backend charts/cardano-wallet-backend \
   --set secrets.existingSecret=cardano-wallet-backend-secrets
 ```
+
+### Blockfrost provider
+
+Blockfrost requires a project ID. Store it under `BLOCKFROST_PROJECT_ID` in the same
+operator-managed Secret; never put the credential in a values file or a Helm `--set` argument:
+
+```bash
+read -rs BLOCKFROST_PROJECT_ID
+kubectl create secret generic cardano-wallet-backend-secrets \
+  --from-literal=BLOCKFROST_PROJECT_ID="$BLOCKFROST_PROJECT_ID"
+unset BLOCKFROST_PROJECT_ID
+
+helm upgrade --install cardano-wallet-backend charts/cardano-wallet-backend \
+  --set config.provider=blockfrost \
+  --set secrets.existingSecret=cardano-wallet-backend-secrets
+```
+
+The default Secret key is `BLOCKFROST_PROJECT_ID`; change only the key lookup with
+`secrets.blockfrostProjectIdKey`. Selecting Blockfrost without a non-empty
+`secrets.existingSecret` and key fails chart validation. For a compatible proxy or test fixture,
+set the non-secret `config.blockfrostUrl`; when empty, the backend selects the official URL for
+the configured network.
 
 ## Remote config
 

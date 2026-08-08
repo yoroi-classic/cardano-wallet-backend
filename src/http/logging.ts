@@ -26,12 +26,36 @@
  */
 
 const REDACTED = '[redacted]'
+const MAX_DECODE_PASSES = 3
 
 /** A bech32 stake address, mainnet or testnet. Appears as a path segment on the account routes. */
 const STAKE_ADDRESS = /^stake(_test)?1[0-9a-z]+$/i
 
 /** A 32-byte hash as hex: a transaction id, on /v1/tx/{hash}/status. */
 const TX_HASH = /^[0-9a-fA-F]{64}$/
+
+function scrubSegment(segment: string): string {
+  let decoded = segment
+  for (let passes = 0; passes < MAX_DECODE_PASSES; passes += 1) {
+    try {
+      decoded = decodeURIComponent(decoded)
+    } catch {
+      // Invalid escapes must not make the request serializer throw. Redact the whole segment:
+      // retaining malformed input would fail open and could still persist most of an identifier.
+      return REDACTED
+    }
+    if (STAKE_ADDRESS.test(decoded) || TX_HASH.test(decoded)) {
+      return REDACTED
+    }
+    if (!/%[0-9a-fA-F]{2}/.test(decoded)) {
+      return segment
+    }
+  }
+
+  // Do not spend unbounded work decoding attacker-controlled path segments. A deeply nested
+  // encoding is not a valid identifier we need to preserve, so redact it conservatively.
+  return REDACTED
+}
 
 /**
  * The request path with any wallet identifier removed, so the log still says which endpoint was
@@ -43,10 +67,7 @@ const TX_HASH = /^[0-9a-fA-F]{64}$/
  */
 export function scrubPath(url: string): string {
   const [path = '', query] = url.split('?')
-  const scrubbed = path
-    .split('/')
-    .map((segment) => (STAKE_ADDRESS.test(segment) || TX_HASH.test(segment) ? REDACTED : segment))
-    .join('/')
+  const scrubbed = path.split('/').map(scrubSegment).join('/')
   return query === undefined ? scrubbed : `${scrubbed}?${query}`
 }
 

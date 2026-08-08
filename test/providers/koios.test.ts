@@ -337,6 +337,46 @@ describe('koios provider — upstream value integrity', () => {
     expect(state.balance).toBe('7682048683977123456')
   })
 
+  it.each([
+    ['lowercase', 'ab'.repeat(32)],
+    ['uppercase', 'AB'.repeat(32)],
+    ['mixed case', 'aB'.repeat(32)],
+  ])(
+    'canonicalizes a %s status hash before querying and matching',
+    async (_case, requestedHash) => {
+      const canonical = requestedHash.toLowerCase()
+      const bodies: Array<{ _tx_hashes: string[] }> = []
+      const fetchImpl: FetchLike = async (_url, init) => {
+        bodies.push(JSON.parse(String(init?.body)) as { _tx_hashes: string[] })
+        return {
+          ok: true,
+          status: 200,
+          json: async () => [{ tx_hash: canonical, num_confirmations: 0 }],
+          text: async () => '',
+        }
+      }
+      const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+      await expect(provider.getTxStatus(requestedHash)).resolves.toMatchObject({
+        seen: true,
+        confirmations: 0,
+      })
+      expect(bodies).toEqual([{ _tx_hashes: [canonical] }])
+    },
+  )
+
+  it('matches a non-canonical upstream hash without changing transaction identity', async () => {
+    const { fetchImpl } = fakeFetch({
+      json: async () => [{ tx_hash: TX_HASH.toUpperCase(), num_confirmations: 1 }],
+    })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getTxStatus(TX_HASH)).resolves.toMatchObject({
+      seen: true,
+      confirmations: 1,
+    })
+  })
+
   it('does not report another transaction’s confirmations as this one’s', async () => {
     // A mismatched tx_status row must not be read as the requested tx, or a wallet would
     // tell someone a payment landed when it did not.

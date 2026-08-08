@@ -1,11 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createBlockfrostProvider, type FetchLike } from '../../src/providers/blockfrost/index.js'
-import {
-  BadRequestError,
-  MalformedUpstreamError,
-  NotImplementedError,
-  ProviderError,
-} from '../../src/domain/errors.js'
+import { BadRequestError, MalformedUpstreamError, ProviderError } from '../../src/domain/errors.js'
 
 const BASE = 'https://cardano-preprod.blockfrost.io/api/v0'
 const PROJECT_ID = 'preprodTestProjectId'
@@ -70,6 +65,19 @@ describe('blockfrost tx — happy path', () => {
       confirmations: 4698,
       overlayAction: 'reconcile',
     })
+  })
+
+  it('canonicalizes an uppercase hash before building the status path', async () => {
+    const { provider, callsTo } = testProvider({
+      [`/txs/${TX_HASH}`]: [{ block: BLOCK_HASH }],
+      [`/blocks/${BLOCK_HASH}`]: [{ confirmations: 0 }],
+    })
+
+    await expect(provider.getTxStatus(TX_HASH.toUpperCase())).resolves.toMatchObject({
+      seen: true,
+      confirmations: 0,
+    })
+    expect(callsTo(`/txs/${TX_HASH}`)).toBe(1)
   })
 
   it('getTxStatus positively reports a transaction in the hosted mempool as pending', async () => {
@@ -189,13 +197,5 @@ describe('blockfrost tx — unhappy path', () => {
     })
 
     await expect(provider.getTxStatus(TX_HASH)).rejects.toBeInstanceOf(MalformedUpstreamError)
-  })
-
-  it('getUtxosByRef is not implemented yet', async () => {
-    const { provider } = testProvider({})
-
-    await expect(provider.getUtxosByRef([`${TX_HASH}#0`])).rejects.toBeInstanceOf(
-      NotImplementedError,
-    )
   })
 })

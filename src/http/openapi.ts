@@ -668,7 +668,10 @@ export const openapi = {
           'transaction the node rejects and the user sees an unexplained failure. A dApp connector ' +
           "resolving a transaction's inputs needs to see them whether or not they survive.\n\n" +
           'References that are not on chain are simply absent from the result, so it can be ' +
-          'shorter than the request. Order follows the input. Never cached.',
+          'shorter than the request. A reference whose spent state the configured provider cannot ' +
+          'establish is absent for the same reason: on this endpoint a wrong `spent: false` is ' +
+          'acted on, so no answer is safer than a confident wrong one. Order follows the input. ' +
+          'Never cached.',
         requestBody: jsonBody({
           type: 'object',
           required: ['refs'],
@@ -971,7 +974,11 @@ export const openapi = {
         in: 'path',
         required: true,
         schema: { type: 'string', pattern: '^stake(_test)?1[0-9a-z]+$' },
-        description: 'Bech32 stake address. Identifies the whole wallet.',
+        description:
+          'Bech32 Shelley reward address identifying the whole wallet. The address network must ' +
+          'match the deployment: mainnet addresses use network id 1 and testnet addresses use ' +
+          'network id 0. Preprod and preview both use network id 0 and cannot be distinguished ' +
+          'from the address; use /v1/status to identify the configured deployment.',
       },
     },
 

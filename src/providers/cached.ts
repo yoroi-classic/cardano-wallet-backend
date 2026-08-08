@@ -98,6 +98,11 @@ export function withCache(provider: ChainProvider, cache: Cache): ChainProvider 
   const recoverProtocolParams = (): Promise<ProtocolParams> => {
     if (protocolParamsRecovery !== undefined) return protocolParamsRecovery
 
+    const tipGeneration = cache.generation(TIP_CACHE_KEY)
+    // The epoch is not known until the refresh returns. Capture the subtree token so a clear of
+    // either that subtree or the eventual epoch key invalidates the write.
+    const paramsGeneration = cache.generation('chain:protocol-params:')
+
     const attempt = (async (): Promise<ProtocolParams> => {
       const freshTip = await provider.getTip()
       const freshParams = await provider.getProtocolParams()
@@ -110,8 +115,13 @@ export function withCache(provider: ChainProvider, cache: Cache): ChainProvider 
       // Publish and return the pair recovery already verified. Going back through read() here
       // could join an older in-flight read for the refreshed epoch and replace this successful
       // recovery with that read's failure.
-      cache.set(TIP_CACHE_KEY, freshTip, TIP_TTL_MS)
-      cache.set(`chain:protocol-params:${freshTip.epoch}`, freshParams, PROTOCOL_PARAMS_TTL_MS)
+      cache.setIfGeneration(TIP_CACHE_KEY, freshTip, TIP_TTL_MS, tipGeneration)
+      cache.setIfGeneration(
+        `chain:protocol-params:${freshTip.epoch}`,
+        freshParams,
+        PROTOCOL_PARAMS_TTL_MS,
+        paramsGeneration,
+      )
       return freshParams
     })()
 

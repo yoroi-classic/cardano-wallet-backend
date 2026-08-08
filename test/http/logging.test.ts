@@ -8,6 +8,7 @@ import { fakeProvider } from '../support/fake-provider.js'
 const STAKE = 'stake1uyehkck0lajq8gr28t9uxnuvgcqrc6ry3f4muzpp6v0k7lqjqfr4c'
 const STAKE_TEST = 'stake_test1uqehkck0lajq8gr28t9uxnuvgcqrc6ry3f4muzpp6v0k7lqjqfr4c'
 const TX_HASH = 'ab'.repeat(32)
+const MALFORMED_STAKE = ['stake', '%', 'ZZwallet'].join('')
 
 describe('scrubPath', () => {
   it.each([
@@ -29,6 +30,33 @@ describe('scrubPath', () => {
   it('leaves a path carrying no identifier alone', () => {
     expect(scrubPath('/v1/chain/tip')).toBe('/v1/chain/tip')
     expect(scrubPath('/health')).toBe('/health')
+  })
+
+  it.each([
+    [`/v1/account/stake%31${STAKE.slice('stake1'.length)}/utxos`, '/v1/account/[redacted]/utxos'],
+    [
+      `/v1/account/stake_test%31${STAKE_TEST.slice('stake_test1'.length)}/state`,
+      '/v1/account/[redacted]/state',
+    ],
+    [`/v1/tx/%61${TX_HASH.slice(1)}/status`, '/v1/tx/[redacted]/status'],
+    [`/v1/account/stake%2531${STAKE.slice('stake1'.length)}/utxos`, '/v1/account/[redacted]/utxos'],
+    [`/v1/tx/%2561${TX_HASH.slice(1)}/status`, '/v1/tx/[redacted]/status'],
+  ])('redacts an identifier containing percent-encoded characters from %s', (url, expected) => {
+    expect(scrubPath(url)).toBe(expected)
+  })
+
+  it('redacts malformed percent encoding without throwing', () => {
+    expect(() => scrubPath(`/v1/account/${MALFORMED_STAKE}/utxos`)).not.toThrow()
+    expect(scrubPath(`/v1/account/${MALFORMED_STAKE}/utxos`)).toBe('/v1/account/[redacted]/utxos')
+  })
+
+  it('bounds nested percent-decoding work', () => {
+    let deeplyEncoded = '%41'
+    for (let pass = 0; pass < 4; pass += 1) {
+      deeplyEncoded = encodeURIComponent(deeplyEncoded)
+    }
+
+    expect(scrubPath(`/bad/${deeplyEncoded}/path`)).toBe('/bad/[redacted]/path')
   })
 })
 
@@ -101,6 +129,59 @@ describe('the app log', () => {
     const logged = lines.join('\n')
     expect(logged).not.toContain(TX_HASH)
     expect(logged).not.toContain('198.51.100.9')
+  })
+
+  it('redacts an encoded stake key from the application log', async () => {
+    const { app, lines } = await capturingServer()
+    const encodedStake = `stake%31${STAKE.slice('stake1'.length)}`
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/v1/account/${encodedStake}/utxos`,
+      remoteAddress: '203.0.113.48',
+    })
+    await app.close()
+
+    expect(response.statusCode).toBe(400)
+    const logged = lines.join('\n')
+    expect(logged).not.toContain(encodedStake)
+    expect(logged).not.toContain(STAKE)
+    expect(logged).not.toContain('203.0.113.48')
+    expect(logged).toContain('/v1/account/[redacted]/utxos')
+  })
+
+  it('redacts a double-encoded stake key from the application log', async () => {
+    const { app, lines } = await capturingServer()
+    const encodedStake = `stake%2531${STAKE.slice('stake1'.length)}`
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/v1/account/${encodedStake}/utxos`,
+      remoteAddress: '203.0.113.50',
+    })
+    await app.close()
+
+    expect(response.statusCode).toBe(400)
+    const logged = lines.join('\n')
+    expect(logged).not.toContain(encodedStake)
+    expect(logged).not.toContain('203.0.113.50')
+    expect(logged).toContain('/v1/account/[redacted]/utxos')
+  })
+
+  it('redacts malformed percent encoding without turning the request into a 500', async () => {
+    const { app, lines } = await capturingServer()
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/v1/account/${MALFORMED_STAKE}/utxos`,
+      remoteAddress: '203.0.113.49',
+    })
+    await app.close()
+
+    expect(response.statusCode).not.toBe(500)
+    const logged = lines.join('\n')
+    expect(logged).not.toContain(MALFORMED_STAKE)
+    expect(logged).not.toContain('203.0.113.49')
   })
 
   it('never logs or returns signed transaction material from submission', async () => {

@@ -140,6 +140,27 @@ describe('blockfrost account — happy path', () => {
     expect(calls).toHaveLength(1)
   })
 
+  it('preserves the accepted hex casing of a native-asset unit in provider output', async () => {
+    const policyId = 'aB'.repeat(28)
+    const assetName = 'DeAd'
+    const provider = testProvider({
+      [`/accounts/${STAKE}/utxos`]: [
+        [
+          utxoRow({
+            amount: [
+              { unit: 'lovelace', quantity: '42000000' },
+              { unit: `${policyId}${assetName}`, quantity: '12' },
+            ],
+          }),
+        ],
+      ],
+    })
+
+    const [utxo] = await provider.getAccountUtxos(STAKE)
+
+    expect(utxo?.assets).toEqual([{ policyId, assetName, quantity: '12' }])
+  })
+
   it('getAccountUtxos reports no utxos, not an error, for a never-used account', async () => {
     const provider = testProvider({ [`/accounts/${STAKE}/utxos`]: [{ status: 404 }] })
 
@@ -317,6 +338,58 @@ describe('blockfrost account — unhappy path', () => {
     const provider = testProvider({ [`/accounts/${STAKE}/utxos`]: [[dup]] })
 
     await expect(provider.getAccountUtxos(STAKE)).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+
+  it('rejects case-variant encodings of the same native-asset unit as duplicates', async () => {
+    const lowercaseUnit = `${'ab'.repeat(28)}6e7574636f696e`
+    const dup = utxoRow({
+      amount: [
+        { unit: 'lovelace', quantity: '1000000' },
+        { unit: lowercaseUnit, quantity: '5' },
+        { unit: lowercaseUnit.toUpperCase(), quantity: '7' },
+      ],
+    })
+    const provider = testProvider({ [`/accounts/${STAKE}/utxos`]: [[dup]] })
+
+    await expect(provider.getAccountUtxos(STAKE)).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+
+  it.each([
+    ['lowercase then uppercase', false],
+    ['uppercase then lowercase', true],
+  ])('rejects case-variant native-asset units across UTxO rows (%s)', async (_order, reversed) => {
+    const lowercaseUnit = `${'ab'.repeat(28)}6e7574636f696e`
+    const units = reversed
+      ? [lowercaseUnit.toUpperCase(), lowercaseUnit]
+      : [lowercaseUnit, lowercaseUnit.toUpperCase()]
+    const rows = units.map((unit, index) =>
+      utxoRow({
+        tx_hash: `${index + 1}`.padStart(64, '0'),
+        amount: [
+          { unit: 'lovelace', quantity: '1000000' },
+          { unit, quantity: String(index + 5) },
+        ],
+      }),
+    )
+    const provider = testProvider({ [`/accounts/${STAKE}/utxos`]: [rows] })
+
+    await expect(provider.getAccountUtxos(STAKE)).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+
+  it('allows the same native-asset spelling in separate UTxO rows', async () => {
+    const unit = `${'ab'.repeat(28)}6e7574636f696e`
+    const rows = [0, 1].map((index) =>
+      utxoRow({
+        tx_hash: `${index + 1}`.padStart(64, '0'),
+        amount: [
+          { unit: 'lovelace', quantity: '1000000' },
+          { unit, quantity: String(index + 5) },
+        ],
+      }),
+    )
+    const provider = testProvider({ [`/accounts/${STAKE}/utxos`]: [rows] })
+
+    await expect(provider.getAccountUtxos(STAKE)).resolves.toHaveLength(2)
   })
 
   it('rejects a second lovelace entry rather than letting it overwrite the real ada value', async () => {

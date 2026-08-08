@@ -67,6 +67,19 @@ describe('blockfrost tx — happy path', () => {
     })
   })
 
+  it('canonicalizes an uppercase hash before building the status path', async () => {
+    const { provider, callsTo } = testProvider({
+      [`/txs/${TX_HASH}`]: [{ block: BLOCK_HASH }],
+      [`/blocks/${BLOCK_HASH}`]: [{ confirmations: 0 }],
+    })
+
+    await expect(provider.getTxStatus(TX_HASH.toUpperCase())).resolves.toMatchObject({
+      seen: true,
+      confirmations: 0,
+    })
+    expect(callsTo(`/txs/${TX_HASH}`)).toBe(1)
+  })
+
   it('getTxStatus positively reports a transaction in the hosted mempool as pending', async () => {
     const { provider, callsTo } = testProvider({
       [`/txs/${TX_HASH}`]: [{ status: 404 }],

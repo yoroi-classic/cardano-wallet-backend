@@ -90,7 +90,12 @@ export function createTxMethods(client: BlockfrostClient): TxCapability {
     },
 
     async getTxStatus(hash: string): Promise<TxStatus> {
-      const tx = await client.getOrUndefined(txRow, `/txs/${encodeURIComponent(hash)}`)
+      // Keep direct provider callers consistent with the HTTP boundary: Blockfrost keys this path
+      // by canonical lowercase hex, while hash spelling itself is case-insensitive.
+      const normalizedHash = hash.toLowerCase()
+      const tx = await client.getOrUndefined(txRow, `/txs/${encodeURIComponent(normalizedHash)}`)
+      // Not on chain at all — 404 here is a legitimate answer, not a failure. The transaction
+      // may simply not have propagated yet.
       if (tx === undefined) {
         // The hosted Blockfrost API exposes a positive mempool lookup for transactions submitted
         // through Blockfrost. A hit proves pending. A miss proves nothing: the transaction might
@@ -98,7 +103,10 @@ export function createTxMethods(client: BlockfrostClient): TxCapability {
         // be a compatible/self-hosted deployment without the hosted mempool index.
         let mempool: z.infer<typeof mempoolRow> | undefined
         try {
-          mempool = await client.getOrUndefined(mempoolRow, `/mempool/${encodeURIComponent(hash)}`)
+          mempool = await client.getOrUndefined(
+            mempoolRow,
+            `/mempool/${encodeURIComponent(normalizedHash)}`,
+          )
         } catch (error) {
           // Mempool is enrichment only. Hosted Blockfrost answers a miss with 404, while
           // compatibility-mode/self-hosted deployments may answer an unregistered route with
@@ -111,7 +119,7 @@ export function createTxMethods(client: BlockfrostClient): TxCapability {
           return unknownTxStatus()
         }
         if (mempool === undefined) return unknownTxStatus()
-        if (mempool.tx.hash.toLowerCase() !== hash.toLowerCase()) {
+        if (mempool.tx.hash.toLowerCase() !== normalizedHash) {
           throw new MalformedUpstreamError(
             'blockfrost returned mempool content for a different transaction',
           )

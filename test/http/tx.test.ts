@@ -196,6 +196,27 @@ describe('tx status', () => {
     })
   })
 
+  it.each([
+    ['lowercase', TX_HASH],
+    ['uppercase', TX_HASH.toUpperCase()],
+    ['mixed case', `${'A'.repeat(32)}${'a'.repeat(32)}`],
+  ])('normalizes an accepted %s hash before calling the provider', async (_case, requested) => {
+    let received: string | undefined
+    app = await buildServer({
+      provider: providerWith({
+        getTxStatus: async (hash) => {
+          received = hash
+          return unknownTxStatus()
+        },
+      }),
+    })
+
+    const res = await app.inject({ method: 'GET', url: `/v1/tx/${requested}/status` })
+
+    expect(res.statusCode).toBe(200)
+    expect(received).toBe(requested.toLowerCase())
+  })
+
   it('rejects a malformed tx hash with 400', async () => {
     app = await buildServer({ provider: providerWith({}) })
     const res = await app.inject({ method: 'GET', url: '/v1/tx/nothash/status' })

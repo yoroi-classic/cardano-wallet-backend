@@ -153,34 +153,92 @@ function parseCorsOrigins(raw: string): string[] | '*' {
     .filter((origin) => origin.length > 0)
 }
 
+/**
+ * The shortest prefix a trusted-proxy entry may carry, in either family.
+ *
+ * This list names the hosts allowed to rewrite the client IP, so it should be a few addresses or a
+ * private range. The widest legitimate shapes, `10.0.0.0/8` and `fd00::/8`, are both /8. Anything
+ * shorter is not an allowlist, it is a way to trust the internet, and it fails silently: nothing
+ * errors, the per-IP limiter simply becomes one shared bucket for every caller.
+ *
+ * Rejecting only /0 was not enough, because one range that wide can be spelled as two that are
+ * not. `0.0.0.0/1,128.0.0.0/1` reads like two ordinary entries and between them covers every IPv4
+ * address.
+ */
+const MIN_TRUSTED_PREFIX = 8
+
+/** The IPv4-mapped IPv6 block, `::ffff:0:0/96`, and the bits a prefix spends reaching it. */
+const IPV4_MAPPED_PREFIX = '::ffff:'
+const IPV4_MAPPED_PREFIX_BITS = 96
+
+/**
+ * An IPv4-mapped IPv6 address in its plain IPv4 form, or undefined if it is not mapped.
+ *
+ * WHATWG URL parsing is the standard library's only IPv6 canonicalizer: it compresses and
+ * lowercases, so `::ffff:0.0.0.0`, `0:0:0:0:0:ffff:0:0` and `::ffff:0:0` all arrive here as one
+ * string and a single test recognizes the block. Matching the written form instead would catch
+ * whichever spelling someone used and miss the two that mean the same thing.
+ */
+function mappedIpv4(address: string): string | undefined {
+  const canonical = new URL(`http://[${address}]`).hostname.slice(1, -1)
+  if (!canonical.startsWith(IPV4_MAPPED_PREFIX)) return undefined
+  const groups = canonical.slice(IPV4_MAPPED_PREFIX.length).split(':')
+  if (groups.length !== 2) return undefined
+  const [high, low] = groups.map((group) => Number.parseInt(group, 16))
+  if (high === undefined || low === undefined || Number.isNaN(high) || Number.isNaN(low)) {
+    return undefined
+  }
+  return [high >>> 8, high & 0xff, low >>> 8, low & 0xff].join('.')
+}
+
 function parseTrustedProxies(raw: string): string[] {
   const proxies = raw
     .split(',')
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0)
 
-  for (const proxy of proxies) {
-    const [address, prefix, extra] = proxy.split('/')
-    const family = isIP(address ?? '')
-    const maxPrefix = family === 4 ? 32 : family === 6 ? 128 : 0
-    const prefixNumber =
-      prefix === undefined || !/^[0-9]+$/.test(prefix) ? undefined : Number(prefix)
-    if (
-      extra !== undefined ||
-      family === 0 ||
-      (prefix !== undefined &&
-        (prefixNumber === undefined ||
-          !Number.isInteger(prefixNumber) ||
-          prefixNumber <= 0 ||
-          prefixNumber > maxPrefix))
-    ) {
+  const normalized = proxies.map((proxy) => {
+    const reject = (): never => {
       throw new ConfigError(
-        `invalid TRUST_PROXY entry "${proxy}"; use comma-separated IP addresses or CIDR ranges`,
+        `invalid TRUST_PROXY entry "${proxy}"; use comma-separated IP addresses or CIDR ranges, ` +
+          `none wider than a /${MIN_TRUSTED_PREFIX}`,
       )
     }
-  }
 
-  return [...new Set(proxies)]
+    const [rawAddress = '', rawPrefix, extra] = proxy.split('/')
+    if (extra !== undefined) return reject()
+
+    let address = rawAddress
+    const family = isIP(address)
+    if (family === 0) return reject()
+
+    let prefix: number | undefined
+    if (rawPrefix !== undefined) {
+      if (!/^[0-9]+$/.test(rawPrefix)) return reject()
+      prefix = Number(rawPrefix)
+      if (!Number.isSafeInteger(prefix) || prefix > (family === 4 ? 32 : 128)) return reject()
+    }
+
+    // A mapped entry is an IPv4 range wearing an IPv6 hat, and its prefix counts from the front of
+    // all 128 bits. Left as written, `::ffff:0.0.0.0/96` looks like a narrow /96 and passes any
+    // width rule while meaning every IPv4 address. Expressed as the IPv4 range it actually is, one
+    // rule covers both spellings.
+    const mapped = family === 6 ? mappedIpv4(address) : undefined
+    if (mapped !== undefined) {
+      if (prefix !== undefined) {
+        if (prefix < IPV4_MAPPED_PREFIX_BITS) return reject()
+        // Already checked against the IPv6 maximum of 128, so this lands inside 0..32.
+        prefix -= IPV4_MAPPED_PREFIX_BITS
+      }
+      address = mapped
+    }
+
+    if (prefix !== undefined && prefix < MIN_TRUSTED_PREFIX) return reject()
+
+    return prefix === undefined ? address : `${address}/${prefix}`
+  })
+
+  return [...new Set(normalized)]
 }
 
 /**

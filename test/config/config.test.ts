@@ -81,6 +81,28 @@ describe('loadConfig — happy path', () => {
     expect(config.trustedProxies).toEqual(['127.0.0.1', '10.0.0.0/8', '2001:db8::/32'])
   })
 
+  it('records an IPv4-mapped entry as the IPv4 range it means, deduplicating the two spellings', () => {
+    const config = loadConfig({
+      TRUST_PROXY: '::ffff:10.0.0.0/104, 10.0.0.0/8, ::ffff:192.168.0.1, 0:0:0:0:0:ffff:a00:0/104',
+    })
+    expect(config.trustedProxies).toEqual(['10.0.0.0/8', '192.168.0.1'])
+  })
+
+  it.each([
+    ['a split pair that covers every IPv4 address', '0.0.0.0/1,128.0.0.0/1'],
+    ['a single half of it', '0.0.0.0/1'],
+    ['the whole IPv4-mapped block', '::ffff:0.0.0.0/96'],
+    ['the same block spelled in hex', '::ffff:0:0/96'],
+    ['the same block spelled uncompressed', '0:0:0:0:0:ffff:0:0/96'],
+    ['a mapped entry reaching past the block', '::ffff:0.0.0.0/95'],
+    ['a mapped entry wider than an IPv4 /8', '::ffff:10.0.0.0/100'],
+    ['an IPv6 range wider than a /8', '2001:db8::/4'],
+  ])('rejects %s', (_case, entry) => {
+    // Each of these is accepted by a rule that only refuses /0, and each trusts far more than a
+    // proxy allowlist ever should. See MIN_TRUSTED_PREFIX.
+    expect(() => loadConfig({ TRUST_PROXY: entry })).toThrow(ConfigError)
+  })
+
   it.each(['https://config.example/wallet.json', 'http://127.0.0.1:8080/wallet.json'])(
     'accepts a supported CONFIG_URL: %s',
     (url) => {

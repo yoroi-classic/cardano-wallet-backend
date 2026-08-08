@@ -68,6 +68,28 @@ const DEFAULT_BLOCKFROST_URL: Record<Network, string> = {
   preview: 'https://cardano-preview.blockfrost.io/api/v0',
 }
 
+function isSupportedConfigUrl(value: string): boolean {
+  if (value === '') return true
+  if (value !== value.trim() || !/^https?:\/\//i.test(value)) return false
+  try {
+    const url = new URL(value)
+    return url.protocol === 'http:' || url.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+function isValidNftcdnKey(value: string): boolean {
+  const key = value.trim()
+  // NFTCDN supplies standard (not URL-safe) padded base64. Reject malformed
+  // input instead of letting Buffer silently discard invalid characters.
+  if (key.length === 0 || key.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(key)) {
+    return false
+  }
+  const decoded = Buffer.from(key, 'base64')
+  return decoded.length > 0 && decoded.some((byte) => byte !== 0)
+}
+
 const schema = z.object({
   NETWORK: z.enum(NETWORKS).default('preprod'),
   HOST: z.string().default('0.0.0.0'),
@@ -97,10 +119,23 @@ const schema = z.object({
   // NFTCDN. The subdomain is the network name on preprod/preview and an account-specific one on
   // mainnet; the key is base64, exactly as their dashboard gives it. Both or neither: a half
   // configuration is a typo, and it should fail at startup rather than 500 on the first image.
-  NFTCDN_SUBDOMAIN: z.string().min(1).optional(),
-  NFTCDN_KEY: z.string().min(1).optional(),
-  // Client remote config. Defaults to our fork; set to "" to disable the endpoint entirely.
-  CONFIG_URL: z.string().default(DEFAULT_CONFIG_URL),
+  NFTCDN_SUBDOMAIN: z
+    .string()
+    .trim()
+    .min(1)
+    .regex(/^(?=.{1,63}$)[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/, 'must be a DNS hostname label')
+    .optional(),
+  // Check trimmed content without transforming the value: this is signing material, so validation
+  // must not silently rewrite the operator's secret.
+  NFTCDN_KEY: z
+    .string()
+    .refine(isValidNftcdnKey, 'must contain a non-empty standard base64-encoded key')
+    .optional(),
+  // Client remote config. Exactly "" disables it; every other value must be fetchable by Node.
+  CONFIG_URL: z
+    .string()
+    .refine(isSupportedConfigUrl, 'must be empty or an absolute, unpadded HTTP(S) URL')
+    .default(DEFAULT_CONFIG_URL),
   // Optional: raises the CoinGecko rate limit above the anonymous tier. Unset works fine.
   COINGECKO_API_KEY: z.string().optional(),
 })
@@ -176,7 +211,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         ? { max: e.RATE_LIMIT_MAX, windowMs: e.RATE_LIMIT_WINDOW_MS }
         : undefined,
     ...(nftcdn === undefined ? {} : { nftcdn }),
-    ...(e.CONFIG_URL.trim() === '' ? {} : { configUrl: e.CONFIG_URL.trim() }),
+    ...(e.CONFIG_URL === '' ? {} : { configUrl: e.CONFIG_URL }),
     koios: {
       url: e.KOIOS_URL ?? DEFAULT_KOIOS_URL[e.NETWORK],
       token,

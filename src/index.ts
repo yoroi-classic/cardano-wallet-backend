@@ -93,7 +93,11 @@ async function main(): Promise<void> {
   // GeckoTerminal both answer at their free tier with no credential at all, so a real deployment
   // always has price wired. It shares the one process cache too, for the same reason the provider
   // and remote config do (see providers/factory.ts's note on createProvider).
-  const priceProvider = createPriceProvider({ coingeckoApiKey: config.coingeckoApiKey, cache })
+  const priceProvider = createPriceProvider({
+    coingeckoApiKey: config.coingeckoApiKey,
+    cache,
+    cacheNamespace: config.network,
+  })
 
   const app = await buildServer({
     provider,

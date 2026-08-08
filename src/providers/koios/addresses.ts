@@ -183,8 +183,21 @@ function pagedBatchAll<Row>(
   toBody: (chunk: string[]) => unknown,
   rowKey?: (row: Row) => string,
 ): Promise<Row[]> {
+  const options =
+    rowKey === undefined
+      ? undefined
+      : {
+          rowKey,
+          keyset: (row: Row): readonly [string, number] => {
+            const value = row as { tx_hash?: unknown; tx_index?: unknown }
+            if (typeof value.tx_hash !== 'string' || typeof value.tx_index !== 'number') {
+              throw new TypeError('koios UTxO keyset requires tx_hash and tx_index')
+            }
+            return [value.tx_hash, value.tx_index]
+          },
+        }
   return koios.packAdaptively(addresses, toBody, (body) =>
-    koios.batchAllPages(rowSchema, path, body, rowKey),
+    koios.batchAllPages(rowSchema, path, body, options),
   )
 }
 

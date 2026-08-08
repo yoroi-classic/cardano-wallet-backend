@@ -195,8 +195,10 @@ See `.env.example`. Key values:
   Empty by default, which is correct for the directly exposed Docker port. Set it only when those
   proxies are the exclusive path to the backend; trusting arbitrary forwarding headers lets a
   direct caller rotate its apparent IP and evade the anonymous limit. No entry may be wider than a
-  `/8`, in either family, and an IPv4-mapped entry such as `::ffff:10.0.0.0/104` is read as the
-  IPv4 range it means.
+  `/8` in either family, and no IPv6 entry may contain the IPv4-mapped block `::ffff:0:0/96`, since
+  every IPv4 caller reaches a dual-stack listener as `::ffff:a.b.c.d` and a range covering that
+  block trusts all of them. An entry inside the block, such as `::ffff:10.0.0.0/104`, is read as
+  the IPv4 range it means.
 - `NFTCDN_SUBDOMAIN` / `NFTCDN_KEY` — optional, both or neither. Enables asset media (below).
 - `PORT`, `HOST`, `LOG_LEVEL`
 

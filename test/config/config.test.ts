@@ -97,10 +97,25 @@ describe('loadConfig — happy path', () => {
     ['a mapped entry reaching past the block', '::ffff:0.0.0.0/95'],
     ['a mapped entry wider than an IPv4 /8', '::ffff:10.0.0.0/100'],
     ['an IPv6 range wider than a /8', '2001:db8::/4'],
+    // ::/N for any N from 8 to 80 contains the mapped block, because a mapped address begins with
+    // 80 zero bits. Verified against @fastify/proxy-addr: `::/8` and `::/80` both match
+    // ::ffff:8.8.8.8. A prefix floor cannot see this, so the block itself has to be excluded.
+    ['the zero range at the width the floor allows', '::/8'],
+    ['the zero range at the last width that still reaches the block', '::/80'],
   ])('rejects %s', (_case, entry) => {
-    // Each of these is accepted by a rule that only refuses /0, and each trusts far more than a
-    // proxy allowlist ever should. See MIN_TRUSTED_PREFIX.
     expect(() => loadConfig({ TRUST_PROXY: entry })).toThrow(ConfigError)
+  })
+
+  it.each([
+    // Stops one bit short of the mapped block, so no IPv4 caller matches it.
+    ['the zero range just past the block', '::/96'],
+    ['a unique local range', 'fd00::/8'],
+    ['a documentation range', '2001:db8::/32'],
+    // isIP accepts a zone id and the URL parser does not. Reading the address must not turn a
+    // working setting into an unhandled TypeError with no mention of TRUST_PROXY.
+    ['a scoped link-local address', 'fe80::1%eth0'],
+  ])('accepts %s', (_case, entry) => {
+    expect(loadConfig({ TRUST_PROXY: entry }).trustedProxies).toEqual([entry])
   })
 
   it.each(['https://config.example/wallet.json', 'http://127.0.0.1:8080/wallet.json'])(

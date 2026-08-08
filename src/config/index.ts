@@ -167,28 +167,59 @@ function parseCorsOrigins(raw: string): string[] | '*' {
  */
 const MIN_TRUSTED_PREFIX = 8
 
-/** The IPv4-mapped IPv6 block, `::ffff:0:0/96`, and the bits a prefix spends reaching it. */
-const IPV4_MAPPED_PREFIX = '::ffff:'
+/**
+ * `::ffff:0:0`, the first 96 bits every IPv4-mapped address shares.
+ *
+ * This block is where every IPv4 caller shows up on a dual-stack listener: the socket peer for
+ * `8.8.8.8` is `::ffff:8.8.8.8`. So an IPv6 range that contains this block trusts the entire IPv4
+ * internet, whatever it looks like written down.
+ */
+const IPV4_MAPPED_PREFIX = Uint8Array.from([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 0, 0, 0, 0])
 const IPV4_MAPPED_PREFIX_BITS = 96
 
 /**
- * An IPv4-mapped IPv6 address in its plain IPv4 form, or undefined if it is not mapped.
+ * The 16 bytes of an IPv6 address, or undefined when it cannot be read.
  *
- * WHATWG URL parsing is the standard library's only IPv6 canonicalizer: it compresses and
- * lowercases, so `::ffff:0.0.0.0`, `0:0:0:0:0:ffff:0:0` and `::ffff:0:0` all arrive here as one
- * string and a single test recognizes the block. Matching the written form instead would catch
- * whichever spelling someone used and miss the two that mean the same thing.
+ * WHATWG URL parsing is the standard library's only IPv6 canonicalizer: it compresses, lowercases
+ * and rewrites a dotted tail as hex, so `::ffff:0.0.0.0`, `0:0:0:0:0:ffff:0:0` and `::ffff:0:0`
+ * arrive here as one string. Comparing the written form instead would catch whichever spelling
+ * someone used and miss the others.
+ *
+ * It rejects a zone id, which `isIP` accepts, so the caller strips one first. Undefined means only
+ * "no opinion": a scoped link-local address is not a spelling of the mapped block.
  */
-function mappedIpv4(address: string): string | undefined {
-  const canonical = new URL(`http://[${address}]`).hostname.slice(1, -1)
-  if (!canonical.startsWith(IPV4_MAPPED_PREFIX)) return undefined
-  const groups = canonical.slice(IPV4_MAPPED_PREFIX.length).split(':')
-  if (groups.length !== 2) return undefined
-  const [high, low] = groups.map((group) => Number.parseInt(group, 16))
-  if (high === undefined || low === undefined || Number.isNaN(high) || Number.isNaN(low)) {
+function ipv6Bytes(address: string): Uint8Array | undefined {
+  let canonical: string
+  try {
+    canonical = new URL(`http://[${address}]`).hostname.slice(1, -1)
+  } catch {
     return undefined
   }
-  return [high >>> 8, high & 0xff, low >>> 8, low & 0xff].join('.')
+
+  const [head = '', tail] = canonical.split('::')
+  const headGroups = head === '' ? [] : head.split(':')
+  const tailGroups = tail === undefined || tail === '' ? [] : tail.split(':')
+  const missing = 8 - headGroups.length - tailGroups.length
+  if (tail === undefined ? missing !== 0 : missing < 0) return undefined
+
+  const groups = [...headGroups, ...Array.from({ length: missing }, () => '0'), ...tailGroups]
+  const bytes = new Uint8Array(16)
+  for (const [index, group] of groups.entries()) {
+    const value = Number.parseInt(group, 16)
+    if (Number.isNaN(value)) return undefined
+    bytes[index * 2] = value >>> 8
+    bytes[index * 2 + 1] = value & 0xff
+  }
+  return bytes
+}
+
+/** Whether two addresses agree on their first `bits` bits, which is what a CIDR compares. */
+function sharesPrefix(left: Uint8Array, right: Uint8Array, bits: number): boolean {
+  for (let bit = 0; bit < bits; bit += 1) {
+    const mask = 0x80 >>> (bit & 7)
+    if (((left[bit >>> 3] ?? 0) & mask) !== ((right[bit >>> 3] ?? 0) & mask)) return false
+  }
+  return true
 }
 
 function parseTrustedProxies(raw: string): string[] {
@@ -219,18 +250,28 @@ function parseTrustedProxies(raw: string): string[] {
       if (!Number.isSafeInteger(prefix) || prefix > (family === 4 ? 32 : 128)) return reject()
     }
 
-    // A mapped entry is an IPv4 range wearing an IPv6 hat, and its prefix counts from the front of
-    // all 128 bits. Left as written, `::ffff:0.0.0.0/96` looks like a narrow /96 and passes any
-    // width rule while meaning every IPv4 address. Expressed as the IPv4 range it actually is, one
-    // rule covers both spellings.
-    const mapped = family === 6 ? mappedIpv4(address) : undefined
-    if (mapped !== undefined) {
-      if (prefix !== undefined) {
-        if (prefix < IPV4_MAPPED_PREFIX_BITS) return reject()
-        // Already checked against the IPv6 maximum of 128, so this lands inside 0..32.
-        prefix -= IPV4_MAPPED_PREFIX_BITS
+    // Everything about IPv6 here is about one block, ::ffff:0:0/96, because that is where IPv4
+    // callers arrive on a dual-stack listener. An entry either sits inside it, in which case it is
+    // an IPv4 range wearing an IPv6 hat and is recorded as the IPv4 range it means, or it contains
+    // it, in which case it trusts every IPv4 caller and cannot be allowed. A width rule alone
+    // catches neither: `::ffff:0.0.0.0/96` reads as a narrow /96, and `::/8` and `::/80` are wide
+    // open at prefixes the floor below permits.
+    if (family === 6) {
+      // The zone in `fe80::1%eth0` is a local interface name, not part of the address, and no
+      // scoped address is in the mapped block. Strip it for the comparison and keep the entry.
+      const bytes = ipv6Bytes(address.split('%')[0] ?? '')
+      const width = prefix ?? 128
+      if (bytes !== undefined) {
+        if (width > IPV4_MAPPED_PREFIX_BITS) {
+          if (sharesPrefix(bytes, IPV4_MAPPED_PREFIX, IPV4_MAPPED_PREFIX_BITS)) {
+            address = [bytes[12], bytes[13], bytes[14], bytes[15]].join('.')
+            // Bounded by the IPv6 maximum of 128 above, so this lands inside 0..32.
+            prefix = prefix === undefined ? undefined : prefix - IPV4_MAPPED_PREFIX_BITS
+          }
+        } else if (sharesPrefix(bytes, IPV4_MAPPED_PREFIX, width)) {
+          return reject()
+        }
       }
-      address = mapped
     }
 
     if (prefix !== undefined && prefix < MIN_TRUSTED_PREFIX) return reject()

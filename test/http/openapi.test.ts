@@ -578,8 +578,8 @@ describe('real responses validate against the schemas the spec publishes', () =>
   it('GET /v1/governance/proposals', async () => {
     const res = await get(
       {
-        getProposals: async () => [
-          {
+        getProposals: async () => {
+          const proposal = {
             proposalId: 'gov_action1jr0g04rwvdz3rrqpm30vwqd5mnjky8l68v0e3g74t6e5apw6wwfqq37hpcl',
             txHash: TX_HASH,
             index: 0,
@@ -600,8 +600,20 @@ describe('real responses validate against the schemas the spec publishes', () =>
               noPower: '0',
               abstainPower: '0',
             },
-          },
-        ],
+            committeeVotes: {
+              yes: 3,
+              no: 0,
+              abstain: 0,
+            },
+          }
+          const noCommitteeVoteProposal = {
+            ...proposal,
+            proposalId: 'gov_action1w2w64uh7g6q8x4n0m3v6q7f9r2s5t8u1y4z7c0d3e6f9h2j5k8m1p4s7v0x3',
+            type: 'NewCommittee' as const,
+            committeeVotes: undefined,
+          }
+          return [proposal, noCommitteeVoteProposal]
+        },
       },
       '/v1/governance/proposals',
     )
@@ -611,6 +623,22 @@ describe('real responses validate against the schemas the spec publishes', () =>
     expect((res.body as { drepVotes: { yesPower: string } }[])[0]?.drepVotes.yesPower).toBe(
       '9999999999999999999',
     )
+    expect((res.body as { committeeVotes: Record<string, unknown> }[])[0]?.committeeVotes).toEqual({
+      yes: 3,
+      no: 0,
+      abstain: 0,
+    })
+    expect((res.body as Record<string, unknown>[])[1]).not.toHaveProperty('committeeVotes')
+    expect(
+      validate('CommitteeVoteTally', {
+        yes: 3,
+        no: 0,
+        abstain: 0,
+        yesPower: '0',
+        noPower: '0',
+        abstainPower: '0',
+      }),
+    ).not.toEqual([])
   })
 
   it('POST /v1/assets/media', async () => {

@@ -1613,7 +1613,29 @@ export const openapi = {
               'decides the outcome.** Parse with BigInt.',
           },
           noPower: LOVELACE,
-          abstainPower: LOVELACE,
+          abstainPower: {
+            ...LOVELACE,
+            description:
+              'Total abstain voting power, including explicitly cast abstain power and power assigned to always/passive abstain. It can exceed the abstain vote count.',
+          },
+        },
+      },
+
+      CommitteeVoteTally: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['yes', 'no', 'abstain'],
+        description:
+          'Constitutional committee votes by member count. Each current committee member has ' +
+          'one vote; these votes are not weighted by lovelace.',
+        properties: {
+          yes: { type: 'integer', minimum: 0, description: 'Committee members voting yes.' },
+          no: { type: 'integer', minimum: 0, description: 'Committee members voting no.' },
+          abstain: {
+            type: 'integer',
+            minimum: 0,
+            description: 'Committee members explicitly abstaining.',
+          },
         },
       },
 
@@ -1678,9 +1700,21 @@ export const openapi = {
               'unknown, which is not the same as false.** Check it before showing `title` or ' +
               '`abstract`: those are attacker-supplied text a user reads right before voting.',
           },
-          drepVotes: { $ref: '#/components/schemas/VoteTally' },
-          poolVotes: { $ref: '#/components/schemas/VoteTally' },
-          committeeVotes: { $ref: '#/components/schemas/VoteTally' },
+          drepVotes: {
+            $ref: '#/components/schemas/VoteTally',
+            description: 'DRep votes by count and voting power.',
+          },
+          poolVotes: {
+            $ref: '#/components/schemas/VoteTally',
+            description:
+              'Stake-pool votes. Absent for `TreasuryWithdrawals` and `NewConstitution`, where pools have no vote, or when the tally is unavailable.',
+          },
+          committeeVotes: {
+            $ref: '#/components/schemas/CommitteeVoteTally',
+            description:
+              'Committee votes by member count. Absent for `NewCommittee` and `NoConfidence`, ' +
+              'where the constitutional committee has no vote, or when the tally is unavailable.',
+          },
         },
       },
 

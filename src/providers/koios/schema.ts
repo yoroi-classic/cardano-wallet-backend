@@ -20,11 +20,12 @@ export const numeric = z.union([z.number().int().nonnegative().safe(), z.string(
 export const policyId = z.string().regex(/^[0-9a-fA-F]{56}$/)
 
 /**
- * An asset name is up to 32 bytes, hex-encoded, so 0 to 64 hex chars. Empty is deliberate
- * and common: a policy's unnamed asset is a real, valid token, so this cannot demand at
- * least one character the way the policy id does.
+ * An asset name is up to 32 bytes, hex-encoded as complete byte pairs. Empty is deliberate and
+ * common: a policy's unnamed asset is a real, valid token, so this cannot demand at least one
+ * byte the way the policy id does. Case is preserved because both upper- and lowercase hex encode
+ * the same bytes and the domain contract permits either.
  */
-export const assetName = z.string().regex(/^[0-9a-fA-F]{0,64}$/)
+export const assetName = z.string().regex(/^(?:[0-9a-fA-F]{2}){0,32}$/)
 
 /** A native asset as Koios spells it, on a UTxO or on a transaction input/output. */
 export const assetItem = z.object({

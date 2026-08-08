@@ -91,11 +91,24 @@ export interface Cache {
   /** Store a value under `key` with a TTL. The counterpart to `peek` for batch loads. */
   set<T>(key: string, value: T, ttlMs: number): void
 
+  /** Token for guarding a batch write against a clear that happened while upstream was awaited. */
+  generation(key?: string): number
+
+  /** Store only when the supplied generation is still current. */
+  setIfGeneration<T>(key: string, value: T, ttlMs: number, generation: number): void
+
   /** Live entries. For tests and diagnostics. */
   readonly size: number
 
-  /** Drop everything. For tests. */
-  clear(): void
+  /** Live entries whose keys start with `prefix`, for scoped cache views. */
+  sizeForPrefix?(prefix: string): number
+
+  /**
+   * Drop everything, or only keys with the supplied prefix. For tests and scoped cache views.
+   * Prefix deletion keeps one consumer from clearing unrelated entries in the shared process
+   * cache.
+   */
+  clear(prefix?: string): void
 }
 
 export interface MemoryCacheOptions {
@@ -126,6 +139,19 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
 
   const entries = new Map<string, Entry>()
   const inFlight = new Map<string, Promise<unknown>>()
+  // A clear must invalidate an attempt that was already waiting on its upstream loader. Without
+  // this generation check, that attempt can finish after clear() and put the deleted value back.
+  let clearGeneration = 0
+  const clearGenerations = new Map<string, number>()
+
+  function generationFor(key: string): number {
+    let latest = clearGenerations.get('') ?? 0
+    for (const [prefix, clearedAt] of clearGenerations) {
+      if (prefix !== '' && (key.startsWith(prefix) || prefix.startsWith(key)) && clearedAt > latest)
+        latest = clearedAt
+    }
+    return latest
+  }
 
   function evict(): void {
     if (entries.size <= maxEntries) return
@@ -157,18 +183,23 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
       // starting a second identical one.
       const pending = inFlight.get(key)
       if (pending !== undefined) return pending as Promise<T>
-
-      const attempt = (async (): Promise<T> => {
-        try {
-          const value = await load()
-          entries.set(key, {
-            value,
-            expiresAt: now() + ttlMs,
-            usableUntil: now() + ttlMs + staleIfErrorMs,
-          })
-          evict()
+      const attemptGeneration = generationFor(key)
+      // Start the loader in a microtask so synchronous loader throws still clean up inFlight.
+      const attemptHolder: { promise?: Promise<T> } = {}
+      const attempt = Promise.resolve()
+        .then(load)
+        .then((value) => {
+          if (attemptGeneration === generationFor(key)) {
+            entries.set(key, {
+              value,
+              expiresAt: now() + ttlMs,
+              usableUntil: now() + ttlMs + staleIfErrorMs,
+            })
+            evict()
+          }
           return value
-        } catch (err) {
+        })
+        .catch((err: unknown) => {
           // The refresh failed. If we still hold a value that is old but not *too* old, serve it
           // rather than the error. See CachePolicy.staleIfErrorMs: for chain-wide data a
           // two-minute-old answer beats a 504, and for account data there is no such thing as an
@@ -180,12 +211,20 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
           // usableUntil it stops being served at all, so a long outage surfaces as an error rather
           // than as data from last week.
           const stale = entries.get(key)
-          if (stale !== undefined && stale.usableUntil > now()) return stale.value as T
+          if (
+            attemptGeneration === generationFor(key) &&
+            stale !== undefined &&
+            stale.usableUntil > now()
+          )
+            return stale.value as T
           throw err
-        } finally {
-          inFlight.delete(key)
-        }
-      })()
+        })
+        .finally(() => {
+          // A clear followed by a new read may have installed a newer attempt for this key. Do
+          // not let the old attempt's cleanup remove that newer registration.
+          if (inFlight.get(key) === attemptHolder.promise) inFlight.delete(key)
+        })
+      attemptHolder.promise = attempt
 
       inFlight.set(key, attempt)
       return attempt
@@ -203,13 +242,43 @@ export function createMemoryCache(options: MemoryCacheOptions = {}): Cache {
       evict()
     },
 
+    generation(key = ''): number {
+      return generationFor(key)
+    },
+
+    setIfGeneration<T>(key: string, value: T, ttlMs: number, generation: number): void {
+      if (generation !== generationFor(key)) return
+      entries.set(key, { value, expiresAt: now() + ttlMs, usableUntil: now() + ttlMs })
+      evict()
+    },
+
     get size(): number {
       return entries.size
     },
 
-    clear(): void {
-      entries.clear()
-      inFlight.clear()
+    sizeForPrefix(prefix: string): number {
+      let count = 0
+      for (const key of entries.keys()) {
+        if (key.startsWith(prefix)) count += 1
+      }
+      return count
+    },
+
+    clear(prefix?: string): void {
+      clearGeneration += 1
+      if (prefix === undefined) {
+        entries.clear()
+        inFlight.clear()
+        clearGenerations.set('', clearGeneration)
+      } else {
+        for (const key of entries.keys()) {
+          if (key.startsWith(prefix)) entries.delete(key)
+        }
+        for (const key of inFlight.keys()) {
+          if (key.startsWith(prefix)) inFlight.delete(key)
+        }
+        clearGenerations.set(prefix, clearGeneration)
+      }
     },
   }
 }
@@ -229,6 +298,13 @@ export const noCache: Cache = {
     return undefined
   },
   set<T>(_key: string, _value: T, _ttlMs: number): void {},
+  generation(_key?: string): number {
+    return 0
+  },
+  setIfGeneration<T>(_key: string, _value: T, _ttlMs: number, _generation: number): void {},
   size: 0,
-  clear(): void {},
+  sizeForPrefix(_prefix: string): number {
+    return 0
+  },
+  clear(_prefix?: string): void {},
 }

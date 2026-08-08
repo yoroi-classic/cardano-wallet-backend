@@ -53,20 +53,49 @@ function createDriver(config: AppConfig, deps: ProviderDeps, cache: Cache): Chai
   }
 }
 
+export function scopeProviderCache(cache: Cache, config: AppConfig): Cache {
+  // Keep noCache's identity: Koios uses that singleton to select its no-cache fast path.
+  if (cache === noCache) return noCache
+
+  // A process cache is intentionally shared with price and remote-config reads, and callers can
+  // also construct more than one provider against it in tests or migration tooling. Provider and
+  // network are therefore part of every chain-data key; a mainnet tip must never satisfy a
+  // preprod read, nor a Koios value a Blockfrost read.
+  const prefix = `provider:${config.provider}:${config.network}:`
+  const key = (value: string): string => `${prefix}${value}`
+
+  return {
+    read: (value, policy, load) => cache.read(key(value), policy, load),
+    peek: (value) => cache.peek(key(value)),
+    set: (value, data, ttlMs) => cache.set(key(value), data, ttlMs),
+    generation: () => cache.generation(),
+    setIfGeneration: (value, data, ttlMs, expected) =>
+      cache.setIfGeneration(key(value), data, ttlMs, expected),
+    get size() {
+      return cache.sizeForPrefix?.(prefix) ?? cache.size
+    },
+    sizeForPrefix: (nestedPrefix) => cache.sizeForPrefix?.(key(nestedPrefix)) ?? 0,
+    clear: () => cache.clear(prefix),
+  }
+}
+
 /**
  * Build the active chain provider from config, wrapped in the response cache. Koios and
  * Blockfrost are wired today; the Dingo driver slots in here as it lands, behind the same
  * interface, and it inherits the caching because it wraps the interface rather than the driver.
  *
- * The cache is created here so there is exactly **one** of it, and so a unit test that builds a
- * driver directly gets no caching and its upstream call counts mean what they look like.
+ * The application injects its one process cache so provider, price, and remote-config reads share
+ * the same bounded store and one CACHE_ENABLED decision. Standalone callers retain the configured
+ * fallback: a private memory cache when enabled, or noCache when disabled. A unit test that builds
+ * a driver directly still gets no caching and its upstream call counts mean what they look like.
  *
- * The same instance goes to both the decorator and the driver, and it matters that it is the same
- * one. The decorator caches the tip; the pool module needs the current epoch to key its ranking
- * on, and reads it through the same key. Two caches would mean two tips, two upstream reads, and
- * at an epoch boundary two different opinions about which epoch it is.
+ * The same provider-scoped view goes to both the decorator and the driver, and it matters that it
+ * is the same one. The decorator caches the tip; the pool module needs the current epoch to key
+ * its ranking on, and reads it through the same key. Two caches would mean two tips, two upstream
+ * reads, and at an epoch boundary two different opinions about which epoch it is.
  */
 export function createProvider(config: AppConfig, deps: ProviderDeps = {}): ChainProvider {
-  const cache: Cache = config.cacheEnabled ? createMemoryCache() : noCache
+  const processCache: Cache = deps.cache ?? (config.cacheEnabled ? createMemoryCache() : noCache)
+  const cache = scopeProviderCache(processCache, config)
   return withCache(createDriver(config, deps, cache), cache)
 }

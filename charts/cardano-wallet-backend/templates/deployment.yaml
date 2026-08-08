@@ -62,6 +62,17 @@ spec:
             - name: KOIOS_URL
               value: {{ .Values.config.koiosUrl | quote }}
             {{- end }}
+            {{- if eq .Values.config.provider "blockfrost" }}
+            - name: BLOCKFROST_PROJECT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "secrets.existingSecret is required when config.provider=blockfrost" .Values.secrets.existingSecret | quote }}
+                  key: {{ required "secrets.blockfrostProjectIdKey is required when config.provider=blockfrost" .Values.secrets.blockfrostProjectIdKey | quote }}
+            {{- if .Values.config.blockfrostUrl }}
+            - name: BLOCKFROST_URL
+              value: {{ .Values.config.blockfrostUrl | quote }}
+            {{- end }}
+            {{- end }}
             {{- if not .Values.config.remoteConfig.enabled }}
             - name: CONFIG_URL
               value: ""

@@ -14,22 +14,70 @@ const addressesWithAfterBody = z.object({
 })
 
 const BECH32_LIMIT = 1023
-const PAYMENT_PREFIXES = new Set(['addr', 'addr_test'])
-// The top nibble of a Shelley address header is its type. Types 0-7 (base, pointer,
-// enterprise) carry a spendable payment credential; 14/15 are stake/reward addresses and
-// 8-13 are unused or Byron, none of which belong on this endpoint.
-const PAYMENT_ADDRESS_MAX_TYPE = 7
+const CREDENTIAL_BYTES = 28
+const BASE_ADDRESS_BYTES = 1 + CREDENTIAL_BYTES * 2
+const ENTERPRISE_ADDRESS_BYTES = 1 + CREDENTIAL_BYTES
+const POINTER_PREFIX_BYTES = 1 + CREDENTIAL_BYTES
+const MAX_POINTER_UINT_BYTES = 10
 
 const PAYMENT_ADDRESS_ERROR =
   'addresses must be valid payment addresses (bech32 addr / addr_test, or Byron base58)'
 const FILTER_USED_ERROR =
   'addresses must be valid payment addresses or bech32 payment key hashes (addr_vkh)'
 
-function isBech32PaymentAddress(value: string): boolean {
+function configuredNetworkId(network: string): number | undefined {
+  if (network === 'mainnet') return 1
+  if (network === 'preprod' || network === 'preview') return 0
+  return undefined
+}
+
+/**
+ * Consume one minimally encoded base-128 natural number from a pointer address.
+ *
+ * Pointer addresses carry slot, transaction index and certificate index this way. Ten groups
+ * are enough for an unsigned 64-bit value; the first group of a ten-byte value can contain only
+ * one payload bit. Rejecting redundant leading zero groups keeps this to the ledger encoding
+ * rather than merely finding any three terminating bytes.
+ */
+function nextPointerPart(bytes: Uint8Array, offset: number): number | undefined {
+  for (let index = offset; index < bytes.length; index += 1) {
+    const byte = bytes[index]!
+    const length = index - offset + 1
+    if (length > MAX_POINTER_UINT_BYTES) return undefined
+    if (length === 1 && (byte & 0x80) !== 0 && (byte & 0x7f) === 0) return undefined
+    if (length === MAX_POINTER_UINT_BYTES && (bytes[offset]! & 0x7f) > 1) return undefined
+    if ((byte & 0x80) === 0) return index + 1
+  }
+  return undefined
+}
+
+function hasPointerPayload(bytes: Uint8Array): boolean {
+  let offset = POINTER_PREFIX_BYTES
+  for (let part = 0; part < 3; part += 1) {
+    const next = nextPointerPart(bytes, offset)
+    if (next === undefined) return false
+    offset = next
+  }
+  return offset === bytes.length
+}
+
+function isBech32PaymentAddress(value: string, expectedNetworkId?: number): boolean {
   const decoded = bech32.decodeUnsafe(value, BECH32_LIMIT)
-  if (decoded === undefined || !PAYMENT_PREFIXES.has(decoded.prefix)) return false
-  const header = bech32.fromWords(decoded.words)[0]
-  return header !== undefined && header >> 4 <= PAYMENT_ADDRESS_MAX_TYPE
+  if (decoded === undefined) return false
+  const bytes = bech32.fromWordsUnsafe(decoded.words)
+  if (bytes === undefined || bytes.length === 0) return false
+
+  const type = bytes[0]! >> 4
+  const networkId = bytes[0]! & 0x0f
+  // This service supports Cardano mainnet and the public test networks only.
+  if (networkId !== 0 && networkId !== 1) return false
+  if (decoded.prefix !== (networkId === 1 ? 'addr' : 'addr_test')) return false
+  if (expectedNetworkId !== undefined && networkId !== expectedNetworkId) return false
+
+  if (type <= 3) return bytes.length === BASE_ADDRESS_BYTES
+  if (type <= 5) return bytes.length > POINTER_PREFIX_BYTES && hasPointerPayload(bytes)
+  if (type <= 7) return bytes.length === ENTERPRISE_ADDRESS_BYTES
+  return false
 }
 
 /**
@@ -46,8 +94,8 @@ function isBech32PaymentAddress(value: string): boolean {
  * Byron was *unconditionally* rejected here, never that mixing kinds was disallowed. Only a
  * malformed address of either kind still fails the whole batch.
  */
-function isPaymentAddress(value: string): boolean {
-  return isBech32PaymentAddress(value) || isByronAddress(value)
+function isPaymentAddress(value: string, expectedNetworkId?: number): boolean {
+  return isBech32PaymentAddress(value, expectedNetworkId) || isByronAddress(value)
 }
 
 function paymentCredentialHex(value: string): string | undefined {
@@ -72,7 +120,12 @@ function distinct(addresses: string[]): string[] {
 }
 
 /** Address-level reads: discovery, and reads keyed by an address set rather than a stake key. */
-export function registerAddressRoutes(app: FastifyInstance, provider: ChainProvider): void {
+export function registerAddressRoutes(
+  app: FastifyInstance,
+  provider: ChainProvider,
+  network = 'unknown',
+): void {
+  const expectedNetworkId = configuredNetworkId(network)
   app.post('/v1/addresses/filter-used', async (request) => {
     const parsed = addressesBody.safeParse(request.body)
     if (!parsed.success) {
@@ -84,7 +137,7 @@ export function registerAddressRoutes(app: FastifyInstance, provider: ChainProvi
     for (const input of inputs) {
       const credential = paymentCredentialHex(input)
       if (credential !== undefined) credentials.set(input, credential)
-      else if (isPaymentAddress(input)) paymentAddresses.push(input)
+      else if (isPaymentAddress(input, expectedNetworkId)) paymentAddresses.push(input)
       else throw new BadRequestError(FILTER_USED_ERROR)
     }
 
@@ -116,7 +169,7 @@ export function registerAddressRoutes(app: FastifyInstance, provider: ChainProvi
     if (!parsed.success) {
       throw new BadRequestError('body must be { "addresses": [<address>, ...] } (1 to 1000)')
     }
-    if (!parsed.data.addresses.every(isPaymentAddress)) {
+    if (!parsed.data.addresses.every((address) => isPaymentAddress(address, expectedNetworkId))) {
       throw new BadRequestError(PAYMENT_ADDRESS_ERROR)
     }
     return provider.getUtxosByAddresses(distinct(parsed.data.addresses))
@@ -135,7 +188,7 @@ export function registerAddressRoutes(app: FastifyInstance, provider: ChainProvi
           '(1 to 1000 addresses)',
       )
     }
-    if (!parsed.data.addresses.every(isPaymentAddress)) {
+    if (!parsed.data.addresses.every((address) => isPaymentAddress(address, expectedNetworkId))) {
       throw new BadRequestError(PAYMENT_ADDRESS_ERROR)
     }
     return provider.getTxHistoryByAddresses(distinct(parsed.data.addresses), parsed.data.after)

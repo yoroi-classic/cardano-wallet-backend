@@ -6,6 +6,7 @@ import { createPriceProvider } from './prices/index.js'
 import { createRemoteConfig } from './remote-config/index.js'
 import { createProvider } from './providers/factory.js'
 import { buildServer } from './http/server.js'
+import { scrubRetryEvent } from './http/logging.js'
 import { version } from './version.js'
 
 /** Signals an orchestrator sends to ask a container to stop. */
@@ -75,7 +76,8 @@ async function main(): Promise<void> {
   const cache: Cache = config.cacheEnabled ? createMemoryCache() : noCache
 
   const provider = createProvider(config, {
-    onRetry: (event) => log.current?.warn(event, 'retrying an upstream read'),
+    // The event names the upstream path, which can carry a wallet identifier. See scrubRetryEvent.
+    onRetry: (event) => log.current?.warn(scrubRetryEvent(event), 'retrying an upstream read'),
     cache,
   })
 

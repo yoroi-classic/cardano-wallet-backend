@@ -122,7 +122,11 @@ export function createAccountMethods(koios: KoiosClient): AccountCapability {
           _stake_addresses: [stakeAddress],
           _extended: true,
         },
-        (row) => `${row.tx_hash}#${row.tx_index}`,
+        {
+          rowKey: (row) => `${row.tx_hash}#${row.tx_index}`,
+          verifyConsistency: true,
+          keyset: (row) => [row.tx_hash, row.tx_index] as const,
+        },
       )
       return rows.map(mapUtxo)
     },

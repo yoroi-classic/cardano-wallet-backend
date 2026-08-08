@@ -1641,16 +1641,7 @@ export const openapi = {
 
       Proposal: {
         type: 'object',
-        required: [
-          'proposalId',
-          'txHash',
-          'index',
-          'type',
-          'status',
-          'proposedEpoch',
-          'deposit',
-          'returnAddress',
-        ],
+        required: ['proposalId', 'txHash', 'index', 'type', 'status', 'deposit', 'returnAddress'],
         properties: {
           proposalId: { type: 'string', pattern: '^gov_action1[0-9a-z]+$' },
           txHash: HEX(32, 'The transaction that submitted the action'),
@@ -1675,7 +1666,12 @@ export const openapi = {
               'differently. `enacted` outranks `ratified`, because a proposal is ratified first ' +
               'and enacted afterwards.',
           },
-          proposedEpoch: { type: 'integer' },
+          proposedEpoch: {
+            type: 'integer',
+            description:
+              'The epoch the action was proposed in. Absent when the provider cannot source it ' +
+              '(Blockfrost exposes no proposed epoch); present on Koios-backed responses.',
+          },
           expiryEpoch: {
             type: 'integer',
             description: 'When it lapses if nothing happens.',

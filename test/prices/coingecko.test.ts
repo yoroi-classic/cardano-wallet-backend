@@ -188,9 +188,12 @@ describe('coingecko client — unhappy path', () => {
     await expect(client({}, fetchImpl).getAdaPrice(['USD'])).rejects.toThrow(MalformedUpstreamError)
   })
 
-  it('maps a malformed shape (a non-numeric price) to MalformedUpstreamError', async () => {
+  it.each([
+    ['non-numeric', 'not-a-number'],
+    ['non-finite', Number.POSITIVE_INFINITY],
+  ])('maps a malformed shape (a %s price) to MalformedUpstreamError', async (_kind, value) => {
     const { fetchImpl } = fakeFetch({
-      '/simple/price': { json: { cardano: { usd: 'not-a-number' } } },
+      '/simple/price': { json: { cardano: { usd: value } } },
     })
 
     await expect(client({}, fetchImpl).getAdaPrice(['USD'])).rejects.toThrow(MalformedUpstreamError)
@@ -210,6 +213,30 @@ describe('coingecko client — unhappy path', () => {
 })
 
 describe('coingecko client — regression', () => {
+  it('omits nullable price and change fields while preserving finite values', async () => {
+    const { fetchImpl } = fakeFetch({
+      '/simple/price': {
+        json: {
+          cardano: {
+            usd: 0.42,
+            usd_24h_change: null,
+            eur: null,
+            eur_24h_change: 1.2,
+            last_updated_at: 1_700_000_000,
+          },
+        },
+      },
+    })
+
+    const price = await client({}, fetchImpl).getAdaPrice(['USD', 'EUR'])
+
+    expect(price).toEqual({
+      prices: { USD: 0.42 },
+      changePercent24h: { EUR: 1.2 },
+      asOf: 1_700_000_000,
+    })
+  })
+
   it('falls back asOf to now when last_updated_at is absent, rather than throwing', async () => {
     const before = Math.floor(Date.now() / 1000)
     const { fetchImpl } = fakeFetch({
@@ -218,6 +245,22 @@ describe('coingecko client — regression', () => {
 
     const price = await client({}, fetchImpl).getAdaPrice(['USD'])
 
+    expect(price.asOf).toBeGreaterThanOrEqual(before)
+  })
+
+  it('falls back asOf to now when last_updated_at is null, rather than throwing', async () => {
+    const before = Math.floor(Date.now() / 1000)
+    const { fetchImpl } = fakeFetch({
+      '/simple/price': { json: { cardano: { usd: 0.42, last_updated_at: null } } },
+    })
+
+    const price = await client({}, fetchImpl).getAdaPrice(['USD'])
+
+    expect(price).toEqual({
+      prices: { USD: 0.42 },
+      changePercent24h: {},
+      asOf: expect.any(Number),
+    })
     expect(price.asOf).toBeGreaterThanOrEqual(before)
   })
 

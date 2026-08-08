@@ -33,6 +33,8 @@ export interface PriceProvider {
 }
 
 export interface PriceProviderConfig {
+  /** Deployment network used to isolate cached GeckoTerminal data between network instances. */
+  cacheNamespace?: string
   /** Free "Demo" tier CoinGecko key. Absent works fine, just at a lower rate limit. */
   coingeckoApiKey?: string
   /**
@@ -54,6 +56,7 @@ export function createPriceProvider(config: PriceProviderConfig = {}): PriceProv
   })
   const geckoTerminal = createGeckoTerminalClient({
     cache: config.cache,
+    cacheNamespace: config.cacheNamespace,
     fetchImpl: config.geckoTerminalFetchImpl,
   })
 

@@ -1,6 +1,14 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
-import { BadRequestError } from '../../domain/errors.js'
+import { BadRequestError, MalformedUpstreamError } from '../../domain/errors.js'
+import {
+  confirmedTxStatus,
+  expiredTxStatus,
+  pendingTxStatus,
+  rejectedTxStatus,
+  unknownTxStatus,
+  type TxStatus,
+} from '../../domain/types/transactions.js'
 import type { ChainProvider } from '../../providers/provider.js'
 
 // Even-length hex (whole bytes), matching what the provider will accept.
@@ -8,20 +16,56 @@ const submitBody = z.object({ cbor: z.string().regex(/^([0-9a-fA-F]{2})+$/) })
 const TX_HASH = /^[0-9a-fA-F]{64}$/
 
 // A UTxO reference, in the form the whole ecosystem writes it: `<64 hex>#<index>`. The index is
-// bounded rather than merely numeric, because a transaction cannot have 10^9 outputs and a value
-// like that is a caller bug we would otherwise forward to Koios and get a 400 for from further
-// away, where it is harder to understand.
-const MAX_OUTPUT_INDEX = 65_535
-const UTXO_REF = /^[0-9a-fA-F]{64}#\d{1,5}$/
+// Koios stores tx_index as PostgreSQL smallint, so values above 32767 are rejected upstream.
+// Keep the HTTP bound aligned with that provider limit instead of accepting a value that becomes
+// a 502 after the request is forwarded.
+const MAX_OUTPUT_INDEX = 32_767
+const UTXO_REF =
+  /^[0-9a-fA-F]{64}#(?:[0-9]{1,4}|0[0-9]{4}|[12][0-9]{4}|3[01][0-9]{3}|32[0-6][0-9]{2}|327[0-5][0-9]|3276[0-7])$/
 
 const utxoRefsBody = z.object({
   refs: z.array(z.string()).min(1).max(100),
 })
 
-function isUtxoRef(ref: string): boolean {
-  if (!UTXO_REF.test(ref)) return false
+function normalizeUtxoRef(ref: string): string | undefined {
+  if (!UTXO_REF.test(ref)) return undefined
   const index = Number(ref.slice(65))
-  return Number.isInteger(index) && index <= MAX_OUTPUT_INDEX
+  if (!Number.isSafeInteger(index) || index < 0 || index > MAX_OUTPUT_INDEX) return undefined
+
+  // Koios keys both components canonically: lowercase hex and an ordinary base-10 integer.
+  return `${ref.slice(0, 64).toLowerCase()}#${index}`
+}
+
+/**
+ * Rebuild a lifecycle response from canonical fields.
+ *
+ * Providers consume external data, so returning their object verbatim would let an accidental raw
+ * body, transaction byte string, address or credential become a new public field. This allowlist
+ * also makes terminal reason text stable rather than provider-controlled.
+ */
+function publicTxStatus(status: TxStatus): TxStatus {
+  switch (status.status) {
+    case 'unknown':
+      return unknownTxStatus()
+    case 'pending':
+      return pendingTxStatus()
+    case 'confirmed':
+      if (!Number.isSafeInteger(status.confirmations) || status.confirmations < 0) {
+        throw new MalformedUpstreamError(
+          'provider returned an invalid transaction confirmation count',
+        )
+      }
+      return confirmedTxStatus(status.confirmations)
+    case 'rejected':
+      return rejectedTxStatus()
+    case 'expired':
+      return expiredTxStatus()
+    default: {
+      const exhaustive: never = status
+      void exhaustive
+      throw new MalformedUpstreamError('provider returned an unsupported transaction status')
+    }
+  }
 }
 
 /** Transaction submit and status. */
@@ -31,7 +75,10 @@ export function registerTxRoutes(app: FastifyInstance, provider: ChainProvider):
     if (!parsed.success) {
       throw new BadRequestError('body must be { "cbor": "<hex-encoded transaction>" }')
     }
-    return provider.submitTx(parsed.data.cbor)
+    // Project the public response rather than forwarding a provider-owned object. This route
+    // handles signed bytes, so an accidental debug/raw-body field must not become API surface.
+    const { txHash } = await provider.submitTx(parsed.data.cbor)
+    return { txHash }
   })
 
   app.get('/v1/tx/:hash/status', async (request) => {
@@ -39,7 +86,10 @@ export function registerTxRoutes(app: FastifyInstance, provider: ChainProvider):
     if (!TX_HASH.test(hash)) {
       throw new BadRequestError('invalid transaction hash')
     }
-    return provider.getTxStatus(hash)
+    // Hex spelling is case-insensitive, but both upstream providers key lookups by canonical
+    // lowercase hashes. Normalize at the public boundary so every spelling this route accepts has
+    // identical provider behavior.
+    return publicTxStatus(await provider.getTxStatus(hash.toLowerCase()))
   })
 
   /**
@@ -64,14 +114,19 @@ export function registerTxRoutes(app: FastifyInstance, provider: ChainProvider):
       throw new BadRequestError('body must be { "refs": ["<txHash>#<index>", ...] } (1 to 100)')
     }
 
-    const bad = parsed.data.refs.filter((ref) => !isUtxoRef(ref))
+    const normalizedRefs: string[] = []
+    const bad: string[] = []
+    for (const ref of parsed.data.refs) {
+      const normalized = normalizeUtxoRef(ref)
+      if (normalized === undefined) bad.push(ref)
+      else normalizedRefs.push(normalized)
+    }
     if (bad.length > 0) {
       throw new BadRequestError(
         `refs must be "<64-char tx hash>#<output index>": ${bad.slice(0, 3).join(', ')}`,
       )
     }
 
-    // Koios keys UTxOs by lowercase hex; normalize so a caller shouting the hash still matches.
-    return provider.getUtxosByRef(parsed.data.refs.map((ref) => ref.toLowerCase()))
+    return provider.getUtxosByRef(normalizedRefs)
   })
 }

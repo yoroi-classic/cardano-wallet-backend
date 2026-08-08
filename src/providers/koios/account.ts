@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { MalformedUpstreamError } from '../../domain/errors.js'
 import { REWARD_KINDS, type AccountReward, type AccountState } from '../../domain/types/account.js'
 import type { Utxo, WalletTransaction } from '../../domain/types/transactions.js'
 import type { AccountCapability } from '../capabilities/account.js'
@@ -74,15 +75,18 @@ function mapUtxo(row: z.infer<typeof accountUtxoRow>): Utxo {
 export function createAccountMethods(koios: KoiosClient): AccountCapability {
   return {
     async getAccountState(stakeAddress: string): Promise<AccountState> {
+      // Bech32 permits an all-uppercase spelling, while Koios keys and returns addresses in their
+      // canonical lowercase form. Query and compare that form so identity remains exact.
+      const canonicalStakeAddress = stakeAddress.toLowerCase()
       const rows = await koios.batch(z.array(accountInfoRow), '/account_info', {
-        _stake_addresses: [stakeAddress],
+        _stake_addresses: [canonicalStakeAddress],
       })
       const row = rows[0]
       // An unknown or never-used stake key legitimately has no row. Report it as an
       // unregistered, zero-balance account rather than treating it as an error.
       if (!row) {
         return {
-          stakeAddress,
+          stakeAddress: canonicalStakeAddress,
           registered: false,
           balance: '0',
           rewardsAvailable: '0',
@@ -90,8 +94,13 @@ export function createAccountMethods(koios: KoiosClient): AccountCapability {
           withdrawalsSum: '0',
         }
       }
+      // Exactly one account was requested. Extra or mismatched rows mean the upstream answer
+      // cannot safely be attributed to this wallet, even if the first row happens to match.
+      if (rows.length !== 1 || row.stake_address !== canonicalStakeAddress) {
+        throw new MalformedUpstreamError('koios returned invalid account_info row identity')
+      }
       return {
-        stakeAddress: row.stake_address,
+        stakeAddress: canonicalStakeAddress,
         registered: row.status === 'registered',
         balance: String(row.total_balance),
         rewardsAvailable: String(row.rewards_available),

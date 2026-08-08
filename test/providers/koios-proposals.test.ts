@@ -53,11 +53,14 @@ const summaryRow = (overrides: Record<string, unknown> = {}) => ({
 function fakeKoios(opts: { proposals?: unknown[]; summary?: unknown[] | 'fail' }): {
   fetchImpl: FetchLike
   calls: string[]
+  urls: string[]
 } {
   const calls: string[] = []
+  const urls: string[] = []
   const fetchImpl: FetchLike = async (url) => {
     const path = url.replace(BASE, '').split('?')[0] ?? ''
     calls.push(path)
+    urls.push(url)
 
     if (path === '/proposal_voting_summary') {
       if (opts.summary === 'fail') {
@@ -78,7 +81,7 @@ function fakeKoios(opts: { proposals?: unknown[]; summary?: unknown[] | 'fail' }
       text: async () => '',
     }
   }
-  return { fetchImpl, calls }
+  return { fetchImpl, calls, urls }
 }
 
 const provider = (opts: Parameters<typeof fakeKoios>[0]) =>
@@ -262,7 +265,75 @@ describe('koios getProposals', () => {
     await p.getProposals({ limit: 20, offset: 0 })
 
     // A governance browser opens on what is happening now, not on the first week of Conway. The
-    // sort is pushed upstream because block_time is a numeric column, unlike the pool ranking.
+    // unique id tie-break makes equal-timestamp page boundaries deterministic.
     expect(koios.calls[0]).toBe('/proposal_list')
+    expect(new URL(koios.urls[0]!).searchParams.get('order')).toBe(
+      'block_time.desc,proposal_id.desc',
+    )
+  })
+
+  it('retrieves equal-timestamp pages completely and repeatably', async () => {
+    const rows = [
+      proposalRow({ proposal_id: 'gov_action1newest', block_time: 300 }),
+      proposalRow({ proposal_id: 'gov_action1tiea', block_time: 200 }),
+      proposalRow({ proposal_id: 'gov_action1tieb', block_time: 200 }),
+      proposalRow({ proposal_id: 'gov_action1tiec', block_time: 200 }),
+      proposalRow({ proposal_id: 'gov_action1oldest', block_time: 100 }),
+    ]
+    let listCall = 0
+    const fetchImpl: FetchLike = async (rawUrl) => {
+      const url = new URL(rawUrl)
+      if (url.pathname.endsWith('/proposal_voting_summary')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => [summaryRow()],
+          text: async () => '',
+        }
+      }
+
+      const order = url.searchParams.get('order')
+      const tieDirection = listCall++ % 2 === 0 ? 1 : -1
+      const ordered = [...rows].sort((a, b) => {
+        const byTime = Number(b['block_time']) - Number(a['block_time'])
+        if (byTime !== 0) return byTime
+        const byId = String(b['proposal_id']).localeCompare(String(a['proposal_id']))
+        // PostgREST may return either tie order when no secondary key is specified. Alternate it
+        // between requests so an incomplete order deterministically exposes overlap at a page
+        // boundary instead of passing by accident on JavaScript's stable Array.sort.
+        return order === 'block_time.desc,proposal_id.desc' ? byId : byId * tieDirection
+      })
+      const offset = Number(url.searchParams.get('offset'))
+      const limit = Number(url.searchParams.get('limit'))
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ordered.slice(offset, offset + limit),
+        text: async () => '',
+      }
+    }
+    const p = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+    const readAllPages = async (): Promise<string[]> => {
+      const pages = await Promise.all([
+        p.getProposals({ limit: 2, offset: 0 }),
+        p.getProposals({ limit: 2, offset: 2 }),
+        p.getProposals({ limit: 2, offset: 4 }),
+      ])
+      return pages.flat().map((proposal) => proposal.proposalId)
+    }
+
+    const expected = [
+      'gov_action1newest',
+      'gov_action1tiec',
+      'gov_action1tieb',
+      'gov_action1tiea',
+      'gov_action1oldest',
+    ]
+    const first = await readAllPages()
+    const repeated = await readAllPages()
+
+    expect(first).toEqual(expected)
+    expect(new Set(first)).toHaveLength(expected.length)
+    expect(repeated).toEqual(first)
   })
 })

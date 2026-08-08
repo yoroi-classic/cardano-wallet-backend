@@ -257,8 +257,8 @@ export function createGovernanceMethods(
   const metadataCache = {
     peek: (hex: string): { name?: string; image?: string } | undefined =>
       cache.peek(`gov:drep-meta:${hex}`),
-    set: (hex: string, fields: { name?: string; image?: string }): void =>
-      cache.set(`gov:drep-meta:${hex}`, fields, DREP_METADATA_TTL_MS),
+    set: (hex: string, fields: { name?: string; image?: string }, generation: number): void =>
+      cache.setIfGeneration(`gov:drep-meta:${hex}`, fields, DREP_METADATA_TTL_MS, generation),
   }
 
   // Read DRep ids in upstream order, keeping the registered ones, until `needed` of them are
@@ -355,6 +355,12 @@ export function createGovernanceMethods(
     }
     if (missing.length === 0) return byHex
 
+    const generations = new Map(
+      missing.flatMap((id) => {
+        const hex = drepCredentialHex(id)
+        return hex === undefined ? [] : [[hex, cache.generation(`gov:drep-meta:${hex}`)] as const]
+      }),
+    )
     const toBody = (chunk: string[]): unknown => ({ _drep_ids: chunk })
     for (const chunk of packBySize(missing, toBody, koios.bodyLimit)) {
       try {
@@ -364,7 +370,11 @@ export function createGovernanceMethods(
           if (hex === undefined) continue
           const fields = drepMetaFields(row.meta_json)
           byHex.set(hex, fields)
-          metadataCache.set(hex, fields)
+          metadataCache.set(
+            hex,
+            fields,
+            generations.get(hex) ?? cache.generation(`gov:drep-meta:${hex}`),
+          )
         }
       } catch {
         // Names for this chunk are simply unavailable. The DReps still resolve, and nothing is
@@ -451,9 +461,11 @@ export function createGovernanceMethods(
     async getProposals({ limit, offset }: ProposalListParams): Promise<Proposal[]> {
       // Newest first: a governance browser opens on what is happening now, not on what happened in
       // the first week of Conway. Ordered upstream on the proposal's own block time, which is a
-      // numeric column, so unlike the pool ranking this sort *can* be pushed down.
+      // numeric column, so unlike the pool ranking this sort *can* be pushed down. A block can
+      // carry several governance actions, so its timestamp is not unique; proposal_id is the
+      // unique tie-break that keeps offset page boundaries deterministic.
       const query = new URLSearchParams({
-        order: 'block_time.desc',
+        order: 'block_time.desc,proposal_id.desc',
         limit: String(limit),
         offset: String(offset),
       })

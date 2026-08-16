@@ -770,7 +770,7 @@ describe('koios getTxHistoryByAddresses', () => {
   })
 
   it('rejects an incomplete 200 response with a partial Content-Range', async () => {
-    const rows = Array.from({ length: 50 }, (_, block) => ({
+    const rows = Array.from({ length: 30 }, (_, block) => ({
       tx_hash: `partial-${block}`,
       block_height: block,
       block_time: block * 10,
@@ -781,7 +781,7 @@ describe('koios getTxHistoryByAddresses', () => {
       return {
         ok: true,
         status: 200,
-        headers: { get: (name) => (name === 'content-range' ? '0-49/60' : null) },
+        headers: { get: (name) => (name === 'content-range' ? '0-29/60' : null) },
         json: async () => rows,
         text: async () => '',
       }
@@ -791,6 +791,92 @@ describe('koios getTxHistoryByAddresses', () => {
     await expect(provider.getTxHistoryByAddresses([BYRON_A])).rejects.toThrow(
       'koios returned an incomplete successful response for /address_txs',
     )
+  })
+
+  it('rejects a partial response that omits Content-Range', async () => {
+    const rows = Array.from({ length: 30 }, (_, block) => ({
+      tx_hash: `unranged-partial-${block}`,
+      block_height: block,
+      block_time: block * 10,
+      epoch_no: 1,
+    }))
+    const fetchImpl: FetchLike = async (url) => {
+      if (url.includes('/tx_info')) throw new Error('details must not be requested')
+      return { ok: true, status: 206, json: async () => rows, text: async () => '' }
+    }
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    await expect(provider.getTxHistoryByAddresses([BYRON_A])).rejects.toThrow(
+      'koios omitted Content-Range from a partial response for /address_txs',
+    )
+  })
+
+  it('rejects rows paired with an empty Content-Range', async () => {
+    const fetchImpl: FetchLike = async (url) => {
+      if (url.includes('/tx_info')) throw new Error('details must not be requested')
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (name) => (name === 'content-range' ? '*/0' : null) },
+        json: async () => [
+          { tx_hash: 'empty-range-row', block_height: 1, block_time: 10, epoch_no: 1 },
+        ],
+        text: async () => '',
+      }
+    }
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    await expect(provider.getTxHistoryByAddresses([BYRON_A])).rejects.toThrow(
+      'koios returned rows for an empty Content-Range on /address_txs',
+    )
+  })
+
+  it('probes the history bound and rejects an extra row without Content-Range', async () => {
+    const calls: string[] = []
+    const fetchImpl: FetchLike = async (url) => {
+      if (url.includes('/tx_info')) throw new Error('details must not be requested')
+      const query = new URL(url).searchParams
+      const offset = Number(query.get('offset'))
+      const limit = Number(query.get('limit'))
+      calls.push(`${offset}:${limit}`)
+      if (offset < 100_000) {
+        const rows = Array.from({ length: limit }, (_, index) => ({
+          // Keep the logical transaction count below 50 so the bounded merge must walk to the
+          // safety-bound probe instead of stopping after its first page.
+          tx_hash: 'bound-shared',
+          block_height: offset + index,
+          block_time: (offset + index) * 10,
+          epoch_no: 1,
+        }))
+        const end = offset + rows.length - 1
+        return {
+          ok: true,
+          status: 206,
+          headers: { get: (name) => (name === 'content-range' ? `${offset}-${end}/100001` : null) },
+          json: async () => rows,
+          text: async () => '',
+        }
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => [
+          { tx_hash: 'bound-shared', block_height: 100_000, block_time: 1_000_000, epoch_no: 1 },
+        ],
+        text: async () => '',
+      }
+    }
+    const provider = createKoiosProvider({
+      baseUrl: BASE,
+      fetchImpl,
+      readAttempts: 1,
+      retryBackoffMs: 0,
+    })
+
+    await expect(provider.getTxHistoryByAddresses([BYRON_A])).rejects.toThrow(
+      'koios paged result exceeds 100000 rows for /address_txs',
+    )
+    expect(calls.at(-1)).toBe('100000:1')
   })
 
   it('rejects a full page without Content-Range', async () => {

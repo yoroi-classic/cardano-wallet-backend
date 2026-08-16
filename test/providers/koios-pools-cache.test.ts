@@ -143,14 +143,14 @@ describe('the pool list is cached', () => {
     const p = provider(koios)
 
     await p.getPoolList({ limit: 50, offset: 0, ticker: 'ADA' })
-    await p.getPoolList({ limit: 50, offset: 0, ticker: 'ADA' })
+    await p.getPoolList({ limit: 50, offset: 1, ticker: 'ADA' })
 
-    // The page cache still applies (same key), so /pool_info is spared...
-    expect(koios.countOf('/pool_info')).toBe(1)
-    // ...but the *ranking* is not cached for a search: each distinct search term is a different
-    // upstream scan and a different key, and caching an unbounded space of user-supplied strings
-    // is how a cache becomes a memory leak.
-    expect(koios.countOf('/pool_list')).toBe(1)
+    // Different pages must not hide the ranking behaviour behind the page cache. The *ranking*
+    // is not cached for a search, so each page scans upstream even when the search term is the
+    // same. Caching an unbounded space of user-supplied strings is how a cache becomes a memory
+    // leak.
+    expect(koios.countOf('/pool_list')).toBe(2)
+    expect(koios.countOf('/pool_info')).toBe(2)
   })
 })
 

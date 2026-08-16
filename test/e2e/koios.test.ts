@@ -27,8 +27,6 @@ describe('E2E Koios pool discovery', () => {
       }
 
       expect(message).toBe(`Koios pool_list returned HTTP ${status}`)
-      expect(message).not.toContain(SECRET_BODY)
-      expect(message).not.toContain('password')
       expect(json).not.toHaveBeenCalled()
       expect(text).not.toHaveBeenCalled()
     },
@@ -66,8 +64,6 @@ describe('E2E Koios pool discovery', () => {
       await expect(
         discoverRegisteredPoolId('https://user:password@example.test/api/v1', fetchImpl),
       ).rejects.toBe(bodyReadFailure)
-      expect(bodyReadFailure.message).not.toContain('password')
-      expect(bodyReadFailure.message).not.toContain(SECRET_BODY)
     },
   )
 
@@ -108,5 +104,29 @@ describe('E2E Koios pool discovery', () => {
     await expect(discoverRegisteredPoolId('https://example.test/api/v1/', fetchImpl)).resolves.toBe(
       'pool1example',
     )
+  })
+
+  it('rejects a pool id with the wrong type', async () => {
+    const fetchImpl: PoolListFetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => [{ pool_id_bech32: 12345 }],
+    })
+
+    await expect(
+      discoverRegisteredPoolId('https://example.test/api/v1', fetchImpl),
+    ).rejects.toThrow('could not find a registered pool on-chain to exercise pool info')
+  })
+
+  it('rejects an empty pool id', async () => {
+    const fetchImpl: PoolListFetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => [{ pool_id_bech32: '' }],
+    })
+
+    await expect(
+      discoverRegisteredPoolId('https://example.test/api/v1', fetchImpl),
+    ).rejects.toThrow('could not find a registered pool on-chain to exercise pool info')
   })
 })

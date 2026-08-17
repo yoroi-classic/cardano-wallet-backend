@@ -879,6 +879,50 @@ describe('koios getTxHistoryByAddresses', () => {
     expect(calls.at(-1)).toBe('100000:1')
   })
 
+  it('does not treat an empty un-ranged bound probe as end of history', async () => {
+    const calls: string[] = []
+    const fetchImpl: FetchLike = async (url) => {
+      if (url.includes('/tx_info')) throw new Error('details must not be requested')
+      const query = new URL(url).searchParams
+      const offset = Number(query.get('offset'))
+      const limit = Number(query.get('limit'))
+      calls.push(`${offset}:${limit}`)
+      if (offset >= 100_000) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => [],
+          text: async () => '',
+        }
+      }
+      const rows = Array.from({ length: limit }, (_, index) => ({
+        tx_hash: 'bound-empty-probe',
+        block_height: offset + index,
+        block_time: (offset + index) * 10,
+        epoch_no: 1,
+      }))
+      const end = offset + rows.length - 1
+      return {
+        ok: true,
+        status: 206,
+        headers: { get: (name) => (name === 'content-range' ? `${offset}-${end}/100001` : null) },
+        json: async () => rows,
+        text: async () => '',
+      }
+    }
+    const provider = createKoiosProvider({
+      baseUrl: BASE,
+      fetchImpl,
+      readAttempts: 1,
+      retryBackoffMs: 0,
+    })
+
+    await expect(provider.getTxHistoryByAddresses([BYRON_A])).rejects.toThrow(
+      'koios omitted Content-Range from a partial response for /address_txs',
+    )
+    expect(calls.at(-1)).toBe('100000:1')
+  })
+
   it('rejects a full page without Content-Range', async () => {
     const rows = Array.from({ length: 50 }, (_, block) => ({
       tx_hash: `unranged-${block}`,

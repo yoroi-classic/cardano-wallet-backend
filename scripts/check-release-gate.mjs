@@ -40,10 +40,25 @@ function releaseJobNames(source) {
   const jobsIndex = lines.indexOf('jobs:')
   assert.notEqual(jobsIndex, -1, 'release workflow must define jobs')
   const jobs = []
-  for (const line of lines.slice(jobsIndex + 1)) {
-    if (line.trim() !== '' && !line.startsWith(' ')) break
+  const parseKey = (value) => {
+    const match = /^(?:"([^"]*)"|'([^']*)'|([^\s:#][^:]*?))[ \t]*$/.exec(value)
+    return match?.[1] ?? match?.[2] ?? match?.[3]
+  }
+  for (let index = jobsIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index] ?? ''
+    if (line.trim() === '' || /^\s*#/.test(line)) continue
+    if (!line.startsWith(' ')) break
     const match = /^ {2}(?:"([^"]*)"|'([^']*)'|([^\s:#][^:]*?))[ \t]*:/.exec(line)
-    if (match !== null) jobs.push(match[1] ?? match[2] ?? match[3])
+    if (match !== null) {
+      jobs.push(match[1] ?? match[2] ?? match[3])
+      continue
+    }
+    const explicitKey = /^ {2}\?[ \t]*(.*)$/.exec(line)
+    if (explicitKey !== null) {
+      const key = parseKey(explicitKey[1] ?? '')
+      const next = lines[index + 1] ?? ''
+      if (key !== undefined && /^ {2}:[ \t]*/.test(next)) jobs.push(key)
+    }
   }
   return jobs
 }
@@ -117,6 +132,26 @@ assert.throws(
   /Expected values to be strictly deep-equal/,
   'release gate must reject quoted additional release jobs',
 )
+assert.throws(
+  () =>
+    assert.deepEqual(
+      releaseJobNames(`${workflow}\n  ? publish\n  :\n    runs-on: ubuntu-latest\n`),
+      ['tag'],
+    ),
+  /Expected values to be strictly deep-equal/,
+  'release gate must reject explicit additional job keys',
+)
+assert.throws(
+  () =>
+    assert.deepEqual(
+      releaseJobNames(
+        `${workflow}\n# a top-level comment must not truncate jobs\n  publish:\n    runs-on: ubuntu-latest\n`,
+      ),
+      ['tag'],
+    ),
+  /Expected values to be strictly deep-equal/,
+  'release gate must inspect jobs after comments',
+)
 
 for (const required of [
   'workflow_run:',
@@ -161,40 +196,117 @@ for (const required of [
   assert.ok(workflow.includes(required), `release workflow contract missing: ${required}`)
 }
 
-const workflowWithoutShellContinuations = workflow.replace(/\\[ \t]*\r?\n[ \t]*/g, ' ')
-const ciWithoutComments = ciWorkflow
-  .split('\n')
-  .filter((line) => !/^\s*#/.test(line))
-  .join('\n')
-assert.doesNotMatch(
-  ciWithoutComments,
-  /^[ \t]+continue-on-error:[ \t]*(?!false\b)[^\n]*$/im,
-  'CI must not convert failed steps into a successful workflow conclusion',
+function removeYamlComments(source) {
+  return source
+    .split('\n')
+    .filter((line) => !/^\s*#/.test(line))
+    .join('\n')
+}
+
+function runBodies(source) {
+  const cleaned = removeYamlComments(source)
+  const lines = cleaned.split('\n')
+  const bodies = []
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? ''
+    const match = /^(\s*)(?:-\s*)?run\s*:\s*(.*)$/.exec(line)
+    if (match === null) continue
+    const indent = (match[1] ?? '').length
+    const firstLine = match[2] ?? ''
+    const body = [firstLine]
+    if (/^(?:\||>)[-+]?\s*$/.test(firstLine)) {
+      for (let next = index + 1; next < lines.length; next += 1) {
+        const continuation = lines[next] ?? ''
+        if (continuation.trim() !== '' && continuation.search(/\S/) <= indent) break
+        body.push(continuation)
+        index = next
+      }
+    }
+    bodies.push(body.join('\n'))
+  }
+  for (const match of cleaned.matchAll(/\{\s*run\s*:\s*([^,}]+)(?:,|})/g)) {
+    bodies.push(match[1] ?? '')
+  }
+  return bodies
+}
+
+function continueOnErrorValues(source) {
+  const values = []
+  for (const line of removeYamlComments(source).split('\n')) {
+    const matches = line.matchAll(
+      /(?:^\s*|[,{}]\s*)(?:"continue-on-error"|'continue-on-error'|continue-on-error)\s*:\s*(?:"([^"]*)"|'([^']*)'|([^,}\s]+))/g,
+    )
+    for (const match of matches) values.push(match[1] ?? match[2] ?? match[3])
+  }
+  return values
+}
+
+function assertContinueOnErrorIsFalseOnly(source) {
+  for (const value of continueOnErrorValues(source)) {
+    assert.equal(
+      value?.toLowerCase(),
+      'false',
+      'CI must not convert failed steps into a successful workflow conclusion',
+    )
+  }
+}
+
+const workflowWithoutShellContinuations = removeYamlComments(workflow).replace(
+  /\\[ \t]*\r?\n[ \t]*/g,
+  ' ',
 )
-assert.doesNotMatch(
-  ciWithoutComments,
-  /\|\|\s*(?:true\b|:)(?:\s*#.*)?$/m,
-  'CI must not ignore failed commands',
+const ciWithoutComments = removeYamlComments(ciWorkflow)
+assertContinueOnErrorIsFalseOnly(ciWorkflow)
+assert.deepEqual(
+  continueOnErrorValues('      continue-on-error: false\n'),
+  ['false'],
+  'false must remain an allowed continue-on-error value',
 )
+for (const bypass of [
+  '      continue-on-error: true\n',
+  '      "continue-on-error": true\n',
+  "      'continue-on-error' : true\n",
+  '      - { run: npm test, continue-on-error: true }\n',
+]) {
+  assert.throws(
+    () => assertContinueOnErrorIsFalseOnly(bypass),
+    /CI must not convert failed steps/,
+    `guard must reject non-false continue-on-error: ${bypass}`,
+  )
+}
+assert.doesNotMatch(
+  runBodies(ciWorkflow).join('\n'),
+  /\|\|/,
+  'CI run steps must not ignore failed commands',
+)
+for (const ignored of [
+  'run: npm test || true; echo reached',
+  'run: npm test || exit 0',
+  'run: |\n        npm test \\\n          || echo failed',
+]) {
+  assert.match(
+    runBodies(ignored).join('\n'),
+    /\|\|/,
+    `guard must reject ignored CI command: ${ignored}`,
+  )
+}
 const ignoredReleaseDeletion =
-  /(?:gh release delete|gh api[^\n]*(?:--method|-X)\s+DELETE[^\n]*releases\/)[^\n]*\|\|\s*(?:true\b|:)/
+  /(?:gh release delete|gh api[^\n]*(?:--method|-X)\s+DELETE[^\n]*releases\/)[^\n]*\|\|/
 assert.doesNotMatch(
   workflowWithoutShellContinuations,
   ignoredReleaseDeletion,
   'release rollback deletion must never be ignored',
 )
 assert.doesNotMatch(
-  workflow,
+  workflowWithoutShellContinuations,
   /gh release delete/,
   'release rollback must delete the captured release ID, never whichever release owns the tag',
 )
 for (const ignored of [
   'gh release delete "$tag" --yes ||true',
-  'gh release delete "$tag" --yes ||   true',
-  'gh release delete "$tag" --yes || :',
+  'gh release delete "$tag" --yes || exit 0',
+  'gh release delete "$tag" --yes || echo failed; echo reached',
   'gh api --method DELETE "repos/o/r/releases/$created_release_id" ||\t:',
-  'gh api \\\n    --method DELETE \\\n    "repos/o/r/releases/$created_release_id" || true',
-  'gh api -X \\\n    DELETE "repos/o/r/releases/$created_release_id" \\\n    || :',
 ]) {
   assert.match(
     ignored.replace(/\\[ \t]*\r?\n[ \t]*/g, ' '),
@@ -202,6 +314,50 @@ for (const ignored of [
     `guard must reject ignored deletion: ${ignored}`,
   )
 }
+function shellFunction(source, name) {
+  const start = source.indexOf(`          ${name}() {`)
+  assert.notEqual(start, -1, `${name} must be defined at the release step scope`)
+  const lines = source.slice(start).split('\n')
+  const end = lines.findIndex((line, index) => index > 0 && line === '          }')
+  assert.notEqual(end, -1, `${name} must have a complete body`)
+  return lines.slice(0, end + 1).join('\n')
+}
+
+const releaseWithoutComments = removeYamlComments(workflow)
+const currentMainFunction = shellFunction(releaseWithoutComments, 'require_current_main')
+assert.equal(
+  currentMainFunction,
+  `          require_current_main() {
+            main_sha="$(git ls-remote --exit-code origin refs/heads/main | cut -f1)"
+            if [ "$main_sha" != "$RELEASE_SHA" ]; then
+              echo "::error::Successful CI commit $RELEASE_SHA is no longer the main head ($main_sha)"
+              return 1
+            fi
+          }`,
+  'require_current_main must retain its executable fail-closed body',
+)
+assert.match(
+  releaseWithoutComments,
+  /test "\$\(git rev-parse HEAD\)" = "\$RELEASE_SHA"\n\s+git fetch origin main --depth=1\n\s+main_sha="\$\(git rev-parse FETCH_HEAD\)"\n\s+if \[ "\$main_sha" != "\$RELEASE_SHA" \]; then\n\s+echo "::error::Successful CI commit \$RELEASE_SHA is no longer the main head \(\$main_sha\)"\n\s+exit 1\n\s+fi/,
+  'the initial main-head check must execute its failure branch',
+)
+assert.doesNotMatch(
+  releaseWithoutComments,
+  /if\s+(?:false|\[\s*false\s*\]);\s*then/,
+  'release gate assertions must not be hidden behind a disabled branch',
+)
+const deleteFunction = shellFunction(releaseWithoutComments, 'delete_created_release')
+assert.match(
+  deleteFunction,
+  /for attempt in 1 2 3[\s\S]*gh api --method DELETE "repos\/\$\{GITHUB_REPOSITORY\}\/releases\/\$created_release_id"/,
+  'delete_created_release must execute and reconcile deletion by captured ID',
+)
+assert.doesNotMatch(
+  deleteFunction,
+  /^\s*:\s*$/m,
+  'rollback deletion must not be an empty shell body',
+)
+
 assert.ok(
   workflow.indexOf('delete_created_release\n') <
     workflow.indexOf('delete_created_tag\n', workflow.indexOf('delete_created_release\n')),

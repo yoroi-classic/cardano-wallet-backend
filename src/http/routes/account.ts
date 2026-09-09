@@ -51,8 +51,10 @@ export function registerAccountRoutes(
    * Replaces the extension's `POST /api/account/rewardHistory`.
    *
    * `after` pages forward on the epoch the reward was **earned for**, not the epoch it became
-   * spendable. Cardano pays two epochs in arrears, so the two differ by ten days, and paging on
-   * the wrong one shifts every point on the graph by that much while still looking plausible.
+   * spendable. A pool reward is paid two epochs in arrears, so the two differ by ten days, and
+   * paging on the wrong one shifts every point on the graph by that much while still looking
+   * plausible. The gap is not the same for every kind, which is another reason to page on the
+   * earned epoch rather than trying to convert between them.
    */
   app.get('/v1/account/:stake/rewards', async (request) => {
     const { stake } = request.params as { stake: string }

@@ -56,18 +56,22 @@ export interface AccountReward {
   /**
    * The epoch the reward was *earned for*, which is the one to plot it against.
    *
-   * Not the same as the epoch it could be spent in: Cardano pays rewards two epochs in arrears.
-   * Both are here because a rewards graph wants the first and a balance projection wants the
-   * second, and quietly picking one would make the other wrong by ten days.
+   * Not the same as the epoch it could be spent in: a pool reward is paid two epochs in arrears,
+   * and other kinds are not. Both are here because a rewards graph wants the first and a balance
+   * projection wants the second, and quietly picking one would make the other wrong by ten days.
    */
   earnedEpoch: number
   /**
    * The epoch the reward became withdrawable.
    *
-   * The gap depends on the kind, so do not compute it from `earnedEpoch`. Pool rewards (`member`
-   * and `leader`) are paid two epochs in arrears. A `proposal_refund` or a `treasury` payout
-   * arrives the epoch after the one it is earned for. The value here is upstream's own; it is
-   * carried rather than derived precisely because the offset is not uniform.
+   * The gap depends on the kind, so a client must not compute it from `earnedEpoch`. Pool rewards
+   * (`member` and `leader`) are paid two epochs in arrears. A `proposal_refund` or a `treasury`
+   * payout arrives the epoch after the one it is earned for.
+   *
+   * Koios reports this field and the value is carried through unchanged. Blockfrost reports only
+   * the earned epoch, so its driver adds two, which is correct for every kind Blockfrost returns
+   * (`member`, `leader` and a pool deposit refund) and is the reason that derivation is safe there
+   * and would not be here.
    */
   spendableEpoch: number
   /** Lovelace, as a string. */

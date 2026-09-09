@@ -1069,9 +1069,11 @@ export const openapi = {
           spendableEpoch: {
             type: 'integer',
             description:
-              'The epoch it became withdrawable: `earnedEpoch + 2` on the current protocol. ' +
-              'Both are here because a graph wants the first and a balance projection wants the ' +
-              'second, and they are ten days apart.',
+              'The epoch it became withdrawable. **Do not derive this from `earnedEpoch`:** the ' +
+              'gap depends on the kind. Pool rewards (`member`, `leader`) are paid two epochs in ' +
+              'arrears; `proposal_refund` and `treasury` land the epoch after the one they are ' +
+              'earned for. Both fields are here because a graph wants the first and a balance ' +
+              'projection wants the second.',
           },
           amount: LOVELACE,
           kind: {
@@ -1080,13 +1082,15 @@ export const openapi = {
             description:
               "`member` is a delegator share; `leader` is the pool operator's cut. An operator " +
               'can receive both in the same epoch from the same pool, which is why this is a list ' +
-              'rather than a map keyed by epoch.',
+              'rather than a map keyed by epoch. `refund` is a returned stake-key deposit and ' +
+              '`proposal_refund` a returned governance proposal deposit; they are distinct ' +
+              'because they say different things about where the money came from.',
           },
           poolId: {
             type: 'string',
             description:
-              'The pool that paid it. Absent for treasury, reserves and refunds, which no pool ' +
-              'paid.',
+              'The pool that paid it. Absent for treasury, reserves and both refund kinds, which ' +
+              'no pool paid.',
           },
         },
       },

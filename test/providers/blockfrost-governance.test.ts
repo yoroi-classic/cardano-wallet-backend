@@ -208,6 +208,30 @@ describe('blockfrost governance — getDrepInfo', () => {
     await expect(provider.getDrepInfo([DREP_A])).rejects.toBeInstanceOf(MalformedUpstreamError)
   })
 
+  // Blockfrost answers 200 for a pseudo-DRep on the detail endpoint, with an empty credential and
+  // a real voting power. Confirmed live on preprod 2026-09-09 for both ids. Publishing that row
+  // would put an empty string in a field the contract calls the 28-byte credential, so the read
+  // drops it, the same answer it already gives for an id Blockfrost does not know.
+  it('drops a pseudo-drep rather than publishing an empty credential', async () => {
+    const provider = providerFor({
+      drepDetail: {
+        drep_always_abstain: drepDetail({ drep_id: 'drep_always_abstain', hex: '' }),
+      },
+    })
+
+    await expect(provider.getDrepInfo(['drep_always_abstain'])).resolves.toEqual([])
+  })
+
+  // The bypass is a whitelist of the two known ids, not "anything that is not a drep1". An
+  // unrecognized id must still have its credential validated rather than waved through.
+  it('still validates the credential of an unrecognized non-drep1 id', async () => {
+    const provider = providerFor({
+      drepDetail: { weird_id: drepDetail({ drep_id: 'weird_id', hex: 'nothex' }) },
+    })
+
+    await expect(provider.getDrepInfo(['weird_id'])).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+
   it('returns [] for an empty input', async () => {
     await expect(providerFor({}).getDrepInfo([])).resolves.toEqual([])
   })

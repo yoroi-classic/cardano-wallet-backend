@@ -112,12 +112,18 @@ function normalizeDrepCredential(hex: string, hasScript: boolean, ctx: z.Refinem
 }
 
 /**
- * Whether a row is one of the two pseudo-DReps (`drep_always_abstain`,
- * `drep_always_no_confidence`). They are voting options rather than registrations, they carry an
- * empty `hex`, and `registeredDreps` drops them. That filter runs on parsed rows, so the schema
- * has to admit them or the page fails before the filter is reached.
+ * The two pseudo-DReps. They are voting options rather than registrations: Conway lets a stake key
+ * delegate its vote to "always abstain" or "always no confidence" without there being a DRep
+ * behind either. Blockfrost lists them alongside real DReps and serves them on the detail
+ * endpoint, both with an empty `hex`, because neither has a credential.
+ *
+ * Named explicitly rather than inferred from the id shape. A predicate like `!startsWith('drep1')`
+ * would also wave through any unrecognized id, so an upstream row carrying a malformed identifier
+ * would skip credential validation entirely instead of failing.
  */
-const isPseudoDrep = (drepId: string): boolean => !drepId.startsWith('drep1')
+const PSEUDO_DREP_IDS = new Set(['drep_always_abstain', 'drep_always_no_confidence'])
+
+const isPseudoDrep = (drepId: string): boolean => PSEUDO_DREP_IDS.has(drepId)
 
 /** `drep` (Blockfrost OpenAPI spec, `/governance/dreps/{drep_id}`), projected to what we map. */
 const drepRow = z
@@ -390,6 +396,11 @@ export function createGovernanceMethods(client: BlockfrostClient): GovernanceCap
           `/governance/dreps/${encodeURIComponent(id)}`,
         )
         if (row === undefined) return undefined
+        // A pseudo-DRep answers 200 here with an empty `hex`, so it has to be dropped rather than
+        // mapped: `DrepInfo.hex` is published as the 28-byte credential and one of these has none.
+        // Absent is the same answer this read already gives for an id Blockfrost does not know,
+        // and it matches the list, which filters them out before mapping.
+        if (isPseudoDrep(id) || isPseudoDrep(row.drep_id)) return undefined
         const meta = await drepAnchor(id)
         return mapDrepInfo(row, drepDeposit, meta)
       })

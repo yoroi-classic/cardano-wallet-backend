@@ -108,8 +108,20 @@ export async function discoverRecentTxHash(): Promise<string> {
   const tip = await discover<{ height: number }>('/blocks/latest')
   for (let back = 0; back < RECENT_BLOCK_SCAN; back += 1) {
     const hashes = await discover<string[]>(`/blocks/${tip.height - back}/txs`)
-    const hash = hashes[hashes.length - 1]
-    if (hash !== undefined) return hash
+    // Newest first within the block, so the freshest candidates are tried before older ones.
+    for (const hash of [...hashes].reverse()) {
+      const utxos = await discover<{ outputs: { consumed_by_tx?: string | null }[] }>(
+        `/txs/${encodeURIComponent(hash)}/utxos`,
+      )
+      // The caller resolves this transaction's first output and expects it to be unspent, so one
+      // whose first output has already been consumed is no use even though the transaction exists.
+      // A recent output is usually unspent and occasionally is not, which is the kind of "usually"
+      // that fails one run in ten rather than never.
+      const first = utxos.outputs[0]
+      if (first !== undefined && (first.consumed_by_tx ?? null) === null) return hash
+    }
   }
-  throw new Error(`no transaction found in the ${RECENT_BLOCK_SCAN} blocks below the preprod tip`)
+  throw new Error(
+    `no transaction with an unspent first output in the ${RECENT_BLOCK_SCAN} blocks below the preprod tip`,
+  )
 }

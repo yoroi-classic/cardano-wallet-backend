@@ -39,6 +39,17 @@ const blockHeightRow = z.object({
  *
  * Duplicates cost nothing: the input is reduced to its distinct members first, and the returned
  * map is keyed by hash, so callers look up per row without tracking which lookups they caused.
+ *
+ * A block that has rolled back between the UTxO walk and this lookup fails the whole read, and
+ * that is deliberate. This function serves the account- and address-keyed reads, which answer
+ * "the complete set of outputs this wallet controls". A set quietly missing an output is a wrong
+ * balance: the wallet undercounts its funds and can refuse to build a transaction it could
+ * afford. An error is transient and the caller retries onto a consistent set, so it is the less
+ * damaging of the two. The account walk already takes this position for the same reason, failing
+ * with "blockfrost account utxos changed during paged read; retry" when its scan sees churn.
+ *
+ * `resolveTxBlockHeights` below drops instead, and the difference is the question being asked
+ * rather than an inconsistency. See its note.
  */
 export async function resolveBlockHeights(
   client: BlockfrostClient,
@@ -72,6 +83,11 @@ const txBlockHeightRow = z.object({
  * A transaction that has gone from the chain between the two reads is absent from the map rather
  * than an error. The caller drops that reference, which is the same "nothing here" answer it
  * already gives for a reference that never existed.
+ *
+ * Dropping is right here and wrong for the reads above, because the question differs. A caller
+ * asking about specific references is told per reference what could be resolved, and absence is
+ * already part of that contract. A caller asking for everything a wallet controls cannot tell a
+ * dropped output from one that was never there, so it would silently read a wrong balance.
  */
 export async function resolveTxBlockHeights(
   client: BlockfrostClient,

@@ -154,21 +154,36 @@ describe('blockfrost getUtxosByRef', () => {
   // the same answer this walk already gives for a reference that never existed, and it must not
   // take the rest of the batch down with it.
   it('drops a reference whose transaction went from the chain mid-read', async () => {
+    // Only HASH_A's block lookup 404s. HASH_B's resolves, so the batch keeps it, which is the
+    // isolation this test exists to prove: one rolled-back reference must not empty the result.
     const fetchImpl: FetchLike = async (rawUrl) => {
       const url = new URL(rawUrl)
-      if (/\/txs\/[^/]+$/.test(url.pathname)) {
-        return { ok: false, status: 404, json: async () => ({}), text: async () => '' }
+      const tx = url.pathname.match(/\/txs\/([^/]+)$/)
+      if (tx !== null) {
+        if (tx[1] === HASH_A) {
+          return { ok: false, status: 404, json: async () => ({}), text: async () => '' }
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ block_height: 4_961_506 }),
+          text: async () => '',
+        }
       }
+      const utxos = url.pathname.match(/\/txs\/([^/]+)\/utxos$/)
       return {
         ok: true,
         status: 200,
-        json: async () => ({ hash: HASH_A, inputs: [], outputs: [output(0)] }),
+        json: async () => ({ hash: utxos?.[1], inputs: [], outputs: [output(0)] }),
         text: async () => '',
       }
     }
     const p = createBlockfrostProvider({ baseUrl: BASE, projectId: PROJECT_ID, fetchImpl })
 
-    await expect(p.getUtxosByRef([`${HASH_A}#0`])).resolves.toEqual([])
+    const utxos = await p.getUtxosByRef([`${HASH_A}#0`, `${HASH_B}#0`])
+
+    expect(utxos.map((u) => u.txHash)).toEqual([HASH_B])
+    expect(utxos[0]?.blockHeight).toBe(4_961_506)
   })
 
   it('reports a consumed output as spent', async () => {

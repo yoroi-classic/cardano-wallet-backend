@@ -80,8 +80,10 @@ const utxoInputRow = z.object({
   // transaction", meaning the source transaction rather than the one being read. Required, and
   // read strictly: an input without a usable reference cannot be identified by the caller, and
   // matching by address and amount instead is wrong the moment a transaction spends two equal
-  // outputs from one address.
-  tx_hash: z.string(),
+  // outputs from one address. Shaped as strictly as the Koios mapper validates its own: this
+  // value is published as `TxInput.txHash`, so a malformed one would reach the caller looking
+  // like a reference it could resolve.
+  tx_hash: z.string().regex(/^[0-9a-fA-F]{64}$/),
   output_index: z.number().int().nonnegative(),
   // A collateral input is only consumed on a script-validation failure, and a reference input is
   // never consumed at all. Neither is a real spend, so both are dropped to match Koios's `inputs`,

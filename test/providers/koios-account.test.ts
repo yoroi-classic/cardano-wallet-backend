@@ -83,6 +83,32 @@ describe('koios getAccountState', () => {
     expect(JSON.parse(String(calls[0]?.body))).toEqual({ _stake_addresses: [STAKE] })
   })
 
+  // Koios computes total_balance without the proposal_refund column, so an account with a
+  // governance deposit outstanding reports a negative controlled balance. This read used to 502
+  // for every such account: real DReps and SPOs, unable to see their own account state at all.
+  // Measured against live mainnet on 2026-09-09: 7 of the 14 distinct return addresses on the
+  // first 25 rows of /proposal_list were negative.
+  it('maps a negative controlled balance rather than failing the read', async () => {
+    const { fetchImpl } = fakeFetch({
+      json: async () => [{ ...ROW, total_balance: '-89788495927' }],
+    })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const state = await provider.getAccountState(STAKE)
+
+    expect(state.balance).toBe('-89788495927')
+  })
+
+  // Only that one field is signed. A negative anywhere else is still malformed upstream data.
+  it('still rejects a negative on a field that cannot go below zero', async () => {
+    const { fetchImpl } = fakeFetch({
+      json: async () => [{ ...ROW, rewards_available: '-1' }],
+    })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getAccountState(STAKE)).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+
   it('reports an unknown stake as unregistered with zero balance', async () => {
     const { fetchImpl } = fakeFetch({ json: async () => [] })
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })

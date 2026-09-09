@@ -35,6 +35,16 @@ const LOVELACE = {
     'A lovelace amount as a decimal string. Parse with BigInt, never Number: values can exceed 2^53.',
 } as const
 
+// Only for the fields that genuinely go below zero. Kept separate from LOVELACE so the other
+// twenty-odd amounts, none of which can be negative, keep rejecting a minus sign.
+const SIGNED_LOVELACE = {
+  type: 'string',
+  pattern: '^-?(?:0|[1-9]\\d*)$',
+  description:
+    'A lovelace amount as a decimal string, which may be negative. Parse with BigInt, never ' +
+    'Number: values can exceed 2^53.',
+} as const
+
 const HEX = (bytes: number, description: string) =>
   ({
     type: 'string',
@@ -1066,7 +1076,7 @@ export const openapi = {
           amount: LOVELACE,
           kind: {
             type: 'string',
-            enum: ['member', 'leader', 'treasury', 'reserves', 'refund'],
+            enum: ['member', 'leader', 'treasury', 'reserves', 'refund', 'proposal_refund'],
             description:
               "`member` is a delegator share; `leader` is the pool operator's cut. An operator " +
               'can receive both in the same epoch from the same pool, which is why this is a list ' +
@@ -1256,8 +1266,12 @@ export const openapi = {
               'False for a stake key never seen on chain; the account is then all zeros.',
           },
           balance: {
-            ...LOVELACE,
-            description: 'Controlled lovelace: UTxO plus withdrawable rewards.',
+            ...SIGNED_LOVELACE,
+            description:
+              'Controlled lovelace: UTxO plus withdrawable rewards. **Can be negative.** An ' +
+              'account with an outstanding governance proposal deposit reports a negative ' +
+              'balance until that deposit is returned, because the upstream sum excludes the ' +
+              'pending refund. Parse with BigInt and do not assume a non-negative value.',
           },
           rewardsAvailable: { ...LOVELACE, description: 'Withdrawable right now.' },
           rewardsSum: { ...LOVELACE, description: 'Lifetime rewards earned.' },

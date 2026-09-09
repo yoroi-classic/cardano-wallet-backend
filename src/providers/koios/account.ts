@@ -4,7 +4,7 @@ import { REWARD_KINDS, type AccountReward, type AccountState } from '../../domai
 import type { Utxo, WalletTransaction } from '../../domain/types/transactions.js'
 import type { AccountCapability } from '../capabilities/account.js'
 import type { KoiosClient } from './client.js'
-import { assetItem, mapAssets, numeric } from './schema.js'
+import { assetItem, mapAssets, numeric, signedNumeric } from './schema.js'
 import { hydrateTxHistory } from './tx-info.js'
 
 // How many transactions we detail per page. Matches the extension's request size.
@@ -17,7 +17,9 @@ const accountInfoRow = z.object({
   status: z.enum(['registered', 'not registered']),
   delegated_pool: z.string().nullish(),
   delegated_drep: z.string().nullish(),
-  total_balance: numeric,
+  // Signed: Koios excludes the proposal_refund column from this sum, so an account holding an
+  // outstanding governance deposit reports a negative controlled balance. See signedNumeric.
+  total_balance: signedNumeric,
   rewards_available: numeric,
   rewards: numeric,
   withdrawals: numeric,
@@ -42,7 +44,7 @@ const rewardRow = z.object({
   spendable_epoch: z.number().int().nonnegative(),
   amount: numeric,
   type: z.enum(REWARD_KINDS),
-  // Absent for treasury, reserves and refunds, which are not paid by a pool.
+  // Absent for treasury, reserves and both refund kinds, which are not paid by a pool.
   pool_id: z.string().nullish(),
 })
 

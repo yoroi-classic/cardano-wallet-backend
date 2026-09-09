@@ -3,6 +3,7 @@ import type {
   CertificateKind,
   ResolvedUtxo,
   TxCertificate,
+  TxInput,
   TxIo,
   WalletTransaction,
   Withdrawal,
@@ -75,6 +76,13 @@ const blockRow = z.object({
 const utxoInputRow = z.object({
   address: z.string(),
   amount: amountList,
+  // The output this input consumed. Blockfrost's spec calls `tx_hash` here "Hash of the UTXO
+  // transaction", meaning the source transaction rather than the one being read. Required, and
+  // read strictly: an input without a usable reference cannot be identified by the caller, and
+  // matching by address and amount instead is wrong the moment a transaction spends two equal
+  // outputs from one address.
+  tx_hash: z.string(),
+  output_index: z.number().int().nonnegative(),
   // A collateral input is only consumed on a script-validation failure, and a reference input is
   // never consumed at all. Neither is a real spend, so both are dropped to match Koios's `inputs`,
   // which lists regular inputs only (collateral and reference live on separate Koios fields).
@@ -128,6 +136,10 @@ const metadataRow = z.object({ label: z.string(), json_metadata: z.unknown() })
 function mapTxIo(row: { address: string; amount: z.infer<typeof amountList> }): TxIo {
   const { value, assets } = splitAmount(row.amount)
   return { address: row.address, value, assets }
+}
+
+function mapTxInput(row: z.infer<typeof utxoInputRow>): TxInput {
+  return { ...mapTxIo(row), txHash: row.tx_hash, outputIndex: row.output_index }
 }
 
 /**
@@ -237,7 +249,7 @@ async function hydrateOne(
 
   const inputs = utxos.inputs
     .filter((input) => !input.collateral && input.reference !== true)
-    .map(mapTxIo)
+    .map(mapTxInput)
 
   return {
     blockIndex: tx.index,

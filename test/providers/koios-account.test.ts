@@ -756,7 +756,15 @@ describe('koios getTxHistory', () => {
       tx_block_index: 0,
       fee: '150000',
       invalid_after: 999,
-      inputs: [{ payment_addr: { bech32: 'addr_in' }, value: '5000000', asset_list: null }],
+      inputs: [
+        {
+          payment_addr: { bech32: 'addr_in' },
+          tx_hash: 'cd'.repeat(32),
+          tx_index: 1,
+          value: '5000000',
+          asset_list: null,
+        },
+      ],
       outputs: [
         {
           payment_addr: { bech32: 'addr_out' },
@@ -805,7 +813,15 @@ describe('koios getTxHistory', () => {
       blockTime: 90,
       fee: '150000',
       ttl: 999,
-      inputs: [{ address: 'addr_in', value: '5000000', assets: [] }],
+      inputs: [
+        {
+          address: 'addr_in',
+          txHash: 'cd'.repeat(32),
+          outputIndex: 1,
+          value: '5000000',
+          assets: [],
+        },
+      ],
       outputs: [
         {
           address: 'addr_out',

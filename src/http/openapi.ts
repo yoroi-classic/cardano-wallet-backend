@@ -1332,6 +1332,26 @@ export const openapi = {
         },
       },
 
+      TxInput: {
+        type: 'object',
+        required: ['txHash', 'outputIndex', 'value', 'assets'],
+        properties: {
+          address: { type: 'string' },
+          txHash: HEX(32, 'The transaction that created the output this input consumed'),
+          outputIndex: {
+            type: 'integer',
+            minimum: 0,
+            description:
+              'Index of the consumed output within that transaction. With `txHash` this ' +
+              'identifies the spent output exactly. Do not match inputs by address and value ' +
+              'instead: a transaction can consume two outputs with the same address and the ' +
+              'same value, and nothing else in the response tells them apart.',
+          },
+          value: LOVELACE,
+          assets: { type: 'array', items: { $ref: '#/components/schemas/Asset' } },
+        },
+      },
+
       Withdrawal: {
         type: 'object',
         required: ['stakeAddress', 'amount'],
@@ -1392,7 +1412,7 @@ export const openapi = {
           blockTime: { type: 'integer', description: 'Unix seconds.' },
           fee: LOVELACE,
           ttl: { type: 'integer' },
-          inputs: { type: 'array', items: { $ref: '#/components/schemas/TxIo' } },
+          inputs: { type: 'array', items: { $ref: '#/components/schemas/TxInput' } },
           outputs: { type: 'array', items: { $ref: '#/components/schemas/TxIo' } },
           withdrawals: { type: 'array', items: { $ref: '#/components/schemas/Withdrawal' } },
           certificates: { type: 'array', items: { $ref: '#/components/schemas/TxCertificate' } },

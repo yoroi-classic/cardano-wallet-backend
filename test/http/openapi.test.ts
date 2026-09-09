@@ -85,6 +85,9 @@ const ADDR = (fill: number): string => {
 }
 const ADDR_VKH = bech32.encode('addr_vkh', bech32.toWords(new Uint8Array(28).fill(3)), 1023)
 const TX_HASH = 'ab'.repeat(32)
+// A history input points at a different transaction from the one carrying it, so the fixtures use
+// their own hash for the consumed output rather than reusing TX_HASH.
+const SOURCE_TX_HASH = 'cd'.repeat(32)
 const POLICY = 'a'.repeat(56)
 const POOL = 'pool1wn6a6f23ctq06udwhw27ravdpd6zcr7jlut3yez0wzdackz3222'
 const DREP = 'drep1ygpuetneftlmufa97hm5mf3xvqpdkyw656hyg6h20qaewtg3csnkc'
@@ -273,7 +276,15 @@ describe('real responses validate against the schemas the spec publishes', () =>
       epoch: 10,
       blockTime: 1_700_000_000,
       fee: '170000',
-      inputs: [{ address: 'addr_test1a', value: '1000000', assets: [] }],
+      inputs: [
+        {
+          address: 'addr_test1a',
+          txHash: SOURCE_TX_HASH,
+          outputIndex: 1,
+          value: '1000000',
+          assets: [],
+        },
+      ],
       outputs: [{ address: 'addr_test1b', value: '830000', assets: [] }],
       withdrawals: [{ stakeAddress: STAKE, amount: '1' }],
       certificates: [{ kind: 'vote_delegation' as const, index: 0 }],
@@ -448,7 +459,15 @@ describe('real responses validate against the schemas the spec publishes', () =>
       epoch: 10,
       blockTime: 1_700_000_000,
       fee: '170000',
-      inputs: [{ address: BYRON_ADDR, value: '1000000', assets: [] }],
+      inputs: [
+        {
+          address: BYRON_ADDR,
+          txHash: SOURCE_TX_HASH,
+          outputIndex: 0,
+          value: '1000000',
+          assets: [],
+        },
+      ],
       outputs: [],
       withdrawals: [],
       certificates: [{ kind: 'other' as const, index: 0 }],

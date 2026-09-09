@@ -20,13 +20,30 @@ function utxo(overrides: Record<string, unknown> = {}): Record<string, unknown> 
   }
 }
 
-/** Paginates `/addresses/{address}/utxos` per address, 404 for any address not in the map. */
+// The height every `/blocks/{hash}` lookup answers with unless a test overrides it. Blockfrost
+// puts no height on a utxo row, so the driver resolves the row's `block` hash through this route.
+const DEFAULT_BLOCK_HEIGHT = 10_000_000
+
+/**
+ * Paginates `/addresses/{address}/utxos` per address, 404 for any address not in the map, and
+ * answers `/blocks/{hash}` with the height for that hash (or the default).
+ */
 function provider(
   byAddress: Record<string, Record<string, unknown>[] | { status: number }>,
   opts: Record<string, unknown> = {},
+  blockHeights: Record<string, number> = {},
 ) {
   const fetchImpl: FetchLike = async (rawUrl) => {
     const url = new URL(rawUrl)
+    const block = url.pathname.match(/\/blocks\/([^/]+)$/)
+    if (block !== null) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ height: blockHeights[block[1]!] ?? DEFAULT_BLOCK_HEIGHT }),
+        text: async () => '',
+      }
+    }
     const m = url.pathname.match(/\/addresses\/([^/]+)\/utxos$/)
     if (m === null) throw new Error(`fake has no route for ${url.pathname}`)
     const rows = byAddress[m[1]!]
@@ -52,6 +69,77 @@ function provider(
 }
 
 describe('blockfrost getUtxosByAddresses', () => {
+  // Blockfrost puts only the creation block's *hash* on a utxo row, so unlike Koios it cannot
+  // read the height off the row. These cover the resolution that closes that gap.
+  it("resolves each row's creation height from its own block", async () => {
+    const blockA = 'a'.repeat(64)
+    const blockB = 'b'.repeat(64)
+    const p = provider(
+      {
+        addr_a: [
+          utxo({ address: 'addr_a', output_index: 0, block: blockA }),
+          utxo({ address: 'addr_a', output_index: 1, block: blockB }),
+        ],
+      },
+      {},
+      { [blockA]: 4_961_506, [blockB]: 5_153_923 },
+    )
+
+    const utxos = await p.getUtxosByAddresses(['addr_a'])
+
+    expect(utxos.map((u) => u.blockHeight)).toEqual([4_961_506, 5_153_923])
+  })
+
+  // The cost of this provider's extra round trip is bounded by the number of distinct blocks, not
+  // the number of outputs. Change from one transaction lands in one block, which is the common case.
+  it('resolves one block once however many of its outputs are held', async () => {
+    const shared = 'c'.repeat(64)
+    const seen: string[] = []
+    const fetchImpl: FetchLike = async (rawUrl) => {
+      const url = new URL(rawUrl)
+      if (url.pathname.includes('/blocks/')) {
+        seen.push(url.pathname)
+        return { ok: true, status: 200, json: async () => ({ height: 42 }), text: async () => '' }
+      }
+      const page = Number(url.searchParams.get('page') ?? '1')
+      const rows =
+        page === 1
+          ? Array.from({ length: 3 }, (_v, i) =>
+              utxo({ address: 'addr_a', output_index: i, block: shared }),
+            )
+          : []
+      return { ok: true, status: 200, json: async () => rows, text: async () => '' }
+    }
+    const p = createBlockfrostProvider({ baseUrl: BASE, projectId: PROJECT_ID, fetchImpl })
+
+    const utxos = await p.getUtxosByAddresses(['addr_a'])
+
+    expect(utxos.map((u) => u.blockHeight)).toEqual([42, 42, 42])
+    expect(seen).toHaveLength(1)
+  })
+
+  // A Byron epoch-boundary block has a null height in the spec. It contains no transactions, so it
+  // can never have created a UTxO; reading one here is malformed upstream data, not a case to map
+  // around by omitting the field.
+  it('rejects a creation block that reports no height', async () => {
+    const fetchImpl: FetchLike = async (rawUrl) => {
+      const url = new URL(rawUrl)
+      if (url.pathname.includes('/blocks/')) {
+        return { ok: true, status: 200, json: async () => ({ height: null }), text: async () => '' }
+      }
+      const page = Number(url.searchParams.get('page') ?? '1')
+      return {
+        ok: true,
+        status: 200,
+        json: async () => (page === 1 ? [utxo({ address: 'addr_a' })] : []),
+        text: async () => '',
+      }
+    }
+    const p = createBlockfrostProvider({ baseUrl: BASE, projectId: PROJECT_ID, fetchImpl })
+
+    await expect(p.getUtxosByAddresses(['addr_a'])).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+
   it('maps a utxo, splitting lovelace from native assets, and carries datum/reference-script fields', async () => {
     const policyId = 'c'.repeat(56)
     const assetName = '6e7574636f696e'
@@ -78,6 +166,7 @@ describe('blockfrost getUtxosByAddresses', () => {
         txHash: '39a7a284c2a0948189dc45dec670211cd4d72f7b66c5726c08d9b3df11e44d58',
         outputIndex: 1,
         address: 'addr_a',
+        blockHeight: DEFAULT_BLOCK_HEIGHT,
         value: '42000000',
         assets: [{ policyId, assetName, quantity: '12' }],
         datumHash: 'aa'.repeat(16),
@@ -153,6 +242,14 @@ describe('blockfrost getUtxosByAddresses', () => {
     const total = 6000
     const fetchImpl: FetchLike = async (rawUrl) => {
       const url = new URL(rawUrl)
+      if (/\/blocks\//.test(url.pathname)) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ height: DEFAULT_BLOCK_HEIGHT }),
+          text: async () => '',
+        }
+      }
       const count = Number(url.searchParams.get('count') ?? '100')
       const pageNo = Number(url.searchParams.get('page') ?? '1')
       const offset = (pageNo - 1) * count

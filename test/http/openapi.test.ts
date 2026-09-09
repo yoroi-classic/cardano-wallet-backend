@@ -253,6 +253,7 @@ describe('real responses validate against the schemas the spec publishes', () =>
       txHash: TX_HASH,
       outputIndex: 0,
       address: 'addr_test1xyz',
+      blockHeight: 10_000_000,
       value: '2000000',
       assets: [{ policyId: POLICY, assetName: '414243', quantity: '5' }],
       inlineDatum: 'd87980',
@@ -426,6 +427,7 @@ describe('real responses validate against the schemas the spec publishes', () =>
       txHash: TX_HASH,
       outputIndex: 0,
       address: BYRON_ADDR,
+      blockHeight: 10_000_000,
       value: '2000000',
       assets: [{ policyId: POLICY, assetName: '414243', quantity: '5' }],
     }
@@ -558,6 +560,7 @@ describe('real responses validate against the schemas the spec publishes', () =>
             txHash: TX_HASH,
             outputIndex: 0,
             address: 'addr_test1x',
+            blockHeight: 10_000_000,
             value: '9999999999999999999', // over 2^53 on purpose
             assets: [{ policyId: POLICY, assetName: '', quantity: '1' }],
             spent: true,

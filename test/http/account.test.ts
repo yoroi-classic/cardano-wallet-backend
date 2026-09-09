@@ -28,7 +28,14 @@ const STATE: AccountState = {
 }
 
 const UTXOS: Utxo[] = [
-  { txHash: 'aa', outputIndex: 0, address: 'addr_test1', value: '2000000', assets: [] },
+  {
+    txHash: 'aa',
+    outputIndex: 0,
+    address: 'addr_test1',
+    blockHeight: 10_000_000,
+    value: '2000000',
+    assets: [],
+  },
 ]
 
 function providerWith(overrides: Partial<ChainProvider> = {}): ChainProvider {

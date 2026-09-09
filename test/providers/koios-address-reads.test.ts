@@ -48,6 +48,7 @@ describe('koios getUtxosByAddresses', () => {
     tx_hash: 'aa11',
     tx_index: 2,
     address: BYRON_A,
+    block_height: 10_000_000,
     value: '2000000',
     asset_list: [{ policy_id: 'a'.repeat(56), asset_name: '414243', quantity: '5' }],
     datum_hash: null,
@@ -66,6 +67,7 @@ describe('koios getUtxosByAddresses', () => {
         txHash: 'aa11',
         outputIndex: 2,
         address: BYRON_A,
+        blockHeight: 10_000_000,
         value: '2000000',
         assets: [{ policyId: 'a'.repeat(56), assetName: '414243', quantity: '5' }],
         inlineDatum: 'd87980',
@@ -97,6 +99,29 @@ describe('koios getUtxosByAddresses', () => {
 
     await expect(provider.getUtxosByAddresses([])).resolves.toEqual([])
     expect(calls).toHaveLength(0)
+  })
+
+  // The creation height is the whole of #110's contract, and it is required on the public shape.
+  // A row that omits it must fail rather than be mapped without one: the alternative is a UTxO
+  // reaching a client with a fabricated or absent provenance it would then persist.
+  it('rejects a utxo row that carries no creation height', async () => {
+    const withoutHeight: Record<string, unknown> = { ...ROW }
+    delete withoutHeight.block_height
+    const { fetchImpl } = fakeFetch(async () => [withoutHeight])
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getUtxosByAddresses([BYRON_A])).rejects.toBeInstanceOf(
+      MalformedUpstreamError,
+    )
+  })
+
+  it('maps the creation height from the row rather than inferring it', async () => {
+    const { fetchImpl } = fakeFetch(async () => [{ ...ROW, block_height: 4_961_506 }])
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [utxo] = await provider.getUtxosByAddresses([BYRON_A])
+
+    expect(utxo?.blockHeight).toBe(4_961_506)
   })
 
   it('rejects a malformed utxo shape as upstream-malformed, not a 500', async () => {
@@ -925,6 +950,7 @@ describe('koios address reads — 413 body-limit adaptation', () => {
         tx_hash: `${addr}#${suffix}`,
         tx_index: index,
         address: addr,
+        block_height: 10_000_000,
         value,
         asset_list: null,
         datum_hash: null,

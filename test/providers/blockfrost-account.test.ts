@@ -40,6 +40,9 @@ function utxoRow(overrides: Record<string, unknown> = {}): Record<string, unknow
   }
 }
 
+// The creation height every `/blocks/{hash}` lookup answers with unless a test scripts its own.
+const DEFAULT_BLOCK_HEIGHT = 10_000_000
+
 /** Scripts one JSON response per call to a given path, repeating the last one after that. */
 function scriptedFetch(script: Record<string, unknown[]>): {
   fetchImpl: FetchLike
@@ -50,6 +53,17 @@ function scriptedFetch(script: Record<string, unknown[]>): {
   const fetchImpl: FetchLike = async (url) => {
     calls.push(url)
     const path = Object.keys(script).find((p) => url.includes(p))
+    // Blockfrost carries no height on a utxo row, so every utxo read resolves the row's `block`
+    // hash through `/blocks/{hash}`. That is incidental to what these tests are about, so it is
+    // answered by default here; a script naming `/blocks/` still takes precedence.
+    if (path === undefined && url.includes('/blocks/')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ height: DEFAULT_BLOCK_HEIGHT }),
+        text: async () => '',
+      }
+    }
     if (path === undefined) throw new Error(`test script has no answer for ${url}`)
     const answers = script[path] as unknown[]
     const nth = served.get(path) ?? 0
@@ -126,6 +140,7 @@ describe('blockfrost account — happy path', () => {
         txHash: '39a7a284c2a0948189dc45dec670211cd4d72f7b66c5726c08d9b3df11e44d58',
         outputIndex: 0,
         address: ADDRESS,
+        blockHeight: DEFAULT_BLOCK_HEIGHT,
         value: '42000000',
         assets: [],
       },
@@ -133,11 +148,15 @@ describe('blockfrost account — happy path', () => {
         txHash: '768c63e27a1c816a83dc7b07e78af673b2400de8849ea7e7b734ae1333d100d2',
         outputIndex: 1,
         address: ADDRESS,
+        blockHeight: DEFAULT_BLOCK_HEIGHT,
         value: '42000000',
         assets: [{ policyId, assetName, quantity: '12' }],
       },
     ])
-    expect(calls).toHaveLength(1)
+    expect(calls.filter((url) => url.includes('/utxos'))).toHaveLength(1)
+    // Both rows name the same creation block, so resolving their heights costs one lookup, not
+    // one per output. That deduplication is what keeps the height affordable on this provider.
+    expect(calls.filter((url) => url.includes('/blocks/'))).toHaveLength(1)
   })
 
   it('preserves the accepted hex casing of a native-asset unit in provider output', async () => {
@@ -189,6 +208,12 @@ describe('blockfrost account — paged UTxO consistency', () => {
       utxoRow({ tx_hash: `${from + offset}`.padStart(64, '0'), output_index: 0 }),
     )
 
+  /**
+   * The utxo page reads out of a call log. The walk's own reads are what these tests count; the
+   * `/blocks/{hash}` lookups that resolve creation heights afterwards are incidental to it.
+   */
+  const pageReads = (calls: string[]): string[] => calls.filter((url) => url.includes('/utxos'))
+
   function sequencedProvider(pageRows: unknown[]): {
     provider: ReturnType<typeof createBlockfrostProvider>
     calls: string[]
@@ -220,8 +245,8 @@ describe('blockfrost account — paged UTxO consistency', () => {
     expect(utxos).toHaveLength(101)
     expect(utxos[0]?.txHash).toBe('1'.padStart(64, '0'))
     expect(utxos[100]?.txHash).toBe('101'.padStart(64, '0'))
-    expect(calls).toHaveLength(6)
-    expect(calls.every((url) => url.includes('order=asc'))).toBe(true)
+    expect(pageReads(calls)).toHaveLength(6)
+    expect(pageReads(calls).every((url) => url.includes('order=asc'))).toBe(true)
   })
 
   it('fails closed after three continuously changing complete scans', async () => {
@@ -237,7 +262,7 @@ describe('blockfrost account — paged UTxO consistency', () => {
     await expect(provider.getAccountUtxos(STAKE)).rejects.toThrow(
       'blockfrost account utxos changed during paged read; retry',
     )
-    expect(calls).toHaveLength(6)
+    expect(pageReads(calls)).toHaveLength(6)
   })
 
   it('never accepts matching scans that duplicate an output across a page boundary', async () => {
@@ -257,7 +282,7 @@ describe('blockfrost account — paged UTxO consistency', () => {
     expect(error).toBeInstanceOf(ProviderError)
     expect(String(error)).not.toContain(STAKE)
     expect(String(error)).not.toContain('0'.repeat(64))
-    expect(calls).toHaveLength(6)
+    expect(pageReads(calls)).toHaveLength(6)
   })
 })
 
@@ -412,6 +437,14 @@ describe('blockfrost account — utxo scan boundary', () => {
   function paginatingProvider(total: number): ReturnType<typeof createBlockfrostProvider> {
     const fetchImpl: FetchLike = async (url) => {
       const parsed = new URL(url)
+      if (parsed.pathname.includes('/blocks/')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ height: DEFAULT_BLOCK_HEIGHT }),
+          text: async () => '',
+        }
+      }
       const count = Number(parsed.searchParams.get('count') ?? '100')
       const page = Number(parsed.searchParams.get('page') ?? '1')
       const offset = (page - 1) * count

@@ -10,6 +10,15 @@ export interface Utxo {
   outputIndex: number
   /** Bech32 address that controls the output. */
   address: string
+  /**
+   * Height of the block that *created* this output.
+   *
+   * Authoritative provenance, read from the upstream that knows it, never inferred from the
+   * current tip or from when we happened to observe the output. A client persisting a UTxO set
+   * needs the creation height to reason about the age of what it holds, and stamping a whole
+   * snapshot with the tip makes every output look as new as the read that fetched it.
+   */
+  blockHeight: number
   /** Lovelace value, as a string. */
   value: string
   /** Native assets in the output. */

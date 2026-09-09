@@ -498,12 +498,16 @@ export function mapResolvedOutput(
   outputIndex: number,
   output: TxUtxos['outputs'][number],
   spent: boolean,
+  blockHeight: number,
 ): ResolvedUtxo {
   const { value, assets } = splitAmount(output.amount)
   return {
     txHash,
     outputIndex,
     address: output.address,
+    // The block of the transaction that created the output, which for a by-reference lookup is
+    // the referenced transaction itself.
+    blockHeight,
     value,
     assets,
     datumHash: output.data_hash ?? undefined,

@@ -344,7 +344,9 @@ for (const ignored of [
   )
 }
 assert.match(
-  runBodies("      run: |\n          note='\n          keep # ' ; npm run lint || true\n").join('\n'),
+  runBodies("      run: |\n          note='\n          keep # ' ; npm run lint || true\n").join(
+    '\n',
+  ),
   /\|\|/,
   'CI run guard must inspect shell continuations across YAML block-scalar lines',
 )

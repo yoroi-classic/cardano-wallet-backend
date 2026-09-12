@@ -312,16 +312,28 @@ function runBodies(source) {
 
 function continueOnErrorValues(source) {
   const values = []
-  for (const line of removeYamlComments(source).split('\n')) {
+  const lines = removeYamlComments(source).split('\n')
+  for (const line of lines) {
     const matches = line.matchAll(
       /(?:^\s*|[,{}]\s*)(?:"continue-on-error"|'continue-on-error'|continue-on-error)\s*:\s*(?:"([^"]*)"|'([^']*)'|([^,}\s]+))/g,
     )
     for (const match of matches) values.push(match[1] ?? match[2] ?? match[3])
   }
-  const explicitKeyValues = removeYamlComments(source).matchAll(
-    /^\s*\?\s*(?:"continue-on-error"|'continue-on-error'|continue-on-error)\s*\n(?:\s*\n)*\s*:\s*(?:"([^"]*)"|'([^']*)'|([^,}\s]+))/gm,
-  )
-  for (const match of explicitKeyValues) values.push(match[1] ?? match[2] ?? match[3])
+  for (let index = 0; index < lines.length; index += 1) {
+    if (
+      !/^\s*\?\s*(?:"continue-on-error"|'continue-on-error'|continue-on-error)\s*$/.test(
+        lines[index] ?? '',
+      )
+    ) {
+      continue
+    }
+    let valueIndex = index + 1
+    while (valueIndex < lines.length && (lines[valueIndex] ?? '').trim() === '') {
+      valueIndex += 1
+    }
+    const match = /^\s*:\s*(?:"([^"]*)"|'([^']*)'|([^,}\s]+))\s*$/.exec(lines[valueIndex] ?? '')
+    if (match !== null) values.push(match[1] ?? match[2] ?? match[3])
+  }
   return values
 }
 

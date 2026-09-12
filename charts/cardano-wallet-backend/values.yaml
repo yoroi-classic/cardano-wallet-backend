@@ -66,9 +66,15 @@ config:
   logLevel: info
   cacheEnabled: true
   corsOrigins: '*'
+  # Comma-separated proxy IPs or CIDRs allowed to supply X-Forwarded-For. Empty means forwarding
+  # headers are ignored entirely. Set it when an ingress or LoadBalancer is the only path to the
+  # pod, otherwise every caller shares one rate-limit bucket. Escape the commas when passing more
+  # than one through --set, or set it from a values file.
+  trustProxy: ''
   rateLimitMax: 120
   rateLimitWindowMs: 60000
   koiosUrl: ''
+  blockfrostUrl: ''
   remoteConfig:
     enabled: true
     url: ''
@@ -76,6 +82,7 @@ config:
 secrets:
   existingSecret: ''
   koiosTokenKey: KOIOS_TOKEN
+  blockfrostProjectIdKey: BLOCKFROST_PROJECT_ID
   nftcdnSubdomainKey: NFTCDN_SUBDOMAIN
   nftcdnKeyKey: NFTCDN_KEY
 

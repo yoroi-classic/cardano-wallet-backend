@@ -91,6 +91,56 @@ describe('rate limit', () => {
     await app.close()
   })
 
+  it('ignores spoofed forwarded addresses from a direct caller', async () => {
+    const app = await buildServer({
+      provider: fakeProvider({ getTip: async () => TIP }),
+      rateLimit: { max: 1, windowMs: 60_000 },
+    })
+
+    const first = await app.inject({
+      method: 'GET',
+      url: '/v1/chain/tip',
+      remoteAddress: '192.0.2.10',
+      headers: { 'x-forwarded-for': '198.51.100.1' },
+    })
+    const rotatedSpoof = await app.inject({
+      method: 'GET',
+      url: '/v1/chain/tip',
+      remoteAddress: '192.0.2.10',
+      headers: { 'x-forwarded-for': '198.51.100.2' },
+    })
+
+    expect([first.statusCode, rotatedSpoof.statusCode]).toEqual([200, 429])
+    await app.close()
+  })
+
+  it('uses the first untrusted address behind an explicitly trusted proxy', async () => {
+    const app = await buildServer({
+      provider: fakeProvider({ getTip: async () => TIP }),
+      rateLimit: { max: 1, windowMs: 60_000 },
+      trustedProxies: ['127.0.0.1'],
+    })
+
+    const request = (forwardedFor: string) =>
+      app.inject({
+        method: 'GET',
+        url: '/v1/chain/tip',
+        remoteAddress: '127.0.0.1',
+        headers: { 'x-forwarded-for': forwardedFor },
+      })
+
+    const firstClient = await request('198.51.100.1, 203.0.113.10')
+    const sameClientWithRotatedSpoof = await request('198.51.100.2, 203.0.113.10')
+    const secondClient = await request('198.51.100.1, 203.0.113.11')
+
+    expect([
+      firstClient.statusCode,
+      sameClientWithRotatedSpoof.statusCode,
+      secondClient.statusCode,
+    ]).toEqual([200, 429, 200])
+    await app.close()
+  })
+
   // An instance that rate-limits its own orchestrator's liveness probe gets declared dead, which
   // turns a traffic spike into an outage. /health is exempt for that reason and must stay so.
   it('never rate-limits the liveness probe', async () => {

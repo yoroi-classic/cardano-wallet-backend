@@ -7,12 +7,14 @@ on:
       - 'charts/**'
       - '.github/workflows/helm-chart.yml'
       - 'scripts/check-helm-concurrency.mjs'
+      - 'scripts/test-helm-blockfrost.sh'
   pull_request:
     branches: [development, preview, preprod, main]
     paths:
       - 'charts/**'
       - '.github/workflows/helm-chart.yml'
       - 'scripts/check-helm-concurrency.mjs'
+      - 'scripts/test-helm-blockfrost.sh'
 
 permissions:
   contents: read
@@ -44,6 +46,22 @@ jobs:
       - name: Lint chart
         run: helm lint charts/cardano-wallet-backend
 
+      - name: Test Blockfrost chart wiring
+        env:
+          TRUSTED_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            if git cat-file -e "$TRUSTED_BASE_SHA:scripts/test-helm-blockfrost.sh" 2>/dev/null; then
+              git show "$TRUSTED_BASE_SHA:scripts/test-helm-blockfrost.sh" \
+                > "$RUNNER_TEMP/test-helm-blockfrost.sh"
+              bash "$RUNNER_TEMP/test-helm-blockfrost.sh"
+            else
+              scripts/test-helm-blockfrost.sh
+            fi
+          else
+            scripts/test-helm-blockfrost.sh
+          fi
+
       - name: Package chart
         run: helm package charts/cardano-wallet-backend --destination "${RUNNER_TEMP}"
 
@@ -69,11 +87,26 @@ jobs:
             --set secrets.existingSecret=cardano-wallet-backend-secrets \
           | kubectl apply --dry-run=server -f -
 
+      - name: Validate Blockfrost chart
+        run: |
+          helm template cardano-wallet-backend charts/cardano-wallet-backend \
+            --set config.provider=blockfrost \
+            --set secrets.existingSecret=cardano-wallet-backend-secrets \
+          | kubectl apply --dry-run=server -f -
+
       - name: Validate remote config override
         run: |
           helm template cardano-wallet-backend charts/cardano-wallet-backend \
             --set config.remoteConfig.url=https://raw.githubusercontent.com/yoroi-classic/yoroi-config/0000000000000000000000000000000000000000/prod.json \
           | kubectl apply --dry-run=server -f -
+
+      - name: Validate trusted proxy override
+        run: |
+          helm template cardano-wallet-backend charts/cardano-wallet-backend \
+            --set config.trustProxy=10.0.0.0/8 > "${RUNNER_TEMP}/trust-proxy.yaml"
+          grep -q 'name: TRUST_PROXY' "${RUNNER_TEMP}/trust-proxy.yaml"
+          grep -q '10.0.0.0/8' "${RUNNER_TEMP}/trust-proxy.yaml"
+          kubectl apply --dry-run=server -f "${RUNNER_TEMP}/trust-proxy.yaml"
 
       - name: Validate defensive string overrides
         run: |

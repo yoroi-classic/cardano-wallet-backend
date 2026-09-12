@@ -2,6 +2,7 @@ import { loadConfig } from './config.js'
 import { deriveWallet } from './wallet.js'
 import { createV1Client } from './v1.js'
 import { buildSelfPayment, spendableUtxosForAddress } from './buildTx.js'
+import { discoverRegisteredPoolId } from './koios.js'
 
 const ada = (lovelace: string): string => (Number(lovelace) / 1_000_000).toFixed(6)
 const sleep = (seconds: number): Promise<void> =>
@@ -58,14 +59,7 @@ async function main(): Promise<void> {
   // surface returns its normalized info correctly. Runs on the read path so it is
   // exercised even when the wallet is unfunded.
   const koiosBase = (process.env.KOIOS_URL ?? KOIOS_BASE[cfg.network] ?? '').replace(/\/+$/, '')
-  const listRes = await fetch(`${koiosBase}/pool_list?pool_status=eq.registered&limit=1`, {
-    signal: AbortSignal.timeout(20_000),
-  })
-  const poolList = (await listRes.json()) as Array<{ pool_id_bech32?: string }>
-  const samplePoolId = poolList[0]?.pool_id_bech32
-  if (!samplePoolId) {
-    throw new Error('could not find a registered pool on-chain to exercise pool info')
-  }
+  const samplePoolId = await discoverRegisteredPoolId(koiosBase)
   const [pool] = await client.getPoolInfo([samplePoolId])
   if (!pool || pool.poolId !== samplePoolId || !/^[0-9a-f]{56}$/.test(pool.poolIdHex)) {
     throw new Error(`pool info did not come back correctly for ${samplePoolId}`)

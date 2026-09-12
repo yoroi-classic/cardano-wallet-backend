@@ -29,7 +29,7 @@ function poolRow(n: number, stake: string): Record<string, unknown> {
  * A fake upstream that counts calls per path and can be made to fail on demand, which is how the
  * stale-on-error behaviour is exercised without waiting for Koios to actually have a bad day.
  */
-function fakeKoios(opts: { epoch?: number } = {}) {
+function fakeKoios(opts: { epoch?: number; tipFails?: boolean } = {}) {
   const calls: string[] = []
   let failing = false
   const state = { epoch: opts.epoch ?? 300 }
@@ -41,6 +41,9 @@ function fakeKoios(opts: { epoch?: number } = {}) {
     // The tip keeps working even while the pool endpoints fail, which is the realistic shape of a
     // Koios wobble: it is one slow instance, not a dead service.
     if (path === '/tip') {
+      if (opts.tipFails === true) {
+        return { ok: false, status: 500, json: async () => ({}), text: async () => 'no tip' }
+      }
       return {
         ok: true,
         status: 200,
@@ -116,20 +119,23 @@ describe('the pool list is cached', () => {
   // snapshot. It is fixed for five days and then moves all at once, and a duration would be wrong
   // in both directions.
   it('rescans when the epoch turns over, and not before', async () => {
+    let t = 1_000
     const koios = fakeKoios({ epoch: 300 })
-    const cache = createMemoryCache()
+    const cache = createMemoryCache({ now: () => t })
     const p = provider(koios, cache)
 
     await p.getPoolList({ limit: 50, offset: 0 })
     expect(koios.countOf('/pool_list')).toBe(1)
 
-    // A new epoch. The cached tip has to age out before anyone notices, so clear it as the TTL
-    // would; what is under test is the ranking key, not the tip TTL.
+    // Expire only the ten-second tip entry. The old epoch's page is still live for another 79
+    // seconds, so this proves the new epoch key prevents reusing it rather than merely proving a
+    // cleared cache misses.
     koios.state.epoch = 301
-    cache.clear()
+    t += 11_000
 
     await p.getPoolList({ limit: 50, offset: 0 })
     expect(koios.countOf('/pool_list')).toBe(2)
+    expect(koios.countOf('/pool_info')).toBe(2)
   })
 
   it('does not cache a ticker search', async () => {
@@ -201,28 +207,96 @@ describe('the pool list survives an upstream wobble', () => {
 
   // The epoch is a cache *key*, and nothing more. Letting a failure to read it become a failure to
   // serve would trade a working endpoint for a cache, which is a strictly worse service.
-  it('still serves the pool list when the tip read fails', async () => {
-    const calls: string[] = []
-    const fetchImpl: FetchLike = async (url) => {
-      const path = url.replace(BASE, '').split('?')[0] ?? ''
-      calls.push(path)
-      if (path === '/tip') {
-        return { ok: false, status: 500, json: async () => ({}), text: async () => 'no tip' }
-      }
-      const rows =
-        path === '/pool_list'
-          ? [{ pool_id_bech32: poolId(1), active_stake: '3000' }]
-          : [poolRow(1, '3000')]
-      return { ok: true, status: 200, json: async () => rows, text: async () => '' }
-    }
+  it('serves the pool list uncached when the tip read fails', async () => {
+    const koios = fakeKoios({ tipFails: true })
+    const cache = createMemoryCache()
+    const p = provider(koios, cache)
 
-    const p = createKoiosProvider({
-      baseUrl: BASE,
-      fetchImpl,
-      cache: createMemoryCache(),
-      readAttempts: 1,
+    await expect(p.getPoolList({ limit: 50, offset: 0 })).resolves.toHaveLength(2)
+    await expect(p.getPoolList({ limit: 50, offset: 0 })).resolves.toHaveLength(2)
+
+    expect(koios.countOf('/pool_list')).toBe(2)
+    expect(koios.countOf('/pool_info')).toBe(2)
+    expect(cache.size).toBe(0)
+  })
+
+  it('coalesces concurrent uncached requests, then refreshes a later request', async () => {
+    const koios = fakeKoios({ tipFails: true })
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
     })
+    let firstPoolInfo = true
+    const fetchImpl: FetchLike = async (url) => {
+      if (url.replace(BASE, '').split('?')[0] === '/pool_info' && firstPoolInfo) {
+        firstPoolInfo = false
+        await gate
+      }
+      return koios.fetchImpl(url)
+    }
+    const p = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
 
-    await expect(p.getPoolList({ limit: 50, offset: 0 })).resolves.toHaveLength(1)
+    const first = p.getPoolList({ limit: 50, offset: 0 })
+    const second = p.getPoolList({ limit: 50, offset: 0 })
+    await Promise.resolve()
+    expect(koios.countOf('/pool_info')).toBe(0)
+    release()
+    await expect(Promise.all([first, second])).resolves.toHaveLength(2)
+    expect(koios.countOf('/pool_info')).toBe(1)
+
+    await p.getPoolList({ limit: 50, offset: 0 })
+    expect(koios.countOf('/pool_info')).toBe(2)
+  })
+
+  it('does not pin a failed uncached read once upstream recovers', async () => {
+    const koios = fakeKoios({ tipFails: true })
+    const p = provider(koios, createMemoryCache())
+    koios.breakUpstream()
+
+    const burst = await Promise.allSettled(
+      Array.from({ length: 5 }, () => p.getPoolList({ limit: 50, offset: 0 })),
+    )
+    expect(burst.every((result) => result.status === 'rejected')).toBe(true)
+
+    koios.fixUpstream()
+    await expect(p.getPoolList({ limit: 50, offset: 0 })).resolves.toHaveLength(2)
+  })
+
+  it('does not serve one uncached page to a concurrent request for another', async () => {
+    const koios = fakeKoios({ tipFails: true })
+    const p = provider(koios, createMemoryCache())
+
+    const [first, second] = await Promise.all([
+      p.getPoolList({ limit: 1, offset: 0 }),
+      p.getPoolList({ limit: 1, offset: 1 }),
+    ])
+
+    expect(first[0]?.poolId).not.toBe(second[0]?.poolId)
+    expect(koios.countOf('/pool_list')).toBe(2)
+  })
+
+  it('does not serve an unfiltered page to a concurrent ticker search', async () => {
+    const koios = fakeKoios({ tipFails: true })
+    const p = provider(koios, createMemoryCache())
+
+    await Promise.all([
+      p.getPoolList({ limit: 50, offset: 0 }),
+      p.getPoolList({ limit: 50, offset: 0, ticker: 'ADA' }),
+    ])
+
+    expect(koios.countOf('/pool_list')).toBe(2)
+  })
+
+  it('does not serve an unkeyed stale page after the tip read fails', async () => {
+    const koios = fakeKoios({ tipFails: true })
+    const p = provider(koios)
+
+    const good = await p.getPoolList({ limit: 50, offset: 0 })
+    expect(good).toHaveLength(2)
+
+    koios.breakUpstream()
+
+    await expect(p.getPoolList({ limit: 50, offset: 0 })).rejects.toBeInstanceOf(ProviderError)
+    expect(koios.countOf('/pool_list')).toBe(2)
   })
 })

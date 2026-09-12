@@ -57,6 +57,50 @@ describe('memory cache', () => {
     expect(await cache.read('a', 1000, async () => 'changed')).toBe('A')
   })
 
+  it('reports the size of a key prefix without counting other consumers', () => {
+    const cache = createMemoryCache()
+    cache.set('provider:koios:preprod:tip', 1, 60_000)
+    cache.set('provider:koios:mainnet:tip', 2, 60_000)
+    cache.set('price:ada', 3, 60_000)
+
+    expect(cache.sizeForPrefix?.('provider:koios:preprod:')).toBe(1)
+    expect(cache.sizeForPrefix?.('provider:')).toBe(2)
+    expect(cache.size).toBe(3)
+  })
+
+  it('does not let a load that crossed clear repopulate the cache', async () => {
+    const cache = createMemoryCache()
+    const first = deferred<string>()
+    const second = deferred<string>()
+    const load = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+
+    const oldRead = cache.read('provider:koios:preprod:tip', 60_000, load)
+    cache.clear('provider:koios:preprod:')
+    const newRead = cache.read('provider:koios:preprod:tip', 60_000, load)
+
+    first.resolve('stale')
+    second.resolve('fresh')
+    await expect(oldRead).resolves.toBe('stale')
+    await expect(newRead).resolves.toBe('fresh')
+    expect(cache.peek('provider:koios:preprod:tip')).toBe('fresh')
+    expect(load).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not invalidate an unrelated in-flight namespace', async () => {
+    const cache = createMemoryCache()
+    const gate = deferred<string>()
+    const load = vi.fn(() => gate.promise)
+
+    const first = cache.read('provider:koios:preprod:tip', 60_000, load)
+    cache.clear('price:')
+    const second = cache.read('provider:koios:preprod:tip', 60_000, load)
+
+    expect(second).toBe(first)
+    gate.resolve('value')
+    await expect(second).resolves.toBe('value')
+    expect(load).toHaveBeenCalledTimes(1)
+  })
+
   // The load spike this exists to prevent. A cold cache plus a burst of wallets must not mean N
   // identical full pool-list walks against Koios at once, which would arrive at the worst moment.
   it('collapses concurrent misses into a single load', async () => {
@@ -176,6 +220,28 @@ describe('memory cache', () => {
     expect(await cache.read('k', 60_000, async () => 'reloaded')).toBe('reloaded')
   })
 
+  it('clear(prefix) only removes entries in that namespace', async () => {
+    const cache = createMemoryCache()
+    await cache.read('provider:koios:preprod:tip', 60_000, async () => 'tip')
+    await cache.read('price:ada', 60_000, async () => 'price')
+
+    cache.clear('provider:koios:preprod:')
+
+    expect(cache.size).toBe(1)
+    expect(cache.peek('provider:koios:preprod:tip')).toBeUndefined()
+    expect(cache.peek('price:ada')).toBe('price')
+  })
+
+  it('setIfGeneration keeps unrelated namespace writes after a clear', () => {
+    const cache = createMemoryCache()
+    const providerGeneration = cache.generation('provider:')
+
+    cache.clear('price:')
+    cache.setIfGeneration('provider:koios:tip', 'tip', 60_000, providerGeneration)
+
+    expect(cache.peek('provider:koios:tip')).toBe('tip')
+  })
+
   it('clear() prevents an older attempt from caching or deleting its replacement', async () => {
     const cache = createMemoryCache()
     const oldLoad = deferred<string>()
@@ -195,6 +261,25 @@ describe('memory cache', () => {
     replacementLoad.resolve('new')
     await expect(replacement).resolves.toBe('new')
     expect(cache.peek('k')).toBe('new')
+  })
+
+  it('clear(prefix) prevents an older namespaced read from repopulating its key', async () => {
+    const cache = createMemoryCache()
+    const oldLoad = deferred<string>()
+    const replacementLoad = deferred<string>()
+    const key = 'provider:koios:preprod:tip'
+
+    const oldAttempt = cache.read(key, 60_000, () => oldLoad.promise)
+    cache.clear('provider:koios:preprod:')
+    const replacement = cache.read(key, 60_000, () => replacementLoad.promise)
+
+    oldLoad.resolve('old')
+    await expect(oldAttempt).resolves.toBe('old')
+    expect(cache.peek(key)).toBeUndefined()
+
+    replacementLoad.resolve('new')
+    await expect(replacement).resolves.toBe('new')
+    expect(cache.peek(key)).toBe('new')
   })
 })
 

@@ -70,7 +70,7 @@ export const routeRegistrars: readonly RouteRegistrar[] = [
   registerOpenapiRoutes,
   (app, provider, deps) => registerStatusRoutes(app, provider, deps.info),
   registerChainRoutes,
-  registerAccountRoutes,
+  (app, provider, deps) => registerAccountRoutes(app, provider, deps.info.network),
   (app, provider, deps) => registerAddressRoutes(app, provider, deps.info.network),
   registerPoolRoutes,
   registerAssetRoutes,

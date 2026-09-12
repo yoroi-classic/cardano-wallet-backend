@@ -374,11 +374,11 @@ assert.doesNotMatch(
   'release must not run in parallel with CI on a main push',
 )
 assert.ok(
-  (workflow.match(/require_current_main/g) ?? []).length >= 5,
+  (releaseWithoutComments.match(/require_current_main/g) ?? []).length >= 5,
   'release must revalidate remote main before and after each write',
 )
 assert.ok(
-  (workflow.match(/require_release_tag/g) ?? []).length >= 4,
+  (releaseWithoutComments.match(/require_release_tag/g) ?? []).length >= 4,
   'release must revalidate the remote tag immediately before and after release creation',
 )
 assert.match(

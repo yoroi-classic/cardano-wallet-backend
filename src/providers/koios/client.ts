@@ -1,6 +1,11 @@
 import { z } from 'zod'
 import type { ErrorCode } from '../../domain/errors.js'
-import { MalformedUpstreamError, ProviderError, ProviderTimeoutError } from '../../domain/errors.js'
+import {
+  ConfigError,
+  MalformedUpstreamError,
+  ProviderError,
+  ProviderTimeoutError,
+} from '../../domain/errors.js'
 import { KOIOS_BODY_LIMIT_BYTES, packBySize } from './schema.js'
 
 /** A minimal fetch signature so tests can inject a fake without pulling in DOM types. */
@@ -61,6 +66,9 @@ export interface KoiosConfig {
   /**
    * Attempts per read, including the first. 1 disables retrying.
    *
+   * Must be a safe integer from 1 through 100. 0 is rejected rather than treated as "make no request":
+   * callers that want no retries use 1, because every read still needs its first attempt.
+   *
    * Bounded on purpose: an upstream that is genuinely down should surface as down rather than as
    * a hang. Every attempt can burn the full `timeoutMs`, so the longest a caller can wait is
    * roughly `readAttempts * timeoutMs` plus backoff. Raising this trades the caller's patience
@@ -86,11 +94,25 @@ interface RequestInit {
   body?: string | Uint8Array
   contentType?: string
   headers?: Record<string, string>
+  /**
+   * The path to name in errors when it must differ from the path actually fetched.
+   *
+   * Keyset paging puts the cursor in the query string, and that cursor is one of the caller's own
+   * transaction output references. Every message below is read twice in public: once as the body of
+   * the 502 the http layer builds from it, and once as the retry warn line, which is written at the
+   * shipped default `LOG_LEVEL=info`. `scrubPath` in http/logging.ts only redacts path segments, so
+   * it cannot help with a query string. Fetch the real path, name this one.
+   */
+  displayPath?: string
 }
 
 const DEFAULT_READ_ATTEMPTS = 3
+// A retry budget past ~100 only turns a dead upstream into a longer hang. Keep this aligned with
+// the Blockfrost provider so a hand-built config cannot create an effectively endless request loop.
+const MAX_READ_ATTEMPTS = 100
 const DEFAULT_BACKOFF_MS = 150
 const DEFAULT_TIMEOUT_MS = 10_000
+const MAX_TIMER_MS = 2_147_483_647
 const KOIOS_PAGE_SIZE = 1_000
 const KOIOS_MAX_PAGED_ROWS = 100_000
 
@@ -98,6 +120,33 @@ interface ResponseWithMetadata {
   data: unknown
   status: number
   contentRange: string | null
+}
+
+interface PagedBatchResult<Row> {
+  rows: Row[]
+  keys: string[]
+  total: number
+  pageCount: number
+}
+
+type PagedBatchOptions<Row> =
+  | {
+      rowKey?: (row: Row) => string
+      keyset?: (row: Row) => readonly [string, number]
+      verifyConsistency?: false
+    }
+  | {
+      rowKey: (row: Row) => string
+      keyset?: (row: Row) => readonly [string, number]
+      verifyConsistency: true
+    }
+
+export type KoiosContentRange = { start: number; end: number; total: number } | { total: 0 } | null
+
+export interface KoiosBatchPage<Row> {
+  rows: Row[]
+  status: number
+  range: KoiosContentRange
 }
 
 /**
@@ -165,6 +214,13 @@ export interface KoiosClient {
   /** A read: fetch, validate, and retry a transient upstream failure. */
   get<T>(schema: z.ZodType<T>, path: string): Promise<T>
 
+  /**
+   * Retry a composed multi-request read from its beginning. A page-level retry cannot repair a
+   * result set that changed between offsets, so incremental readers use this around the whole
+   * stream walk and create fresh cursors on every attempt.
+   */
+  readWithRetry<T>(path: string, load: () => Promise<T>): Promise<T>
+
   /** A read of a single row, where an empty response is itself malformed. */
   getFirst<T>(schema: z.ZodType<T>, path: string): Promise<T>
 
@@ -175,6 +231,17 @@ export interface KoiosClient {
   batch<T>(schema: z.ZodType<T>, path: string, body: unknown): Promise<T>
 
   /**
+   * Make one validated batch-page request without its own retry. This belongs inside
+   * `readWithRetry`, so any Content-Range or shape failure restarts the complete logical read
+   * rather than retrying one offset against an older prefix.
+   */
+  batchPageOnce<Row>(
+    rowSchema: z.ZodType<Row>,
+    path: string,
+    body: unknown,
+  ): Promise<KoiosBatchPage<Row>>
+
+  /**
    * A paged batch read. Koios/PostgREST caps large result sets and answers partial requests with
    * `Content-Range`; this walks explicit `limit`/`offset` pages until the exact total is
    * satisfied. Koios's RPC POST endpoints ignore the HTTP `Range` request header, so query
@@ -182,15 +249,16 @@ export interface KoiosClient {
    *
    * Koios does not expose a snapshot token spanning separate HTTP requests. Stable ordering,
    * totals, range continuity and optional row keys detect the observable forms of mid-read
-   * churn, but cannot turn several upstream requests into a database-atomic snapshot. Account
-   * callers therefore still refresh current state rather than treating one read as a durable
-   * checkpoint.
+   * churn. Callers that need bounded consistency can request a second walk for keyed results that
+   * span multiple pages; those results are returned only when their ordered membership and total
+   * agree. This still cannot turn several upstream requests into a database-atomic snapshot, so
+   * account callers refresh current state rather than treating one read as a durable checkpoint.
    */
   batchAllPages<Row>(
     rowSchema: z.ZodType<Row>,
     path: string,
     body: unknown,
-    rowKey?: (row: Row) => string,
+    options?: PagedBatchOptions<Row>,
   ): Promise<Row[]>
 
   /**
@@ -250,15 +318,63 @@ function limitFrom413(err: unknown): number | undefined {
   return Number.isSafeInteger(limit) && limit > 0 ? limit : undefined
 }
 
+function asReadAttempts(value: number | undefined): number {
+  const attempts = value ?? DEFAULT_READ_ATTEMPTS
+  if (!Number.isSafeInteger(attempts) || attempts < 1 || attempts > MAX_READ_ATTEMPTS) {
+    throw new RangeError(
+      `readAttempts must be a safe integer in [1, ${MAX_READ_ATTEMPTS}]; use 1 to disable retries`,
+    )
+  }
+  return attempts
+}
+
+function asBoundedNumber(
+  value: number | undefined,
+  fallback: number,
+  name: string,
+  min: number,
+  max: number,
+): number {
+  const result = value ?? fallback
+  if (!Number.isSafeInteger(result) || result < min || result > max) {
+    throw new ConfigError(`koios ${name} must be a safe integer in [${min}, ${max}]`)
+  }
+  return result
+}
+
 export function createKoiosClient(config: KoiosConfig): KoiosClient {
   const baseUrl = config.baseUrl.replace(/\/+$/, '')
-  const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS
-  const heavyTimeoutMs = config.heavyTimeoutMs ?? HEAVY_TIMEOUT_MS
+  const timeoutMs = asBoundedNumber(
+    config.timeoutMs,
+    DEFAULT_TIMEOUT_MS,
+    'timeoutMs',
+    1,
+    MAX_TIMER_MS,
+  )
+  const heavyTimeoutMs = asBoundedNumber(
+    config.heavyTimeoutMs,
+    HEAVY_TIMEOUT_MS,
+    'heavyTimeoutMs',
+    1,
+    MAX_TIMER_MS,
+  )
   const doFetch: FetchLike = config.fetchImpl ?? (globalThis.fetch as unknown as FetchLike)
   // Not a constant, because upstream may tell us it is smaller. See batchAll.
-  let bodyLimit = config.bodyLimitBytes ?? KOIOS_BODY_LIMIT_BYTES
-  const readAttempts = Math.max(1, config.readAttempts ?? DEFAULT_READ_ATTEMPTS)
-  const backoffMs = config.retryBackoffMs ?? DEFAULT_BACKOFF_MS
+  let bodyLimit = asBoundedNumber(
+    config.bodyLimitBytes,
+    KOIOS_BODY_LIMIT_BYTES,
+    'bodyLimitBytes',
+    1,
+    Number.MAX_SAFE_INTEGER,
+  )
+  const readAttempts = asReadAttempts(config.readAttempts)
+  const backoffMs = asBoundedNumber(
+    config.retryBackoffMs,
+    DEFAULT_BACKOFF_MS,
+    'retryBackoffMs',
+    0,
+    MAX_TIMER_MS,
+  )
   const delay =
     config.delayImpl ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)))
 
@@ -267,6 +383,7 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
     init: RequestInit = {},
   ): Promise<ResponseWithMetadata> {
     const url = `${baseUrl}${path}`
+    const named = init.displayPath ?? path
     const headers: Record<string, string> = { accept: 'application/json', ...init.headers }
     if (config.token) headers.authorization = `Bearer ${config.token}`
     if (init.contentType) headers['content-type'] = init.contentType
@@ -282,14 +399,14 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
       })
     } catch (cause) {
       if (cause instanceof Error && cause.name === 'TimeoutError') {
-        throw new ProviderTimeoutError(`koios request timed out: ${path}`, cause)
+        throw new ProviderTimeoutError(`koios request timed out: ${named}`, cause)
       }
-      throw new ProviderError(`koios request failed: ${path}`, { cause })
+      throw new ProviderError(`koios request failed: ${named}`, { cause })
     }
 
     if (!res.ok) {
       const body = await res.text().catch(() => '')
-      throw new ProviderError(`koios returned ${res.status} for ${path}`, {
+      throw new ProviderError(`koios returned ${res.status} for ${named}`, {
         upstreamStatus: res.status,
         cause: body.slice(0, 500),
       })
@@ -303,9 +420,9 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
       }
     } catch (cause) {
       if (cause instanceof Error && cause.name === 'TimeoutError') {
-        throw new ProviderTimeoutError(`koios response timed out: ${path}`, cause)
+        throw new ProviderTimeoutError(`koios response timed out: ${named}`, cause)
       }
-      throw new MalformedUpstreamError(`koios returned invalid json for ${path}`, cause)
+      throw new MalformedUpstreamError(`koios returned invalid json for ${named}`, cause)
     }
   }
 
@@ -385,10 +502,7 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
     })
   }
 
-  function parseContentRange(
-    value: string,
-    path: string,
-  ): { start: number; end: number; total: number } | { total: 0 } {
+  function parseContentRange(value: string, path: string): Exclude<KoiosContentRange, null> {
     if (value === '*/0') return { total: 0 }
 
     const match = /^(\d+)-(\d+)\/(\d+)$/.exec(value)
@@ -410,6 +524,148 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
       throw new MalformedUpstreamError(`koios returned contradictory Content-Range for ${path}`)
     }
     return { start, end, total }
+  }
+
+  async function walkBatchPages<Row>(
+    rowSchema: z.ZodType<Row>,
+    path: string,
+    body: unknown,
+    rowKey?: (row: Row) => string,
+    keyset?: (row: Row) => readonly [string, number],
+  ): Promise<PagedBatchResult<Row>> {
+    const rows: Row[] = []
+    const keys: string[] = []
+    const seenKeys = new Set<string>()
+    let expectedStart = 0
+    let expectedTotal: number | undefined
+    let pageCount = 0
+    let lastCursor: readonly [string, number] | undefined
+
+    const appendPage = (page: Row[]): void => {
+      if (rowKey !== undefined) {
+        for (const row of page) {
+          const key = rowKey(row)
+          if (seenKeys.has(key)) {
+            // Never put the key in the error. Callers use wallet identifiers as keys, and
+            // upstream failures flow through normal logs.
+            throw new MalformedUpstreamError(
+              `koios returned a duplicate row across pages for ${path}`,
+            )
+          }
+          seenKeys.add(key)
+          keys.push(key)
+        }
+      }
+      rows.push(...page)
+    }
+
+    for (;;) {
+      const separator = path.includes('?') ? '&' : '?'
+      const query = new URLSearchParams({ limit: String(KOIOS_PAGE_SIZE) })
+      if (keyset === undefined) query.set('offset', String(expectedStart))
+      else if (lastCursor !== undefined) {
+        const [txHash, txIndex] = lastCursor
+        // The order is tx_hash, then tx_index.  PostgREST's composite OR keeps rows after
+        // the cursor without relying on an offset into a result set that may be changing.
+        query.set('or', `(tx_hash.gt.${txHash},and(tx_hash.eq.${txHash},tx_index.gt.${txIndex}))`)
+      }
+      const pagePath = `${path}${separator}${query.toString()}`
+      const response = await requestWithMetadata(pagePath, {
+        method: 'POST',
+        body: JSON.stringify(body),
+        contentType: 'application/json',
+        headers: {
+          prefer: 'count=exact',
+        },
+        // The cursor rides in pagePath. Errors and the retry log name the base path instead.
+        displayPath: path,
+      })
+      const page = parse(z.array(rowSchema), response.data, path)
+      pageCount += 1
+
+      if (response.contentRange === null) {
+        if (keyset !== undefined && (page.length >= KOIOS_PAGE_SIZE || lastCursor !== undefined)) {
+          throw new MalformedUpstreamError(
+            `koios omitted Content-Range from a keyset response for ${path}`,
+          )
+        }
+        if (response.status === 206 || expectedStart !== 0) {
+          throw new MalformedUpstreamError(
+            `koios omitted Content-Range from a partial response for ${path}`,
+          )
+        }
+        if (page.length >= KOIOS_PAGE_SIZE) {
+          throw new MalformedUpstreamError(
+            `koios returned a full page without Content-Range for ${path}`,
+          )
+        }
+        appendPage(page)
+        return { rows, keys, total: rows.length, pageCount }
+      }
+
+      const range = parseContentRange(response.contentRange, path)
+      if (!('start' in range)) {
+        if (expectedStart !== 0 || page.length !== 0) {
+          throw new MalformedUpstreamError(
+            `koios returned rows for an empty Content-Range on ${path}`,
+          )
+        }
+        return { rows: [], keys: [], total: 0, pageCount }
+      }
+
+      if (range.start !== expectedStart || page.length !== range.end - range.start + 1) {
+        if (keyset !== undefined && range.start === 0 && page.length === range.end + 1) {
+          // A keyset-filtered query starts at zero on every request. Its total is the number
+          // remaining after the cursor, so it cannot be compared with the previous page total.
+        } else {
+          throw new MalformedUpstreamError(`koios returned a non-contiguous page for ${path}`)
+        }
+      }
+      if (keyset !== undefined && page.length > 0) {
+        const cursor = keyset(page[page.length - 1]!)
+        if (
+          lastCursor !== undefined &&
+          (cursor[0] < lastCursor[0] || (cursor[0] === lastCursor[0] && cursor[1] <= lastCursor[1]))
+        ) {
+          throw new MalformedUpstreamError(`koios returned a non-advancing keyset page for ${path}`)
+        }
+        lastCursor = cursor
+      }
+      if (keyset !== undefined) {
+        expectedTotal = range.total
+      } else if (expectedTotal !== undefined && range.total !== expectedTotal) {
+        throw new MalformedUpstreamError(`koios returned a non-contiguous page for ${path}`)
+      }
+      if (keyset === undefined) expectedTotal = range.total
+      // On the first keyset page, Content-Range still reports the full matching set. Reject an
+      // oversized result before walking it; later pages only report rows remaining after the
+      // cursor, so the consumed-row bound is the useful fallback there.
+      const pagedRows =
+        keyset !== undefined && pageCount === 1
+          ? range.total
+          : keyset === undefined
+            ? (expectedTotal ?? 0)
+            : rows.length + page.length
+      if (pagedRows > KOIOS_MAX_PAGED_ROWS) {
+        throw new MalformedUpstreamError(
+          `koios paged result exceeds ${KOIOS_MAX_PAGED_ROWS} rows for ${path}`,
+        )
+      }
+
+      appendPage(page)
+      expectedStart = range.end + 1
+      if (keyset !== undefined && range.total <= page.length) {
+        return { rows, keys, total: rows.length, pageCount }
+      }
+      if (keyset === undefined && expectedStart === expectedTotal) {
+        return { rows, keys, total: expectedTotal, pageCount }
+      }
+      if (response.status !== 206) {
+        throw new MalformedUpstreamError(
+          `koios returned an incomplete successful response for ${path}`,
+        )
+      }
+    }
   }
 
   /**
@@ -448,6 +704,8 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
       return read(path, async () => parse(schema, await request(path), path))
     },
 
+    readWithRetry: read,
+
     getFirst<T>(schema: z.ZodType<T>, path: string): Promise<T> {
       return read(path, async () => {
         const rows = parse(z.array(z.unknown()), await request(path), path)
@@ -460,95 +718,69 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
 
     batch,
 
-    batchAllPages<Row>(
+    async batchPageOnce<Row>(
       rowSchema: z.ZodType<Row>,
       path: string,
       body: unknown,
-      rowKey?: (row: Row) => string,
+    ): Promise<KoiosBatchPage<Row>> {
+      const response = await requestWithMetadata(path, {
+        method: 'POST',
+        body: JSON.stringify(body),
+        contentType: 'application/json',
+        headers: {
+          prefer: 'count=exact',
+        },
+      })
+      return {
+        rows: parse(z.array(rowSchema), response.data, path),
+        status: response.status,
+        range:
+          response.contentRange === null ? null : parseContentRange(response.contentRange, path),
+      }
+    },
+
+    async batchAllPages<Row>(
+      rowSchema: z.ZodType<Row>,
+      path: string,
+      body: unknown,
+      options?: PagedBatchOptions<Row>,
     ): Promise<Row[]> {
+      const rowKey = options?.rowKey
+      if (options?.verifyConsistency === true && typeof rowKey !== 'function') {
+        // The discriminated type prevents this in TypeScript. Keep a runtime guard for plain
+        // JavaScript and untyped callers: an explicitly requested safety check must never degrade
+        // silently, and this is a caller contract error rather than a transient upstream failure.
+        throw new TypeError(
+          `koios consistency verification requires a row-key function for ${path}`,
+        )
+      }
+
       return read(path, async () => {
-        const rows: Row[] = []
-        const seenKeys = new Set<string>()
-        let expectedStart = 0
-        let expectedTotal: number | undefined
-
-        const appendPage = (page: Row[]): void => {
-          if (rowKey !== undefined) {
-            for (const row of page) {
-              const key = rowKey(row)
-              if (seenKeys.has(key)) {
-                // Never put the key in the error. Callers use wallet identifiers as keys, and
-                // upstream failures flow through normal logs.
-                throw new MalformedUpstreamError(
-                  `koios returned a duplicate row across pages for ${path}`,
-                )
-              }
-              seenKeys.add(key)
-            }
-          }
-          rows.push(...page)
+        const first = await walkBatchPages(rowSchema, path, body, rowKey, options?.keyset)
+        if (
+          first.pageCount === 1 ||
+          rowKey === undefined ||
+          options?.verifyConsistency !== true ||
+          options?.keyset !== undefined
+        ) {
+          return first.rows
         }
 
-        for (;;) {
-          const separator = path.includes('?') ? '&' : '?'
-          const pagePath = `${path}${separator}limit=${KOIOS_PAGE_SIZE}&offset=${expectedStart}`
-          const response = await requestWithMetadata(pagePath, {
-            method: 'POST',
-            body: JSON.stringify(body),
-            contentType: 'application/json',
-            headers: {
-              prefer: 'count=exact',
-            },
-          })
-          const page = parse(z.array(rowSchema), response.data, path)
-
-          if (response.contentRange === null) {
-            if (response.status === 206 || expectedStart !== 0) {
-              throw new MalformedUpstreamError(
-                `koios omitted Content-Range from a partial response for ${path}`,
-              )
-            }
-            if (page.length >= KOIOS_PAGE_SIZE) {
-              throw new MalformedUpstreamError(
-                `koios returned a full page without Content-Range for ${path}`,
-              )
-            }
-            appendPage(page)
-            return rows
-          }
-
-          const range = parseContentRange(response.contentRange, path)
-          if (!('start' in range)) {
-            if (expectedStart !== 0 || page.length !== 0) {
-              throw new MalformedUpstreamError(
-                `koios returned rows for an empty Content-Range on ${path}`,
-              )
-            }
-            return []
-          }
-
-          if (range.start !== expectedStart || page.length !== range.end - range.start + 1) {
-            throw new MalformedUpstreamError(`koios returned a non-contiguous page for ${path}`)
-          }
-          if (expectedTotal !== undefined && range.total !== expectedTotal) {
-            throw new MalformedUpstreamError(`koios changed the paged result total for ${path}`)
-          }
-          expectedTotal = range.total
-          if (expectedTotal > KOIOS_MAX_PAGED_ROWS) {
-            throw new MalformedUpstreamError(
-              `koios paged result exceeds ${KOIOS_MAX_PAGED_ROWS} rows for ${path}`,
-            )
-          }
-
-          appendPage(page)
-          expectedStart = range.end + 1
-          if (expectedStart === expectedTotal) return rows
-          if (response.status !== 206) {
-            throw new MalformedUpstreamError(
-              `koios returned an incomplete successful response for ${path}`,
-            )
-          }
+        // Offset paging has no shared database snapshot. A spend before the next offset and a
+        // creation after it can keep the exact total unchanged while silently shifting one row
+        // past the cursor. Requiring the next ordered membership to agree provides a bounded
+        // consistency check; a mismatch is transient and restarts both walks via read().
+        const second = await walkBatchPages(rowSchema, path, body, rowKey)
+        const sameMembership =
+          first.total === second.total &&
+          first.keys.length === second.keys.length &&
+          first.keys.every((key, index) => key === second.keys[index])
+        if (!sameMembership) {
+          throw new MalformedUpstreamError(
+            `koios changed the paged result between consistency passes for ${path}`,
+          )
         }
+        return second.rows
       })
     },
 

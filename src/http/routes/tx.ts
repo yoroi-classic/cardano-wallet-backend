@@ -86,7 +86,10 @@ export function registerTxRoutes(app: FastifyInstance, provider: ChainProvider):
     if (!TX_HASH.test(hash)) {
       throw new BadRequestError('invalid transaction hash')
     }
-    return publicTxStatus(await provider.getTxStatus(hash))
+    // Hex spelling is case-insensitive, but both upstream providers key lookups by canonical
+    // lowercase hashes. Normalize at the public boundary so every spelling this route accepts has
+    // identical provider behavior.
+    return publicTxStatus(await provider.getTxStatus(hash.toLowerCase()))
   })
 
   /**

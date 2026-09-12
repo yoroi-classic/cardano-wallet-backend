@@ -301,17 +301,77 @@ function runBodies(source) {
     const match = /^(?:"([^"]*)"|'([^']*)'|([A-Za-z][\w-]*))\s*:/.exec(line.slice(indent + 2))
     return match !== null && stepMetadata.has(match[1] ?? match[2] ?? match[3])
   }
+  const resolveRunAlias = (value) => {
+    const alias = /^\*([A-Za-z0-9_-]+)(?:\s+#.*)?$/.exec(value.trim())
+    if (alias === null) return value
+    const target = anchors.get(alias[1])
+    assert.ok(target, `CI run step uses unresolved YAML anchor: ${alias[1]}`)
+    return target
+  }
+  const flowMapRunValues = (line) => {
+    const values = []
+    let open = line.indexOf('{')
+    while (open !== -1) {
+      let quote
+      let escaped = false
+      let close = -1
+      for (let index = open + 1; index < line.length; index += 1) {
+        const character = line[index]
+        if (escaped) {
+          escaped = false
+          continue
+        }
+        if (quote !== undefined) {
+          if (quote === '"' && character === '\\') escaped = true
+          else if (character === quote) quote = undefined
+          continue
+        }
+        if (character === '"' || character === "'") quote = character
+        else if (character === '}') {
+          close = index
+          break
+        }
+      }
+      if (close === -1) break
+      const entries = []
+      let entryStart = open + 1
+      quote = undefined
+      escaped = false
+      for (let index = open + 1; index <= close; index += 1) {
+        const character = line[index] ?? ','
+        if (escaped) {
+          escaped = false
+          continue
+        }
+        if (quote !== undefined) {
+          if (quote === '"' && character === '\\') escaped = true
+          else if (character === quote) quote = undefined
+          continue
+        }
+        if (character === '"' || character === "'") quote = character
+        else if (character === ',' || index === close) {
+          entries.push(line.slice(entryStart, index))
+          entryStart = index + 1
+        }
+      }
+      for (const entry of entries) {
+        const match = /^(?:\s*)(?:"([^"]*)"|'([^']*)'|([A-Za-z][\w-]*))\s*:\s*(.*)$/.exec(entry)
+        const key = match?.[1] ?? match?.[2] ?? match?.[3]
+        if (key === 'run') values.push(resolveRunAlias(match[4] ?? ''))
+      }
+      open = line.indexOf('{', close + 1)
+    }
+    return values
+  }
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? ''
     const match = /^(\s*)(?:-\s*)?(?:"run"|'run'|run)\s*:\s*(.*)$/.exec(line)
     if (match === null) continue
     const indent = (match[1] ?? '').length
     const firstLine = match[2] ?? ''
-    const alias = /^\*([A-Za-z0-9_-]+)(?:\s+#.*)?$/.exec(firstLine.trim())
-    if (alias !== null) {
-      const target = anchors.get(alias[1])
-      assert.ok(target, `CI run step uses unresolved YAML anchor: ${alias[1]}`)
-      bodies.push(target)
+    const resolvedFirstLine = resolveRunAlias(firstLine)
+    if (resolvedFirstLine !== firstLine) {
+      bodies.push(resolvedFirstLine)
       continue
     }
     const body = [firstLine]
@@ -335,9 +395,7 @@ function runBodies(source) {
     }
     bodies.push(body.join('\n'))
   }
-  for (const match of cleaned.matchAll(/\{\s*(?:"run"|'run'|run)\s*:\s*([^,}]+)(?:,|})/g)) {
-    bodies.push(match[1] ?? '')
-  }
+  for (const line of lines) bodies.push(...flowMapRunValues(line))
   return bodies
 }
 
@@ -461,6 +519,18 @@ assert.match(
   runBodies('      - { "run": "npm test || true" }\n').join('\n'),
   /\|\|/,
   'CI run guard must scan quoted flow-map run keys',
+)
+assert.match(
+  runBodies('      - { name: lint, run: npm test || true }\n').join('\n'),
+  /\|\|/,
+  'CI run guard must scan flow-map run entries after metadata',
+)
+assert.match(
+  runBodies('      - { "name": lint, "run": *lint }\n      value: &lint npm test || true\n').join(
+    '\n',
+  ),
+  /\|\|/,
+  'CI run guard must resolve aliased flow-map run entries after metadata',
 )
 assert.match(
   runBodies("      run: |\n          note='\n          keep # ' ; npm run lint || true\n").join(

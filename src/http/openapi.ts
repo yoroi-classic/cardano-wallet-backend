@@ -35,6 +35,13 @@ const LOVELACE = {
     'A lovelace amount as a decimal string. Parse with BigInt, never Number: values can exceed 2^53.',
 } as const
 
+const SIGNED_LOVELACE = {
+  ...LOVELACE,
+  pattern: '^-?\\d+$',
+  description:
+    'A signed lovelace amount as a decimal string. Account balances can be negative while a proposal deposit is outstanding. Parse with BigInt, never Number.',
+} as const
+
 const HEX = (bytes: number, description: string) =>
   ({
     type: 'string',
@@ -1256,8 +1263,9 @@ export const openapi = {
               'False for a stake key never seen on chain; the account is then all zeros.',
           },
           balance: {
-            ...LOVELACE,
-            description: 'Controlled lovelace: UTxO plus withdrawable rewards.',
+            ...SIGNED_LOVELACE,
+            description:
+              'Controlled lovelace: UTxO plus withdrawable rewards; can be negative while a proposal deposit is outstanding.',
           },
           rewardsAvailable: { ...LOVELACE, description: 'Withdrawable right now.' },
           rewardsSum: { ...LOVELACE, description: 'Lifetime rewards earned.' },

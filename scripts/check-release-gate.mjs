@@ -319,7 +319,7 @@ function continueOnErrorValues(source) {
     )
     for (const match of matches) values.push(match[1] ?? match[2] ?? match[3])
     const compactExplicitMatch = line.match(
-      /^\s*\?\s*(?:"continue-on-error"|'continue-on-error'|continue-on-error)\s*:\s*(?:"([^"]*)"|'([^']*)'|([^,}\s]+))/,
+      /^\s*(?:[-{},]\s*)?\?\s*(?:"continue-on-error"|'continue-on-error'|continue-on-error)\s*:\s*(?:"([^"]*)"|'([^']*)'|([^,}\s]+))/,
     )
     if (compactExplicitMatch !== null) {
       values.push(compactExplicitMatch[1] ?? compactExplicitMatch[2] ?? compactExplicitMatch[3])
@@ -327,7 +327,7 @@ function continueOnErrorValues(source) {
   }
   for (let index = 0; index < lines.length; index += 1) {
     if (
-      !/^\s*\?\s*(?:"continue-on-error"|'continue-on-error'|continue-on-error)\s*$/.test(
+      !/^\s*(?:[-{},]\s*)?\?\s*(?:"continue-on-error"|'continue-on-error'|continue-on-error)\s*$/.test(
         lines[index] ?? '',
       )
     ) {
@@ -375,6 +375,9 @@ for (const bypass of [
   "      'continue-on-error' : true\n",
   '      - { run: npm test, continue-on-error: true }\n',
   '      ? continue-on-error: true\n',
+  '      - ? continue-on-error: true\n',
+  '      { ? continue-on-error: true }\n',
+  '      , ? continue-on-error: true\n',
 ]) {
   assert.throws(
     () => assertContinueOnErrorIsFalseOnly(bypass),

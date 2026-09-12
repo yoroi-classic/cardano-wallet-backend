@@ -318,6 +318,12 @@ function continueOnErrorValues(source) {
       /(?:^\s*|[,{}]\s*)(?:"continue-on-error"|'continue-on-error'|continue-on-error)\s*:\s*(?:"([^"]*)"|'([^']*)'|([^,}\s]+))/g,
     )
     for (const match of matches) values.push(match[1] ?? match[2] ?? match[3])
+    const compactExplicitMatch = line.match(
+      /^\s*\?\s*(?:"continue-on-error"|'continue-on-error'|continue-on-error)\s*:\s*(?:"([^"]*)"|'([^']*)'|([^,}\s]+))/,
+    )
+    if (compactExplicitMatch !== null) {
+      values.push(compactExplicitMatch[1] ?? compactExplicitMatch[2] ?? compactExplicitMatch[3])
+    }
   }
   for (let index = 0; index < lines.length; index += 1) {
     if (
@@ -358,11 +364,17 @@ assert.deepEqual(
   ['false'],
   'false must remain an allowed continue-on-error value',
 )
+assert.deepEqual(
+  continueOnErrorValues('      ? continue-on-error: false\n'),
+  ['false'],
+  'compact explicit continue-on-error false must remain allowed',
+)
 for (const bypass of [
   '      continue-on-error: true\n',
   '      "continue-on-error": true\n',
   "      'continue-on-error' : true\n",
   '      - { run: npm test, continue-on-error: true }\n',
+  '      ? continue-on-error: true\n',
 ]) {
   assert.throws(
     () => assertContinueOnErrorIsFalseOnly(bypass),

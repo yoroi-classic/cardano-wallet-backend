@@ -287,6 +287,7 @@ describe('the pool list survives an upstream wobble', () => {
     await expect(wide).resolves.toHaveLength(2)
     await expect(narrow).resolves.toHaveLength(1)
     expect(koios.countOf('/pool_list')).toBe(2)
+    expect(koios.countOf('/pool_info')).toBe(2)
   })
 
   it('does not pin a failed uncached read once upstream recovers', async () => {

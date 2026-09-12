@@ -17,6 +17,8 @@ const accountInfoRow = z.object({
   status: z.enum(['registered', 'not registered']),
   delegated_pool: z.string().nullish(),
   delegated_drep: z.string().nullish(),
+  // Signed: Koios excludes the proposal_refund column from this sum, so an account holding an
+  // outstanding governance deposit reports a negative controlled balance. See signedNumeric.
   total_balance: signedNumeric,
   rewards_available: numeric,
   rewards: numeric,

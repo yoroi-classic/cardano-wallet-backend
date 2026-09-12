@@ -32,6 +32,49 @@ const reward = (earned: number, amount: string, type = 'member', pool: string | 
 })
 
 describe('koios getRewardHistory', () => {
+  // proposal_refund is absent from Koios's published enum and present in its responses, so
+  // mirroring the specification exactly is what broke this read. Measured against live mainnet on
+  // 2026-09-09: 109 of 1679 reward entries across 20 governance return addresses carried it.
+  it('accepts a governance proposal refund, which Koios does not document', async () => {
+    const rows = [
+      {
+        stake_address: STAKE,
+        rewards: [
+          {
+            earned_epoch: 646,
+            // A refund lands the epoch after the one it is earned for, not two like a pool reward.
+            spendable_epoch: 647,
+            amount: '100000000000',
+            type: 'proposal_refund',
+            pool_id: null,
+          },
+        ],
+      },
+    ]
+    const { fetchImpl } = fakeFetch(async () => rows)
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const history = await provider.getRewardHistory(STAKE)
+
+    expect(history).toEqual([
+      {
+        earnedEpoch: 646,
+        spendableEpoch: 647,
+        amount: '100000000000',
+        kind: 'proposal_refund',
+      },
+    ])
+  })
+
+  // Widening the enum must not turn it into a passthrough: an unknown kind is still malformed.
+  it('still rejects a reward kind Koios has never returned', async () => {
+    const rows = [{ stake_address: STAKE, rewards: [reward(30, '1', 'not_a_real_kind', null)] }]
+    const { fetchImpl } = fakeFetch(async () => rows)
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getRewardHistory(STAKE)).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+
   it('maps a reward and orders the history oldest first', async () => {
     // Deliberately out of order: Koios promises no ordering here, and a graph drawn from an
     // unordered series is a scribble.

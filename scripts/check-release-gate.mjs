@@ -8,6 +8,39 @@ const workflow = readFileSync('.github/workflows/release.yml', 'utf8')
 const ciWorkflow = readFileSync('.github/workflows/ci.yml', 'utf8')
 const packageJson = JSON.parse(readFileSync('package.json', 'utf8'))
 
+function removeYamlComments(source) {
+  return source
+    .split('\n')
+    .map((line) => {
+      let quote
+      let escaped = false
+      for (let index = 0; index < line.length; index += 1) {
+        const character = line[index]
+        if (escaped) {
+          escaped = false
+          continue
+        }
+        if (quote === '"' && character === '\\') {
+          escaped = true
+          continue
+        }
+        if (quote !== undefined) {
+          if (character === quote) quote = undefined
+          continue
+        }
+        if (character === '"' || character === "'") {
+          quote = character
+          continue
+        }
+        if (character === '#' && (index === 0 || /\s/.test(line[index - 1] ?? ''))) {
+          return line.slice(0, index).trimEnd()
+        }
+      }
+      return line
+    })
+    .join('\n')
+}
+
 function releaseJobCondition(source) {
   const marker = 'jobs:\n  tag:\n    if: >-\n'
   const start = source.indexOf(marker)
@@ -153,7 +186,7 @@ assert.throws(
   'release gate must inspect jobs after comments',
 )
 
-for (const required of [
+const requiredWorkflowLiterals = [
   'workflow_run:',
   'workflows: [ci]',
   'types: [completed]',
@@ -192,15 +225,35 @@ for (const required of [
   'for attempt in 1 2 3',
   'if [ "$release_still_valid" = false ]; then',
   'delete_created_release\n            if [ "$tag_created" = true ]; then',
-]) {
-  assert.ok(workflow.includes(required), `release workflow contract missing: ${required}`)
+]
+function assertRequiredWorkflowLiterals(source) {
+  const sourceWithoutComments = removeYamlComments(source)
+  for (const required of requiredWorkflowLiterals) {
+    assert.ok(
+      sourceWithoutComments.includes(required),
+      `release workflow contract missing: ${required}`,
+    )
+  }
 }
+assertRequiredWorkflowLiterals(workflow)
 
-function removeYamlComments(source) {
-  return source
-    .split('\n')
-    .filter((line) => !/^\s*#/.test(line))
-    .join('\n')
+for (const safetyCall of [
+  'test "$(git rev-parse HEAD)" = "$RELEASE_SHA"',
+  'git fetch origin main --depth=1',
+  'git tag "$tag" "$RELEASE_SHA"',
+  'git push origin "refs/tags/$tag"',
+  'git push origin ":refs/tags/$tag"',
+  'gh api --method POST "repos/${GITHUB_REPOSITORY}/releases"',
+]) {
+  const line = workflow.split('\n').find((candidate) => candidate.includes(safetyCall))
+  assert.ok(line, `release workflow fixture must contain safety call: ${safetyCall}`)
+  const indentation = line.match(/^\s*/)?.[0] ?? ''
+  const laundered = workflow.replace(line, `${indentation}# removed safety call: ${safetyCall}`)
+  assert.throws(
+    () => assertRequiredWorkflowLiterals(laundered),
+    /release workflow contract missing:/,
+    `release gate must reject comment-laundered safety call: ${safetyCall}`,
+  )
 }
 
 function runBodies(source) {

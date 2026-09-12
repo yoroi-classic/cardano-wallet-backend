@@ -263,6 +263,32 @@ describe('the pool list survives an upstream wobble', () => {
     expect(koios.countOf('/pool_info')).toBe(2)
   })
 
+  it('keeps concurrent uncached requests with different limits separate', async () => {
+    const koios = fakeKoios({ tipFails: true })
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let firstPoolInfo = true
+    const fetchImpl: FetchLike = async (url) => {
+      if (url.replace(BASE, '').split('?')[0] === '/pool_info' && firstPoolInfo) {
+        firstPoolInfo = false
+        await gate
+      }
+      return koios.fetchImpl(url)
+    }
+    const p = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    const wide = p.getPoolList({ limit: 50, offset: 0 })
+    const narrow = p.getPoolList({ limit: 1, offset: 0 })
+    await Promise.resolve()
+    release()
+
+    await expect(wide).resolves.toHaveLength(2)
+    await expect(narrow).resolves.toHaveLength(1)
+    expect(koios.countOf('/pool_list')).toBe(2)
+  })
+
   it('does not pin a failed uncached read once upstream recovers', async () => {
     const koios = fakeKoios({ tipFails: true })
     const p = provider(koios, createMemoryCache())

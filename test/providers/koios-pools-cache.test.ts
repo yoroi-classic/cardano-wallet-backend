@@ -102,6 +102,20 @@ describe('the pool list is cached', () => {
     expect(koios.countOf('/pool_list')).toBe(1)
   })
 
+  it('keeps ticker and limit variants separate on the cached path', async () => {
+    const koios = fakeKoios()
+    const p = provider(koios)
+
+    await p.getPoolList({ limit: 50, offset: 0 })
+    await p.getPoolList({ limit: 50, offset: 0, ticker: 'ADA' })
+    await p.getPoolList({ limit: 10, offset: 0, ticker: 'ADA' })
+
+    // Each request has a distinct page contract. Dropping ticker or limit from the page key
+    // would serve a previously cached page and suppress the corresponding upstream reads.
+    expect(koios.countOf('/pool_list')).toBe(3)
+    expect(koios.countOf('/pool_info')).toBe(3)
+  })
+
   it('scans the registered set once, however many pages are asked for', async () => {
     const koios = fakeKoios()
     const p = provider(koios)

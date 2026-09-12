@@ -1,0 +1,56 @@
+{
+  "name": "cardano-wallet-backend",
+  "version": "0.8.0",
+  "description": "Provider-agnostic Cardano wallet data backend for Yoroi Classic (Koios, Blockfrost, bring-your-own Dingo node)",
+  "type": "module",
+  "packageManager": "npm@10.9.7",
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "Apache-2.0",
+  "author": "Adam Dean <adam@crypto2099.io>",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:contract": "vitest run test/http/api-contract.test.ts",
+    "test:coverage": "vitest run --coverage",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "audit:prod": "npm audit --omit=dev --audit-level=high",
+    "docker:build": "docker build -t cardano-wallet-backend:ci .",
+    "docker:smoke": "scripts/smoke-docker-image.sh",
+    "docker:scan": "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v \"$HOME/.cache/trivy:/root/.cache/trivy\" aquasec/trivy:latest image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 cardano-wallet-backend:ci",
+    "check:ci": "npm run lint && npm run format:check && npm run typecheck && npm run build && npm run test:coverage && npm run audit:prod && npm run docker:build && npm run docker:smoke && npm run docker:scan",
+    "check:version": "node scripts/check-version-bump.mjs",
+    "changelog:assemble": "node scripts/assemble-changelog.mjs",
+    "changelog:check": "node scripts/assemble-changelog.mjs --check"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.3.0",
+    "@fastify/rate-limit": "^11.2.0",
+    "@scure/base": "^2.4.0",
+    "fastify": "^5.12.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.2.0",
+    "@vitest/coverage-v8": "^4.1.10",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
+    "eslint": "^10.8.1",
+    "prettier": "^3.9.6",
+    "tsx": "^4.23.12",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.66.0",
+    "vitest": "^4.1.11"
+  }
+}

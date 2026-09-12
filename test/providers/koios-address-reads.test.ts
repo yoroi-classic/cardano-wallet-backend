@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { createKoiosProvider, type FetchLike } from '../../src/providers/koios/index.js'
+import { createKoiosClient } from '../../src/providers/koios/client.js'
 import { MalformedUpstreamError, ProviderError } from '../../src/domain/errors.js'
+import { z } from 'zod'
 
 const BASE = 'https://preprod.koios.rest/api/v1'
 
@@ -198,6 +200,141 @@ function txInfoRowFor(hash: string, block: number) {
     certificates: [],
   }
 }
+
+describe('koios batchAllPages', () => {
+  it('accepts an empty tail only when Content-Range total matches the consumed offset', async () => {
+    const fetchImpl: FetchLike = async (url) => {
+      const offset = new URL(url).searchParams.get('offset')
+      return {
+        ok: true,
+        status: offset === '0' ? 206 : 200,
+        headers: {
+          get: (name) => (name === 'content-range' ? (offset === '0' ? '0-0/2' : '*/1') : null),
+        },
+        json: async () => (offset === '0' ? [{ id: 'first' }] : []),
+        text: async () => '',
+      }
+    }
+    const client = createKoiosClient({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    await expect(client.batchAllPages(z.object({ id: z.string() }), '/rows', {})).resolves.toEqual([
+      { id: 'first' },
+    ])
+  })
+
+  it('rejects an empty Content-Range on a keyset continuation', async () => {
+    const fetchImpl: FetchLike = async (url) => {
+      const keyset = new URL(url).searchParams.get('or')
+      return {
+        ok: true,
+        status: keyset === null ? 206 : 200,
+        headers: {
+          get: (name) => (name === 'content-range' ? (keyset === null ? '0-0/2' : '*/0') : null),
+        },
+        json: async () => (keyset === null ? [{ id: 'first' }] : []),
+        text: async () => '',
+      }
+    }
+    const client = createKoiosClient({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+    const options = {
+      rowKey: (row: { id: string }) => row.id,
+      keyset: (row: { id: string }): readonly [string, number] => [row.id, 0],
+    }
+
+    await expect(
+      client.batchAllPages(z.object({ id: z.string() }), '/rows', {}, options),
+    ).rejects.toThrow('koios returned a contradictory empty Content-Range on /rows')
+  })
+
+  it('accepts an empty Content-Range on the first keyset page', async () => {
+    const fetchImpl: FetchLike = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: (name) => (name === 'content-range' ? '*/0' : null) },
+      json: async () => [],
+      text: async () => '',
+    })
+    const client = createKoiosClient({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+    const options = {
+      rowKey: (row: { id: string }) => row.id,
+      keyset: (row: { id: string }): readonly [string, number] => [row.id, 0],
+    }
+
+    await expect(
+      client.batchAllPages(z.object({ id: z.string() }), '/rows', {}, options),
+    ).resolves.toEqual([])
+  })
+
+  it('rejects an empty tail whose Content-Range total disagrees with the consumed offset', async () => {
+    const fetchImpl: FetchLike = async (url) => {
+      const offset = new URL(url).searchParams.get('offset')
+      return {
+        ok: true,
+        status: offset === '0' ? 206 : 200,
+        headers: {
+          get: (name) => (name === 'content-range' ? (offset === '0' ? '0-0/2' : '*/2') : null),
+        },
+        json: async () => (offset === '0' ? [{ id: 'first' }] : []),
+        text: async () => '',
+      }
+    }
+    const client = createKoiosClient({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    await expect(client.batchAllPages(z.object({ id: z.string() }), '/rows', {})).rejects.toThrow(
+      'koios returned a contradictory empty Content-Range on /rows',
+    )
+  })
+
+  it('rejects an empty Content-Range total outside the safe integer range', async () => {
+    const fetchImpl: FetchLike = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: (name) => (name === 'content-range' ? '*/9007199254740992' : null) },
+      json: async () => [],
+      text: async () => '',
+    })
+    const client = createKoiosClient({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    await expect(client.batchAllPages(z.object({ id: z.string() }), '/rows', {})).rejects.toThrow(
+      'koios returned contradictory Content-Range for /rows',
+    )
+  })
+
+  it.each([
+    [
+      'rows',
+      [{ id: 'unexpected' }],
+      '*/0',
+      'koios returned a contradictory empty Content-Range on /rows',
+    ],
+    ['a non-zero total', [], '*/1', 'koios returned a contradictory empty Content-Range on /rows'],
+  ])(
+    'rejects keyset empty Content-Range with %s',
+    async (_description, emptyPage, range, message) => {
+      const fetchImpl: FetchLike = async (url) => {
+        const keyset = new URL(url).searchParams.get('or')
+        return {
+          ok: true,
+          status: keyset === null ? 206 : 200,
+          headers: {
+            get: (name) => (name === 'content-range' ? (keyset === null ? '0-0/2' : range) : null),
+          },
+          json: async () => (keyset === null ? [{ id: 'first' }] : emptyPage),
+          text: async () => '',
+        }
+      }
+      const client = createKoiosClient({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+      const options = {
+        rowKey: (row: { id: string }) => row.id,
+        keyset: (row: { id: string }): readonly [string, number] => [row.id, 0],
+      }
+
+      await expect(
+        client.batchAllPages(z.object({ id: z.string() }), '/rows', {}, options),
+      ).rejects.toThrow(message)
+    },
+  )
+})
 
 describe('koios getTxHistoryByAddresses', () => {
   const ADDRESS_TXS = [
@@ -769,7 +906,7 @@ describe('koios getTxHistoryByAddresses', () => {
   })
 
   it('rejects an incomplete 200 response with a partial Content-Range', async () => {
-    const rows = Array.from({ length: 50 }, (_, block) => ({
+    const rows = Array.from({ length: 30 }, (_, block) => ({
       tx_hash: `partial-${block}`,
       block_height: block,
       block_time: block * 10,
@@ -780,7 +917,7 @@ describe('koios getTxHistoryByAddresses', () => {
       return {
         ok: true,
         status: 200,
-        headers: { get: (name) => (name === 'content-range' ? '0-49/60' : null) },
+        headers: { get: (name) => (name === 'content-range' ? '0-29/60' : null) },
         json: async () => rows,
         text: async () => '',
       }
@@ -790,6 +927,177 @@ describe('koios getTxHistoryByAddresses', () => {
     await expect(provider.getTxHistoryByAddresses([BYRON_A])).rejects.toThrow(
       'koios returned an incomplete successful response for /address_txs',
     )
+  })
+
+  it('rejects a partial response that omits Content-Range', async () => {
+    const rows = Array.from({ length: 30 }, (_, block) => ({
+      tx_hash: `unranged-partial-${block}`,
+      block_height: block,
+      block_time: block * 10,
+      epoch_no: 1,
+    }))
+    const fetchImpl: FetchLike = async (url) => {
+      if (url.includes('/tx_info')) throw new Error('details must not be requested')
+      return { ok: true, status: 206, json: async () => rows, text: async () => '' }
+    }
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    await expect(provider.getTxHistoryByAddresses([BYRON_A])).rejects.toThrow(
+      'koios omitted Content-Range from a partial response for /address_txs',
+    )
+  })
+
+  it('rejects rows paired with an empty Content-Range', async () => {
+    const fetchImpl: FetchLike = async (url) => {
+      if (url.includes('/tx_info')) throw new Error('details must not be requested')
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (name) => (name === 'content-range' ? '*/0' : null) },
+        json: async () => [
+          { tx_hash: 'empty-range-row', block_height: 1, block_time: 10, epoch_no: 1 },
+        ],
+        text: async () => '',
+      }
+    }
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    await expect(provider.getTxHistoryByAddresses([BYRON_A])).rejects.toThrow(
+      'koios returned a contradictory empty Content-Range on /address_txs',
+    )
+  })
+
+  it('probes the history bound and rejects an extra row without Content-Range', async () => {
+    const calls: string[] = []
+    const fetchImpl: FetchLike = async (url) => {
+      if (url.includes('/tx_info')) throw new Error('details must not be requested')
+      const query = new URL(url).searchParams
+      const offset = Number(query.get('offset'))
+      const limit = Number(query.get('limit'))
+      calls.push(`${offset}:${limit}`)
+      if (offset < 100_000) {
+        const rows = Array.from({ length: limit }, (_, index) => ({
+          // Keep the logical transaction count below 50 so the bounded merge must walk to the
+          // safety-bound probe instead of stopping after its first page.
+          tx_hash: 'bound-shared',
+          block_height: offset + index,
+          block_time: (offset + index) * 10,
+          epoch_no: 1,
+        }))
+        const end = offset + rows.length - 1
+        return {
+          ok: true,
+          status: 206,
+          headers: { get: (name) => (name === 'content-range' ? `${offset}-${end}/100001` : null) },
+          json: async () => rows,
+          text: async () => '',
+        }
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => [
+          { tx_hash: 'bound-shared', block_height: 100_000, block_time: 1_000_000, epoch_no: 1 },
+        ],
+        text: async () => '',
+      }
+    }
+    const provider = createKoiosProvider({
+      baseUrl: BASE,
+      fetchImpl,
+      readAttempts: 1,
+      retryBackoffMs: 0,
+    })
+
+    await expect(provider.getTxHistoryByAddresses([BYRON_A])).rejects.toBeInstanceOf(
+      MalformedUpstreamError,
+    )
+    expect(calls.at(-1)).toBe('100000:1')
+  })
+
+  it('accepts an empty ranged tail only when it matches the consumed offset', async () => {
+    const rows = Array.from({ length: 50 }, (_, block) => ({
+      tx_hash: `empty-tail-${Math.min(block, 48)}`,
+      block_height: block,
+      block_time: block * 10,
+      epoch_no: 1,
+    }))
+    const offsets: string[] = []
+    const fetchImpl: FetchLike = async (url, init) => {
+      if (url.includes('/tx_info')) {
+        const hashes = (JSON.parse(String(init?.body)) as { _tx_hashes: string[] })._tx_hashes
+        return {
+          ok: true,
+          status: 200,
+          json: async () =>
+            hashes.map((hash) => txInfoRowFor(hash, Number(hash.split('-').at(-1)))),
+          text: async () => '',
+        }
+      }
+      const offset = Number(new URL(url).searchParams.get('offset'))
+      offsets.push(String(offset))
+      if (offset === 50) {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: (name) => (name === 'content-range' ? '*/50' : null) },
+          json: async () => [],
+          text: async () => '',
+        }
+      }
+      return {
+        ok: true,
+        status: 206,
+        headers: { get: (name) => (name === 'content-range' ? '0-49/51' : null) },
+        json: async () => rows,
+        text: async () => '',
+      }
+    }
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    const history = await provider.getTxHistoryByAddresses([BYRON_A])
+
+    expect(history).toHaveLength(49)
+    expect(offsets).toEqual(['0', '50'])
+  })
+
+  it('rejects an empty ranged tail whose total disagrees with the consumed offset', async () => {
+    let detailsRequested = false
+    const fetchImpl: FetchLike = async (url) => {
+      if (url.includes('/tx_info')) {
+        detailsRequested = true
+        throw new Error('details must not be requested')
+      }
+      const offset = Number(new URL(url).searchParams.get('offset'))
+      if (offset === 50) {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: (name) => (name === 'content-range' ? '*/49' : null) },
+          json: async () => [],
+          text: async () => '',
+        }
+      }
+      const rows = Array.from({ length: 50 }, (_, block) => ({
+        tx_hash: `mismatched-tail-${Math.min(block, 48)}`,
+        block_height: block,
+        block_time: block * 10,
+        epoch_no: 1,
+      }))
+      return {
+        ok: true,
+        status: 206,
+        headers: { get: (name) => (name === 'content-range' ? '0-49/51' : null) },
+        json: async () => rows,
+        text: async () => '',
+      }
+    }
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    await expect(provider.getTxHistoryByAddresses([BYRON_A])).rejects.toThrow(
+      'koios returned a contradictory empty Content-Range',
+    )
+    expect(detailsRequested).toBe(false)
   })
 
   it('rejects a full page without Content-Range', async () => {

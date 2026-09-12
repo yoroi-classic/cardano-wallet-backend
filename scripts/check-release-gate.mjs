@@ -279,9 +279,20 @@ function runBodies(source) {
   const lines = cleaned.split('\n')
   const bodies = []
   const anchors = new Map()
-  for (const line of lines) {
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? ''
     for (const match of line.matchAll(/&([A-Za-z0-9_-]+)(?:\s+([^#]+?))?(?:\s+#.*)?$/g)) {
-      if (match[2] !== undefined) anchors.set(match[1], match[2].trim())
+      if (match[2] === undefined) continue
+      let value = match[2].trim()
+      if (/^(?:\||>)[-+]?\s*$/.test(value)) {
+        const indentation = line.search(/\S/)
+        for (let next = index + 1; next < lines.length; next += 1) {
+          const continuation = lines[next] ?? ''
+          if (continuation.trim() !== '' && continuation.search(/\S/) <= indentation) break
+          value += `\n${continuation}`
+        }
+      }
+      anchors.set(match[1], value)
     }
   }
   const stepMetadata = new Set([
@@ -522,6 +533,13 @@ assert.match(
   ).join('\n'),
   /\|\|/,
   'CI run guard must resolve chained run-step YAML anchors',
+)
+assert.match(
+  runBodies(
+    '      run: *outer\n      outer: &outer *base\n      base: &base |\n        npm test || true\n',
+  ).join('\n'),
+  /\|\|/,
+  'CI run guard must scan chained aliases targeting block scalars',
 )
 assert.throws(
   () => runBodies('      run: *unknown\n'),

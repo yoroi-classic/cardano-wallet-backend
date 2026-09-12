@@ -4,7 +4,7 @@ import { REWARD_KINDS, type AccountReward, type AccountState } from '../../domai
 import type { Utxo, WalletTransaction } from '../../domain/types/transactions.js'
 import type { AccountCapability } from '../capabilities/account.js'
 import type { KoiosClient } from './client.js'
-import { assetItem, mapAssets, numeric } from './schema.js'
+import { assetItem, mapAssets, numeric, signedNumeric } from './schema.js'
 import { hydrateTxHistory } from './tx-info.js'
 
 // How many transactions we detail per page. Matches the extension's request size.
@@ -17,7 +17,7 @@ const accountInfoRow = z.object({
   status: z.enum(['registered', 'not registered']),
   delegated_pool: z.string().nullish(),
   delegated_drep: z.string().nullish(),
-  total_balance: numeric,
+  total_balance: signedNumeric,
   rewards_available: numeric,
   rewards: numeric,
   withdrawals: numeric,
@@ -41,7 +41,7 @@ const rewardRow = z.object({
   earned_epoch: z.number().int().nonnegative(),
   spendable_epoch: z.number().int().nonnegative(),
   amount: numeric,
-  type: z.enum(REWARD_KINDS),
+  type: z.enum([...REWARD_KINDS, 'proposal_refund']),
   // Absent for treasury, reserves and refunds, which are not paid by a pool.
   pool_id: z.string().nullish(),
 })
@@ -176,7 +176,7 @@ export function createAccountMethods(koios: KoiosClient): AccountCapability {
             earnedEpoch: row.earned_epoch,
             spendableEpoch: row.spendable_epoch,
             amount: String(row.amount),
-            kind: row.type,
+            kind: row.type === 'proposal_refund' ? 'refund' : row.type,
             // Treasury, reserves and refunds have no pool. Emitting an empty string would put a
             // pool id that does not exist into the response.
             ...(row.pool_id == null ? {} : { poolId: row.pool_id }),

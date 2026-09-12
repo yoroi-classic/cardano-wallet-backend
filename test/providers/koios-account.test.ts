@@ -139,6 +139,17 @@ describe('koios getAccountState', () => {
     expect(state.delegatedDrep).toBeUndefined()
   })
 
+  it('accepts a negative balance while a proposal deposit is outstanding', async () => {
+    const { fetchImpl } = fakeFetch({
+      json: async () => [{ ...ROW, total_balance: '-89788495927' }],
+    })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getAccountState(STAKE)).resolves.toMatchObject({
+      balance: '-89788495927',
+    })
+  })
+
   it('rejects an unexpected account status as malformed', async () => {
     const { fetchImpl } = fakeFetch({ json: async () => [{ ...ROW, status: 'weird' }] })
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })

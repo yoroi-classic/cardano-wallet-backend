@@ -267,10 +267,7 @@ function runBodies(source) {
     const indent = (match[1] ?? '').length
     const firstLine = match[2] ?? ''
     const body = [firstLine]
-    const scalarHeader = firstLine.replace(
-      /^((?:\||>)[-+]?)(?:\s+#.*)?$/,
-      '$1',
-    )
+    const scalarHeader = firstLine.replace(/^((?:\||>)[-+]?)(?:\s+#.*)?$/, '$1')
     if (/^(?:\||>)[-+]?\s*$/.test(scalarHeader)) {
       for (let next = index + 1; next < lines.length; next += 1) {
         const continuation = lines[next] ?? ''
@@ -356,9 +353,7 @@ assert.match(
 )
 for (const scalarHeader of ['| # explain', '> # explain']) {
   assert.match(
-    runBodies(
-      `      run: ${scalarHeader}\n          npm run lint || true\n`,
-    ).join('\n'),
+    runBodies(`      run: ${scalarHeader}\n          npm run lint || true\n`).join('\n'),
     /\|\|/,
     `CI run guard must scan block scalars with header comments: ${scalarHeader}`,
   )

@@ -278,23 +278,6 @@ function runBodies(source) {
   const cleaned = source
   const lines = cleaned.split('\n')
   const bodies = []
-  const anchors = new Map()
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index] ?? ''
-    for (const match of line.matchAll(/&([A-Za-z0-9_-]+)(?:\s+([^#]+?))?(?:\s+#.*)?$/g)) {
-      if (match[2] === undefined) continue
-      let value = match[2].trim()
-      if (/^(?:\||>)[-+]?\s*$/.test(value)) {
-        const indentation = line.search(/\S/)
-        for (let next = index + 1; next < lines.length; next += 1) {
-          const continuation = lines[next] ?? ''
-          if (continuation.trim() !== '' && continuation.search(/\S/) <= indentation) break
-          value += `\n${continuation}`
-        }
-      }
-      anchors.set(match[1], value)
-    }
-  }
   const stepMetadata = new Set([
     'continue-on-error',
     'env',
@@ -307,10 +290,28 @@ function runBodies(source) {
     'with',
     'working-directory',
   ])
-  const isSiblingStepField = (line, indent) => {
-    if (line.search(/\S/) !== indent + 2) return false
-    const match = /^(?:"([^"]*)"|'([^']*)'|([A-Za-z][\w-]*))\s*:/.exec(line.slice(indent + 2))
+  const isSiblingStepField = (line, indent, sequenceItem = false) => {
+    const siblingIndent = sequenceItem ? indent + 2 : indent
+    if (line.search(/\S/) !== siblingIndent) return false
+    const match = /^(?:"([^"]*)"|'([^']*)'|([A-Za-z][\w-]*))\s*:/.exec(line.slice(siblingIndent))
     return match !== null && stepMetadata.has(match[1] ?? match[2] ?? match[3])
+  }
+  const anchors = new Map()
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? ''
+    for (const match of line.matchAll(/&([A-Za-z0-9_-]+)(?:\s+([^#]+?))?(?:\s+#.*)?$/g)) {
+      if (match[2] === undefined) continue
+      let value = match[2].trim()
+      const indentation = line.search(/\S/)
+      const sequenceItem = /^\s*-\s+/.test(line)
+      for (let next = index + 1; next < lines.length; next += 1) {
+        const continuation = lines[next] ?? ''
+        if (continuation.trim() !== '' && continuation.search(/\S/) <= indentation) break
+        if (isSiblingStepField(continuation, indentation, sequenceItem)) break
+        value += `\n${continuation}`
+      }
+      anchors.set(match[1], value)
+    }
   }
   const resolveRunAlias = (value) => {
     let resolved = value
@@ -325,15 +326,15 @@ function runBodies(source) {
       resolved = target
     }
   }
-  const flowMapRunValues = (line) => {
+  const flowMapRunValues = (source) => {
     const values = []
-    let open = line.indexOf('{')
+    let open = source.indexOf('{')
     while (open !== -1) {
       let quote
       let escaped = false
       let close = -1
-      for (let index = open + 1; index < line.length; index += 1) {
-        const character = line[index]
+      for (let index = open + 1; index < source.length; index += 1) {
+        const character = source[index]
         if (escaped) {
           escaped = false
           continue
@@ -355,7 +356,7 @@ function runBodies(source) {
       quote = undefined
       escaped = false
       for (let index = open + 1; index <= close; index += 1) {
-        const character = line[index] ?? ','
+        const character = source[index] ?? ','
         if (escaped) {
           escaped = false
           continue
@@ -367,25 +368,27 @@ function runBodies(source) {
         }
         if (character === '"' || character === "'") quote = character
         else if (character === ',' || index === close) {
-          entries.push(line.slice(entryStart, index))
+          entries.push(source.slice(entryStart, index))
           entryStart = index + 1
         }
       }
       for (const entry of entries) {
-        const match = /^(?:\s*)(?:"([^"]*)"|'([^']*)'|([A-Za-z][\w-]*))\s*:\s*(.*)$/.exec(entry)
+        const match = /^(?:\s*)(?:"([^"]*)"|'([^']*)'|([A-Za-z][\w-]*))\s*:\s*([\s\S]*)$/.exec(
+          entry,
+        )
         const key = match?.[1] ?? match?.[2] ?? match?.[3]
         if (key === 'run') values.push(resolveRunAlias(match[4] ?? ''))
       }
-      open = line.indexOf('{', close + 1)
+      open = source.indexOf('{', close + 1)
     }
     return values
   }
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? ''
-    const match = /^(\s*)(?:-\s*)?(?:"run"|'run'|run)\s*:\s*(.*)$/.exec(line)
+    const match = /^(\s*)(-\s*)?(?:"run"|'run'|run)\s*:\s*(.*)$/.exec(line)
     if (match === null) continue
     const indent = (match[1] ?? '').length
-    const firstLine = match[2] ?? ''
+    const firstLine = match[3] ?? ''
     const resolvedFirstLine = resolveRunAlias(firstLine)
     if (resolvedFirstLine !== firstLine) {
       bodies.push(resolvedFirstLine)
@@ -404,15 +407,14 @@ function runBodies(source) {
       for (let next = index + 1; next < lines.length; next += 1) {
         const continuation = lines[next] ?? ''
         if (continuation.trim() !== '' && continuation.search(/\S/) <= indent) break
-        if (isSiblingStepField(continuation, indent)) break
-        if (/^\s*#/.test(continuation)) continue
+        if (isSiblingStepField(continuation, indent, match[2] !== undefined)) break
         body.push(continuation)
         index = next
       }
     }
     bodies.push(body.join('\n'))
   }
-  for (const line of lines) bodies.push(...flowMapRunValues(line))
+  bodies.push(...flowMapRunValues(cleaned))
   return bodies
 }
 
@@ -522,10 +524,20 @@ assert.doesNotMatch(
   /\|\|/,
   'CI run guard must not scan sibling step metadata as shell text',
 )
+assert.doesNotMatch(
+  runBodies('      run: npm test\n      name: "metadata || true"\n').join('\n'),
+  /\|\|/,
+  'CI run guard must calculate sibling columns for mapping run fields',
+)
 assert.match(
   runBodies('      run: *lint\n      value: &lint npm test || true\n').join('\n'),
   /\|\|/,
   'CI run guard must resolve run-step YAML anchors',
+)
+assert.match(
+  runBodies('      run: *lint\n      value: &lint npm test\n        || true\n').join('\n'),
+  /\|\|/,
+  'CI run guard must scan continuations of anchored plain scalars',
 )
 assert.match(
   runBodies(
@@ -567,6 +579,18 @@ assert.match(
   ),
   /\|\|/,
   'CI run guard must resolve aliased flow-map run entries after metadata',
+)
+assert.match(
+  runBodies('      - {\n          name: lint,\n          run: npm test || true\n        }\n').join(
+    '\n',
+  ),
+  /\|\|/,
+  'CI run guard must scan multiline flow-map run entries',
+)
+assert.match(
+  runBodies('      run: npm test\n        # shell continuation\n        || true\n').join('\n'),
+  /\|\|/,
+  'CI run guard must scan comment-looking plain-scalar continuations',
 )
 assert.match(
   runBodies("      run: |\n          note='\n          keep # ' ; npm run lint || true\n").join(
@@ -667,7 +691,6 @@ function assertRollbackCallsExecute(source) {
   assert.notEqual(end, -1, 'release rollback branch must be complete')
   const rollback = rollbackLines
     .slice(0, end + 1)
-    .filter((line) => line.trim() !== 'exit 1')
     .map((line) => line.replace(/^ {10}/, ''))
     .join('\n')
   execFileSync(
@@ -694,6 +717,13 @@ function assertRollbackCallsExecute(source) {
 
 assertExecutableReleaseCalls(workflow)
 assertRollbackCallsExecute(workflow)
+assert.throws(
+  () =>
+    assertRollbackCallsExecute(
+      workflow.replace('            delete_created_release\n', '            exit 1\n'),
+    ),
+  'release rollback probe must fail when a rollback call is replaced by exit 1',
+)
 assert.throws(
   () =>
     assertExecutableReleaseCalls(

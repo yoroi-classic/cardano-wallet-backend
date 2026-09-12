@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { ProviderError } from '../../domain/errors.js'
 import type { BlockfrostClient } from './client.js'
 import { mapWithConcurrency } from './concurrency.js'
 
@@ -23,6 +24,10 @@ import { mapWithConcurrency } from './concurrency.js'
 // reads use: enough to overlap the round trips, not so many that resolving a large UTxO set opens
 // a connection per block at once and trips the rate limiter for the whole read.
 const BLOCK_LOOKUP_CONCURRENCY = 10
+// A chain tip can roll back between the UTxO page and this lookup. Give the block a second chance
+// before surfacing the inconsistency; persistent absence still fails closed so a wallet read never
+// returns a balance built from an incomplete set.
+const BLOCK_LOOKUP_ATTEMPTS = 2
 
 /** `/blocks/{hash}` (Blockfrost OpenAPI spec, `block_content`), projected to the height. */
 const blockHeightRow = z.object({
@@ -60,8 +65,14 @@ export async function resolveBlockHeights(
     distinct,
     BLOCK_LOOKUP_CONCURRENCY,
     async (hash): Promise<[string, number]> => {
-      const block = await client.get(blockHeightRow, `/blocks/${encodeURIComponent(hash)}`)
-      return [hash, block.height]
+      for (let attempt = 1; attempt <= BLOCK_LOOKUP_ATTEMPTS; attempt += 1) {
+        const block = await client.getOrUndefined(
+          blockHeightRow,
+          `/blocks/${encodeURIComponent(hash)}`,
+        )
+        if (block !== undefined) return [hash, block.height]
+      }
+      throw new ProviderError('blockfrost creation block disappeared during UTxO read; retry')
     },
   )
   return new Map(entries)

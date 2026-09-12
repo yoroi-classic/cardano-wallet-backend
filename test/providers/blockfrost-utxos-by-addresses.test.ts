@@ -90,6 +90,39 @@ describe('blockfrost getUtxosByAddresses', () => {
     expect(utxos.map((u) => u.blockHeight)).toEqual([4_961_506, 5_153_923])
   })
 
+  it('retries a creation block lookup that briefly disappears during a rollback', async () => {
+    const block = 'd'.repeat(64)
+    let blockLookups = 0
+    const fetchImpl: FetchLike = async (rawUrl) => {
+      const url = new URL(rawUrl)
+      if (url.pathname.includes('/blocks/')) {
+        blockLookups += 1
+        if (blockLookups === 1) {
+          return {
+            ok: false,
+            status: 404,
+            json: async () => ({}),
+            text: async () => '',
+          }
+        }
+        return { ok: true, status: 200, json: async () => ({ height: 42 }), text: async () => '' }
+      }
+      const page = Number(url.searchParams.get('page') ?? '1')
+      return {
+        ok: true,
+        status: 200,
+        json: async () => (page === 1 ? [utxo({ address: 'addr_a', block })] : []),
+        text: async () => '',
+      }
+    }
+    const p = createBlockfrostProvider({ baseUrl: BASE, projectId: PROJECT_ID, fetchImpl })
+
+    await expect(p.getUtxosByAddresses(['addr_a'])).resolves.toEqual([
+      expect.objectContaining({ blockHeight: 42 }),
+    ])
+    expect(blockLookups).toBe(2)
+  })
+
   // The cost of this provider's extra round trip is bounded by the number of distinct blocks, not
   // the number of outputs. Change from one transaction lands in one block, which is the common case.
   it('resolves one block once however many of its outputs are held', async () => {

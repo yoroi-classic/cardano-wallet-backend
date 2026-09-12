@@ -99,7 +99,7 @@ async function fillAddressHistoryStream(
         `koios omitted Content-Range from a partial response for ${path}`,
       )
     }
-    if (!probingBound && page.length >= limit) {
+    if (page.length >= limit) {
       throw new MalformedUpstreamError(
         `koios returned a full page without Content-Range for ${path}`,
       )
@@ -108,7 +108,9 @@ async function fillAddressHistoryStream(
     stream.done = true
   } else if (!('start' in response.range)) {
     if (page.length !== 0 || response.range.total !== stream.offset) {
-      throw new MalformedUpstreamError(`koios returned rows for an empty Content-Range on ${path}`)
+      throw new MalformedUpstreamError(
+        `koios returned a contradictory empty Content-Range on ${path}`,
+      )
     }
     stream.done = true
   } else {

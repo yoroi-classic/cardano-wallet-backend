@@ -256,6 +256,41 @@ describe('koios batchAllPages', () => {
       'koios returned contradictory Content-Range for /rows',
     )
   })
+
+  it.each([
+    [
+      'rows',
+      [{ id: 'unexpected' }],
+      '*/0',
+      'koios returned a contradictory empty Content-Range on /rows',
+    ],
+    ['a non-zero total', [], '*/1', 'koios returned a contradictory empty Content-Range on /rows'],
+  ])(
+    'rejects keyset empty Content-Range with %s',
+    async (_description, emptyPage, range, message) => {
+      const fetchImpl: FetchLike = async (url) => {
+        const keyset = new URL(url).searchParams.get('or')
+        return {
+          ok: true,
+          status: keyset === null ? 206 : 200,
+          headers: {
+            get: (name) => (name === 'content-range' ? (keyset === null ? '0-0/2' : range) : null),
+          },
+          json: async () => (keyset === null ? [{ id: 'first' }] : emptyPage),
+          text: async () => '',
+        }
+      }
+      const client = createKoiosClient({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+      const options = {
+        rowKey: (row: { id: string }) => row.id,
+        keyset: (row: { id: string }): readonly [string, number] => [row.id, 0],
+      }
+
+      await expect(
+        client.batchAllPages(z.object({ id: z.string() }), '/rows', {}, options),
+      ).rejects.toThrow(message)
+    },
+  )
 })
 
 describe('koios getTxHistoryByAddresses', () => {
@@ -885,7 +920,7 @@ describe('koios getTxHistoryByAddresses', () => {
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
 
     await expect(provider.getTxHistoryByAddresses([BYRON_A])).rejects.toThrow(
-      'koios returned rows for an empty Content-Range on /address_txs',
+      'koios returned a contradictory empty Content-Range on /address_txs',
     )
   })
 
@@ -1017,7 +1052,7 @@ describe('koios getTxHistoryByAddresses', () => {
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
 
     await expect(provider.getTxHistoryByAddresses([BYRON_A])).rejects.toThrow(
-      'koios returned rows for an empty Content-Range',
+      'koios returned a contradictory empty Content-Range',
     )
     expect(detailsRequested).toBe(false)
   })

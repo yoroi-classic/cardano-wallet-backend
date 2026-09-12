@@ -613,12 +613,18 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
 
       const range = parseContentRange(response.contentRange, path)
       if (!('start' in range)) {
-        if (expectedStart !== 0 || page.length !== 0) {
+        const expectedEmptyTotal = keyset === undefined ? expectedStart : 0
+        if (page.length !== 0 || range.total !== expectedEmptyTotal) {
           throw new MalformedUpstreamError(
-            `koios returned rows for an empty Content-Range on ${path}`,
+            `koios returned a contradictory empty Content-Range on ${path}`,
           )
         }
-        return { rows: [], keys: [], total: 0, pageCount }
+        return {
+          rows,
+          keys,
+          total: keyset === undefined ? range.total : rows.length,
+          pageCount,
+        }
       }
 
       if (range.start !== expectedStart || page.length !== range.end - range.start + 1) {

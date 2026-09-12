@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   BLOCKFROST_PROJECT_ID,
   discover,
+  discoverRecentTxHash,
   integrationProvider,
 } from './support/provider-blockfrost.js'
 
@@ -16,10 +17,9 @@ describe('blockfrost getUtxosByRef (integration)', () => {
   it.skipIf(skip)(
     'resolves a live output by reference, and reports a spent input as spent',
     async () => {
-      // Find a recent block with at least one transaction, so the fixtures are live and cannot rot.
-      const hashes = await discover<string[]>('/blocks/latest/txs')
-      expect(hashes.length).toBeGreaterThan(0)
-      const txHash = hashes[hashes.length - 1] as string
+      // A transaction from a recent block, so the fixtures are live and cannot rot. The tip block
+      // usually carries none on preprod, so this walks back until it finds one.
+      const txHash = await discoverRecentTxHash()
 
       const utxos = await discover<TxUtxos>(`/txs/${txHash}/utxos`)
       const provider = integrationProvider()

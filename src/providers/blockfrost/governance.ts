@@ -62,29 +62,106 @@ const drepMetaAnchor = z.object({
   json_metadata: z.unknown().nullish(),
 })
 
+/**
+ * CIP-129 credential-type headers for a DRep: `0x22` a key hash, `0x23` a script hash.
+ *
+ * Blockfrost reports a DRep credential in CIP-129 form, so its `hex` is 29 bytes: the header
+ * followed by the 28-byte hash. Koios reports the bare hash. `DrepInfo.hex` is published as the
+ * 28-byte credential and documented as identical across both id encodings, so the header is
+ * stripped here rather than the contract widened. Widening it would hand a client a different
+ * `hex` for the same DRep depending on which provider served it, which is exactly what that field
+ * exists not to do.
+ */
+const DREP_KEY_HASH_HEADER = '22'
+const DREP_SCRIPT_HASH_HEADER = '23'
+
+const BARE_CREDENTIAL = /^[0-9a-fA-F]{56}$/
+const HEADED_CREDENTIAL = /^([0-9a-fA-F]{2})([0-9a-fA-F]{56})$/
+
+/**
+ * Reduce a DRep credential to the 28-byte hash the contract publishes.
+ *
+ * A bare hash passes through, which keeps this correct if Blockfrost ever reports one. A headed
+ * credential is accepted only when the header agrees with the row's own `has_script`: the two say
+ * the same thing, so a disagreement is upstream data we cannot reconcile rather than a form to
+ * normalize, and guessing which of the two to believe would publish a credential of the wrong
+ * kind. Anything else fails, so a truncated or non-hex value still lands on the malformed path.
+ */
+function normalizeDrepCredential(hex: string, hasScript: boolean, ctx: z.RefinementCtx): string {
+  if (BARE_CREDENTIAL.test(hex)) return hex
+
+  const headed = HEADED_CREDENTIAL.exec(hex)
+  if (headed === null) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'drep credential is neither a 28-byte hash nor a CIP-129 headed credential',
+    })
+    return z.NEVER
+  }
+
+  const [, header, credential] = headed
+  const expected = hasScript ? DREP_SCRIPT_HASH_HEADER : DREP_KEY_HASH_HEADER
+  if (header?.toLowerCase() !== expected) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "drep credential header disagrees with the row's has_script flag",
+    })
+    return z.NEVER
+  }
+  return credential as string
+}
+
+/**
+ * The two pseudo-DReps. They are voting options rather than registrations: Conway lets a stake key
+ * delegate its vote to "always abstain" or "always no confidence" without there being a DRep
+ * behind either. Blockfrost lists them alongside real DReps and serves them on the detail
+ * endpoint, both with an empty `hex`, because neither has a credential.
+ *
+ * Named explicitly rather than inferred from the id shape. A predicate like `!startsWith('drep1')`
+ * would also wave through any unrecognized id, so an upstream row carrying a malformed identifier
+ * would skip credential validation entirely instead of failing.
+ */
+const PSEUDO_DREP_IDS = new Set(['drep_always_abstain', 'drep_always_no_confidence'])
+
+const isPseudoDrep = (drepId: string): boolean => PSEUDO_DREP_IDS.has(drepId)
+
 /** `drep` (Blockfrost OpenAPI spec, `/governance/dreps/{drep_id}`), projected to what we map. */
-const drepRow = z.object({
-  drep_id: z.string(),
-  hex: z.string().regex(/^[0-9a-fA-F]{56}$/),
-  amount: numeric,
-  has_script: z.boolean(),
-  // Registration lifecycle: `true` once the DRep has deregistered.
-  retired: z.boolean(),
-  // Inactive for `drep_activity` epochs. The domain's `active` is the negation of this.
-  expired: z.boolean(),
-})
+const drepRow = z
+  .object({
+    drep_id: z.string(),
+    hex: z.string(),
+    amount: numeric,
+    has_script: z.boolean(),
+    // Registration lifecycle: `true` once the DRep has deregistered.
+    retired: z.boolean(),
+    // Inactive for `drep_activity` epochs. The domain's `active` is the negation of this.
+    expired: z.boolean(),
+  })
+  .transform((row, ctx) => ({
+    ...row,
+    hex: isPseudoDrep(row.drep_id)
+      ? row.hex
+      : normalizeDrepCredential(row.hex, row.has_script, ctx),
+  }))
 
 /** One row of `dreps` (`/governance/dreps`). The list carries the anchor inline, unlike the Koios
  * list, so a page needs no second round trip per DRep. */
-const drepListRow = z.object({
-  drep_id: z.string(),
-  hex: z.string().regex(/^[0-9a-fA-F]{56}$/),
-  amount: numeric,
-  has_script: z.boolean(),
-  retired: z.boolean(),
-  expired: z.boolean(),
-  metadata: drepMetaAnchor.nullish(),
-})
+const drepListRow = z
+  .object({
+    drep_id: z.string(),
+    hex: z.string(),
+    amount: numeric,
+    has_script: z.boolean(),
+    retired: z.boolean(),
+    expired: z.boolean(),
+    metadata: drepMetaAnchor.nullish(),
+  })
+  .transform((row, ctx) => ({
+    ...row,
+    hex: isPseudoDrep(row.drep_id)
+      ? row.hex
+      : normalizeDrepCredential(row.hex, row.has_script, ctx),
+  }))
 
 const proposalListRow = z.object({
   id: z.string().regex(/^gov_action1[0-9a-z]+$/),
@@ -319,6 +396,11 @@ export function createGovernanceMethods(client: BlockfrostClient): GovernanceCap
           `/governance/dreps/${encodeURIComponent(id)}`,
         )
         if (row === undefined) return undefined
+        // A pseudo-DRep answers 200 here with an empty `hex`, so it has to be dropped rather than
+        // mapped: `DrepInfo.hex` is published as the 28-byte credential and one of these has none.
+        // Absent is the same answer this read already gives for an id Blockfrost does not know,
+        // and it matches the list, which filters them out before mapping.
+        if (isPseudoDrep(id) || isPseudoDrep(row.drep_id)) return undefined
         const meta = await drepAnchor(id)
         return mapDrepInfo(row, drepDeposit, meta)
       })

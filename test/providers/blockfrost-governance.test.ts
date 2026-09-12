@@ -157,10 +157,79 @@ describe('blockfrost governance — getDrepInfo', () => {
     expect(dreps[0]?.votingPower).toBe('2000000')
   })
 
+  // Blockfrost reports the credential in CIP-129 form: a type header plus the 28-byte hash.
+  // Measured against live preprod on 2026-09-09, all 98 real rows of the first page were 58 chars,
+  // 82 headed 0x22 and 16 headed 0x23, so this is the ordinary case rather than an edge one.
+  it('strips the CIP-129 header so both providers publish the same 28-byte credential', async () => {
+    const provider = providerFor({
+      drepDetail: { [DREP_A]: drepDetail({ hex: `22${HEX_A}`, has_script: false }) },
+    })
+
+    const [info] = await provider.getDrepInfo([DREP_A])
+
+    expect(info?.hex).toBe(HEX_A)
+  })
+
+  it('strips the script-hash header too, and keeps hasScript', async () => {
+    const provider = providerFor({
+      drepDetail: { [DREP_A]: drepDetail({ hex: `23${HEX_A}`, has_script: true }) },
+    })
+
+    const [info] = await provider.getDrepInfo([DREP_A])
+
+    expect(info?.hex).toBe(HEX_A)
+    expect(info?.hasScript).toBe(true)
+  })
+
+  // The header and has_script state the same thing, so a disagreement is upstream data we cannot
+  // reconcile. Guessing which to believe would publish a credential of the wrong kind.
+  it('rejects a CIP-129 header that disagrees with has_script', async () => {
+    const provider = providerFor({
+      drepDetail: { [DREP_A]: drepDetail({ hex: `23${HEX_A}`, has_script: false }) },
+    })
+
+    await expect(provider.getDrepInfo([DREP_A])).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+
+  // A bare 28-byte hash still passes, so the driver stays correct if Blockfrost ever reports one.
+  it('accepts a bare 28-byte credential unchanged', async () => {
+    const provider = providerFor({
+      drepDetail: { [DREP_A]: drepDetail({ hex: HEX_A }) },
+    })
+
+    const [info] = await provider.getDrepInfo([DREP_A])
+
+    expect(info?.hex).toBe(HEX_A)
+  })
+
   it('throws MalformedUpstreamError on a drep credential that is not 56 hex chars', async () => {
     const provider = providerFor({ drepDetail: { [DREP_A]: drepDetail({ hex: 'nothex' }) } })
 
     await expect(provider.getDrepInfo([DREP_A])).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+
+  // Blockfrost answers 200 for a pseudo-DRep on the detail endpoint, with an empty credential and
+  // a real voting power. Confirmed live on preprod 2026-09-09 for both ids. Publishing that row
+  // would put an empty string in a field the contract calls the 28-byte credential, so the read
+  // drops it, the same answer it already gives for an id Blockfrost does not know.
+  it('drops a pseudo-drep rather than publishing an empty credential', async () => {
+    const provider = providerFor({
+      drepDetail: {
+        drep_always_abstain: drepDetail({ drep_id: 'drep_always_abstain', hex: '' }),
+      },
+    })
+
+    await expect(provider.getDrepInfo(['drep_always_abstain'])).resolves.toEqual([])
+  })
+
+  // The bypass is a whitelist of the two known ids, not "anything that is not a drep1". An
+  // unrecognized id must still have its credential validated rather than waved through.
+  it('still validates the credential of an unrecognized non-drep1 id', async () => {
+    const provider = providerFor({
+      drepDetail: { weird_id: drepDetail({ drep_id: 'weird_id', hex: 'nothex' }) },
+    })
+
+    await expect(provider.getDrepInfo(['weird_id'])).rejects.toBeInstanceOf(MalformedUpstreamError)
   })
 
   it('returns [] for an empty input', async () => {
@@ -169,6 +238,23 @@ describe('blockfrost governance — getDrepInfo', () => {
 })
 
 describe('blockfrost governance — getDrepList', () => {
+  // Live Blockfrost sends an *empty* hex for the two pseudo-DReps, not a placeholder. They are
+  // dropped after parsing, so the schema has to admit them or the whole page fails on rows we were
+  // always going to discard. Both were present on the first live page on 2026-09-09.
+  it('drops the pseudo-dreps even though they carry an empty credential', async () => {
+    const page = [
+      drepListItem({ drep_id: DREP_A, hex: `22${HEX_A}` }),
+      drepListItem({ drep_id: 'drep_always_abstain', hex: '' }),
+      drepListItem({ drep_id: 'drep_always_no_confidence', hex: '' }),
+    ]
+    const provider = providerFor({ drepListPages: [page] })
+
+    const dreps = await provider.getDrepList({ limit: 10, offset: 0 })
+
+    expect(dreps.map((d) => d.drepId)).toEqual([DREP_A])
+    expect(dreps[0]?.hex).toBe(HEX_A)
+  })
+
   it('returns a neutral page, filtering out retired and pseudo dreps, with inline anchors', async () => {
     const page = [
       drepListItem({

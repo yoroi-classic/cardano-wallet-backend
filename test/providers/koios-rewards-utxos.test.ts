@@ -147,6 +147,26 @@ describe('koios getRewardHistory', () => {
     }
   })
 
+  it('normalizes Koios proposal_refund rewards to the public refund kind', async () => {
+    const rows = [
+      {
+        stake_address: STAKE,
+        rewards: [reward(30, '2000000', 'proposal_refund', null)],
+      },
+    ]
+    const { fetchImpl } = fakeFetch(async () => rows)
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getRewardHistory(STAKE)).resolves.toEqual([
+      {
+        earnedEpoch: 30,
+        spendableEpoch: 32,
+        amount: '2000000',
+        kind: 'refund',
+      },
+    ])
+  })
+
   // A pool operator earns both a member share and a leader cut in the same epoch, from the same
   // pool. The history is a list, not a map keyed by epoch, precisely so both survive.
   it('keeps two rewards earned in the same epoch', async () => {

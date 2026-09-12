@@ -43,8 +43,8 @@ const rewardRow = z.object({
   earned_epoch: z.number().int().nonnegative(),
   spendable_epoch: z.number().int().nonnegative(),
   amount: numeric,
-  type: z.enum(REWARD_KINDS),
-  // Absent for treasury, reserves and both refund kinds, which are not paid by a pool.
+  type: z.enum([...REWARD_KINDS, 'proposal_refund']),
+  // Absent for treasury, reserves and refunds, which are not paid by a pool.
   pool_id: z.string().nullish(),
 })
 
@@ -178,7 +178,7 @@ export function createAccountMethods(koios: KoiosClient): AccountCapability {
             earnedEpoch: row.earned_epoch,
             spendableEpoch: row.spendable_epoch,
             amount: String(row.amount),
-            kind: row.type,
+            kind: row.type === 'proposal_refund' ? 'refund' : row.type,
             // Treasury, reserves and refunds have no pool. Emitting an empty string would put a
             // pool id that does not exist into the response.
             ...(row.pool_id == null ? {} : { poolId: row.pool_id }),

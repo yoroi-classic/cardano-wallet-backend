@@ -328,7 +328,8 @@ function runBodies(source) {
   }
   const flowMapRunValues = (source) => {
     const values = []
-    const flowMapStart = /(?:^|\n)(?:[ \t]*(?:-\s*)?\{|[ \t]*[^#\n{}]+:\s*\{)/g
+    const flowMapStart =
+      /(?:^|\n)(?:[ \t]*(?:-\s*)?(?:&[A-Za-z0-9_-]+\s*)?\{|[ \t]*[^#\n{}]+:\s*(?:&[A-Za-z0-9_-]+\s*)?\{)/g
     let openMatch = flowMapStart.exec(source)
     while (openMatch !== null) {
       const open = openMatch.index + openMatch[0].lastIndexOf('{')
@@ -570,6 +571,11 @@ assert.match(
   runBodies('      - { "run": "npm test || true" }\n').join('\n'),
   /\|\|/,
   'CI run guard must scan quoted flow-map run keys',
+)
+assert.match(
+  runBodies('      - &step { run: npm test || true }\n').join('\n'),
+  /\|\|/,
+  'CI run guard must scan anchor-prefixed flow-map run entries',
 )
 assert.match(
   runBodies('      - { name: lint, run: npm test || true }\n').join('\n'),

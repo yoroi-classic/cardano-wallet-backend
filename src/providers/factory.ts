@@ -41,6 +41,7 @@ function createDriver(config: AppConfig, deps: ProviderDeps, cache: Cache): Chai
         baseUrl: config.blockfrost.url,
         projectId,
         onRetry: deps.onRetry,
+        cache,
       })
     }
     case 'dingo':

@@ -16,6 +16,9 @@ import type { Asset } from '../../domain/types/common.js'
  */
 export const numeric = z.union([z.number().int().nonnegative().safe(), z.string().regex(/^\d+$/)])
 
+/** Account totals can be negative while a proposal deposit is outstanding. */
+export const signedNumeric = z.union([z.number().int().safe(), z.string().regex(/^-?\d+$/)])
+
 /** A minting policy id is the 28-byte hash of the policy script: always 56 hex chars. */
 export const policyId = z.string().regex(/^[0-9a-fA-F]{56}$/)
 

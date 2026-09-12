@@ -25,6 +25,8 @@
  * this is more than it is.
  */
 
+import { isByronAddress } from '../domain/byron-address.js'
+
 const REDACTED = '[redacted]'
 const MAX_DECODE_PASSES = 3
 
@@ -69,6 +71,70 @@ export function scrubPath(url: string): string {
   const [path = '', query] = url.split('?')
   const scrubbed = path.split('/').map(scrubSegment).join('/')
   return query === undefined ? scrubbed : `${scrubbed}?${query}`
+}
+
+/**
+ * The same identifiers, found anywhere in free text rather than as a whole path segment.
+ *
+ * Kept separate from the anchored patterns above on purpose. Those answer "is this segment an
+ * identifier"; these answer "does this sentence contain one", which is a more permissive question,
+ * and reusing one for both would quietly widen path redaction.
+ *
+ * Payment addresses are included here where `scrubSegment` does not need them. They never arrive as
+ * a path segment on our routes, but they do appear in the upstream paths we build, for instance
+ * Blockfrost's `/addresses/{address}/utxos`.
+ */
+const WALLET_BECH32 = /\b(?:stake|addr)(?:_test)?1[0-9a-z]{20,}/gi
+const HASH_HEX = /\b[0-9a-f]{64}\b/gi
+
+/**
+ * Candidate Byron addresses: base58 runs long enough to be one.
+ *
+ * Byron addresses are still live. `isByronAddress` validates them and the address routes accept
+ * them, so a `cardano-bip44` wallet's reads reach Blockfrost as `/addresses/{base58}/utxos` and
+ * fail with the address in the message like any other. Being base58, they match neither pattern
+ * above.
+ *
+ * This only finds candidates. Shape alone is not enough to decide: a DRep id is 57 base58-legal
+ * characters, so a rule that redacted every long run would also redact public register ids that
+ * make a failure diagnosable. Each match is confirmed with the real decoder below.
+ */
+const BYRON_CANDIDATE = /\b[1-9A-HJ-NP-Za-km-z]{40,}\b/g
+
+/**
+ * A message with any wallet identifier removed, for the two places an upstream failure is repeated
+ * in public: the response body the error handler builds from it, and the retry warn line.
+ *
+ * The paths we send upstream are not covered by the assumption `scrubPath` documents. We build
+ * them, and some have to carry an identifier in the query string because the upstream offers no
+ * other form: Koios documents `/account_txs` as GET with `_stake_address`, so a 502 on an account
+ * history read names the caller's stake key in its message. Redacting at this boundary means the
+ * next upstream path written the obvious way cannot reintroduce the leak.
+ *
+ * The endpoint survives, so the message still says what failed:
+ * `koios returned 502 for /account_txs?_stake_address=[redacted]`.
+ */
+export function scrubMessage(message: string): string {
+  // Bech32 first: those addresses can contain `0` and `l`, which base58 does not, so running the
+  // Byron pass first would leave behind the parts of one it could not span.
+  return message
+    .replace(WALLET_BECH32, REDACTED)
+    .replace(HASH_HEX, REDACTED)
+    .replace(BYRON_CANDIDATE, (candidate) => (isByronAddress(candidate) ? REDACTED : candidate))
+}
+
+/**
+ * A retry event safe to log. Both of its path-bearing fields go through `scrubMessage`, because
+ * the retry warn line is written at the shipped default `LOG_LEVEL=info`, which makes it the one
+ * place a transient upstream failure would otherwise persist an identifier next to a timestamp.
+ *
+ * Structurally typed rather than importing a provider's `RetryEvent`, so the log boundary does not
+ * depend on which provider raised the event, and every other field is passed through untouched.
+ */
+export function scrubRetryEvent<Event extends { path: string; message: string }>(
+  event: Event,
+): Event {
+  return { ...event, path: scrubMessage(event.path), message: scrubMessage(event.message) }
 }
 
 interface LoggableRequest {

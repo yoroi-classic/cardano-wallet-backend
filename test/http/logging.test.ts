@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
+import { bech32 } from '@scure/base'
 import { buildServer } from '../../src/http/server.js'
-import { scrubPath, serializeRequest } from '../../src/http/logging.js'
+import {
+  scrubMessage,
+  scrubPath,
+  scrubRetryEvent,
+  serializeRequest,
+} from '../../src/http/logging.js'
 import { confirmedTxStatus } from '../../src/domain/types/transactions.js'
 import { ProviderError } from '../../src/domain/errors.js'
 import { fakeProvider } from '../support/fake-provider.js'
@@ -57,6 +63,76 @@ describe('scrubPath', () => {
     }
 
     expect(scrubPath(`/bad/${deeplyEncoded}/path`)).toBe('/bad/[redacted]/path')
+  })
+})
+
+describe('scrubMessage', () => {
+  const ADDRESS = 'addr_test1qqehkck0lajq8gr28t9uxnuvgcqrc6ry3f4muzpp6v0k7lqjqfr4cmv7lx'
+  // Byron addresses are base58, so nothing that recognizes bech32 or hex sees them, and the
+  // address routes still accept them. Both eras, since the shapes differ.
+  const BYRON_ICARUS = 'Ae2tdPwUPEZFRbyhz3cpfC2CumGzNkFBN2L42rcUc2yjQpEkxDbkPodpMAi'
+  const BYRON_DAEDALUS =
+    'DdzFFzCqrht9W56zJGEFvHHywdeXZiGVYGqVhoZj6SRrS9o2HNLmorEzZhKm7khqfBKvCaTKGLtTnQSToxuvdzJTkQqcAf6f2ErxbSKS'
+
+  it('redacts the stake key Koios requires in the query string, keeping the endpoint', () => {
+    expect(scrubMessage(`koios returned 502 for /account_txs?_stake_address=${STAKE}`)).toBe(
+      'koios returned 502 for /account_txs?_stake_address=[redacted]',
+    )
+  })
+
+  it.each([
+    ['a testnet stake key', `koios request failed: /account_txs?_stake_address=${STAKE_TEST}`],
+    ['a payment address', `blockfrost returned 502 for /addresses/${ADDRESS}/utxos`],
+    ['a transaction hash', `koios returned invalid json for /tx_info?_tx_hash=${TX_HASH}`],
+    ['an Icarus Byron address', `blockfrost returned 502 for /addresses/${BYRON_ICARUS}/utxos`],
+    ['a Daedalus Byron address', `blockfrost request failed: /addresses/${BYRON_DAEDALUS}`],
+  ])('redacts %s', (_case, message) => {
+    const scrubbed = scrubMessage(message)
+    expect(scrubbed).toContain('[redacted]')
+    for (const identifier of [STAKE_TEST, ADDRESS, TX_HASH, BYRON_ICARUS, BYRON_DAEDALUS]) {
+      expect(scrubbed).not.toContain(identifier)
+    }
+  })
+
+  it('redacts every occurrence, not just the first', () => {
+    const scrubbed = scrubMessage(`koios returned 502 for /x?a=${STAKE}&b=${STAKE_TEST}`)
+    expect(scrubbed).toBe('koios returned 502 for /x?a=[redacted]&b=[redacted]')
+  })
+
+  it('leaves a message carrying no wallet identifier alone', () => {
+    // Pool and DRep ids are public register entries, not a link to one wallet, and the endpoint
+    // is the part that makes an upstream failure diagnosable.
+    for (const message of [
+      'koios returned 502 for /pool_info',
+      'koios paged result exceeds 100000 rows for /pool_list',
+      'koios returned 502 for /pool_info?_pool_bech32=pool1pu5jlj4q9w9jlxeu370a3c9myx47md5j5m2str0naunn2q3lkdy',
+      'koios returned 502 for /drep_info?_drep_id=drep1y2v6qsjqzq8xkqz8k5vqz9k2v6qsjqzq8xkqz8k5vqz9kqk8h9x',
+      // Long, but broken by ordinary punctuation and spacing, so the base58 rule cannot span it.
+      'koios returned a duplicate row across pages for /account_utxos?order=tx_hash.asc,tx_index.asc',
+      'koios request timed out: /credential_txs after 3 attempts against a slow upstream instance',
+    ]) {
+      expect(scrubMessage(message)).toBe(message)
+    }
+  })
+})
+
+describe('scrubRetryEvent', () => {
+  it('scrubs both path-bearing fields and passes the rest through', () => {
+    expect(
+      scrubRetryEvent({
+        path: `/account_txs?_stake_address=${STAKE}`,
+        message: `koios returned 502 for /account_txs?_stake_address=${STAKE}`,
+        attempt: 1,
+        attempts: 3,
+        code: 'UPSTREAM_ERROR',
+      }),
+    ).toEqual({
+      path: '/account_txs?_stake_address=[redacted]',
+      message: 'koios returned 502 for /account_txs?_stake_address=[redacted]',
+      attempt: 1,
+      attempts: 3,
+      code: 'UPSTREAM_ERROR',
+    })
   })
 })
 
@@ -244,5 +320,46 @@ describe('the app log', () => {
     for (const secret of secretProviderBody.split(' ')) {
       expect(emitted).not.toContain(secret)
     }
+  })
+
+  it('does not return the stake key an upstream path carried into an error', async () => {
+    // A real reward key-hash address on preprod, so the route validates it and the request reaches
+    // the provider. The constants above are shaped like identifiers but do not carry a checksum,
+    // which is all the redaction tests need and not enough to get past the route.
+    const validStake = bech32.encode(
+      'stake_test',
+      bech32.toWords(Uint8Array.from([0xe0, ...new Uint8Array(28)])),
+      1023,
+    )
+    const lines: string[] = []
+    const app = await buildServer({
+      // Koios documents /account_txs as GET with _stake_address, so the identifier is in the path
+      // this message names. The caller sent it, but it must not come back out in a body a proxy
+      // or a browser console will keep, and it must not reach the log at all.
+      provider: fakeProvider({
+        getTxHistory: async () => {
+          throw new ProviderError(
+            `koios returned 502 for /account_txs?_stake_address=${validStake}`,
+            {
+              upstreamStatus: 502,
+            },
+          )
+        },
+      }),
+      info: { version: 'test', network: 'preprod', provider: 'fake' },
+      logger: { level: 'info', stream: { write: (line: string) => lines.push(line) } } as never,
+    })
+
+    const res = await app.inject({ method: 'GET', url: `/v1/account/${validStake}/txs` })
+    await app.close()
+
+    expect(res.statusCode).toBe(502)
+    expect(res.json()).toEqual({
+      error: {
+        code: 'UPSTREAM_ERROR',
+        message: 'koios returned 502 for /account_txs?_stake_address=[redacted]',
+      },
+    })
+    expect(`${res.body}\n${lines.join('\n')}`).not.toContain(validStake)
   })
 })

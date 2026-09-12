@@ -256,11 +256,27 @@ function activityFromPool(subject: string, pool: AdaPool | undefined): TokenActi
   // figure yet). Reporting a partial answer would mean guessing whichever is missing, so the whole
   // subject is omitted instead, exactly as an unresolved pool is.
   if (pool.changePercent24h === undefined || pool.volumeUsd24h === undefined) return undefined
+
+  // The schema deliberately accepts arbitrarily long decimal strings because they are valid
+  // upstream syntax. Number() can nevertheless overflow one of those strings, and the decimal
+  // helper reports that as a RangeError. Treat that one subject as unresolved, just like a pool
+  // with no 24h figures, so malformed market data cannot become a 500 or discard healthy siblings
+  // in the same batch.
+  let volumeAda: string
+  try {
+    volumeAda = divideDecimalStrings(pool.volumeUsd24h, pool.adaUsdPrice)
+  } catch (error) {
+    if (error instanceof RangeError) return undefined
+    throw error
+  }
+  const changePercent = Number(pool.changePercent24h)
+  if (!Number.isFinite(changePercent)) return undefined
+
   return {
     subject,
     priceAda: pool.priceAda,
-    changePercent: Number(pool.changePercent24h),
-    volumeAda: divideDecimalStrings(pool.volumeUsd24h, pool.adaUsdPrice),
+    changePercent,
+    volumeAda,
   }
 }
 

@@ -35,6 +35,13 @@ const LOVELACE = {
     'A lovelace amount as a decimal string. Parse with BigInt, never Number: values can exceed 2^53.',
 } as const
 
+const SIGNED_LOVELACE = {
+  ...LOVELACE,
+  pattern: '^-?\\d+$',
+  description:
+    'A signed lovelace amount as a decimal string. Account balances can be negative while a proposal deposit is outstanding. Parse with BigInt, never Number.',
+} as const
+
 const HEX = (bytes: number, description: string) =>
   ({
     type: 'string',
@@ -1256,8 +1263,9 @@ export const openapi = {
               'False for a stake key never seen on chain; the account is then all zeros.',
           },
           balance: {
-            ...LOVELACE,
-            description: 'Controlled lovelace: UTxO plus withdrawable rewards.',
+            ...SIGNED_LOVELACE,
+            description:
+              'Controlled lovelace: UTxO plus withdrawable rewards; can be negative while a proposal deposit is outstanding.',
           },
           rewardsAvailable: { ...LOVELACE, description: 'Withdrawable right now.' },
           rewardsSum: { ...LOVELACE, description: 'Lifetime rewards earned.' },
@@ -1613,22 +1621,35 @@ export const openapi = {
               'decides the outcome.** Parse with BigInt.',
           },
           noPower: LOVELACE,
-          abstainPower: LOVELACE,
+          abstainPower: {
+            ...LOVELACE,
+            description:
+              'Total abstain voting power, including explicitly cast abstain power and power assigned to always/passive abstain. It can exceed the abstain vote count.',
+          },
+        },
+      },
+
+      CommitteeVoteTally: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['yes', 'no', 'abstain'],
+        description:
+          'Constitutional committee votes by member count. Each current committee member has ' +
+          'one vote; these votes are not weighted by lovelace.',
+        properties: {
+          yes: { type: 'integer', minimum: 0, description: 'Committee members voting yes.' },
+          no: { type: 'integer', minimum: 0, description: 'Committee members voting no.' },
+          abstain: {
+            type: 'integer',
+            minimum: 0,
+            description: 'Committee members explicitly abstaining.',
+          },
         },
       },
 
       Proposal: {
         type: 'object',
-        required: [
-          'proposalId',
-          'txHash',
-          'index',
-          'type',
-          'status',
-          'proposedEpoch',
-          'deposit',
-          'returnAddress',
-        ],
+        required: ['proposalId', 'txHash', 'index', 'type', 'status', 'deposit', 'returnAddress'],
         properties: {
           proposalId: { type: 'string', pattern: '^gov_action1[0-9a-z]+$' },
           txHash: HEX(32, 'The transaction that submitted the action'),
@@ -1653,7 +1674,12 @@ export const openapi = {
               'differently. `enacted` outranks `ratified`, because a proposal is ratified first ' +
               'and enacted afterwards.',
           },
-          proposedEpoch: { type: 'integer' },
+          proposedEpoch: {
+            type: 'integer',
+            description:
+              'The epoch the action was proposed in. Absent when the provider cannot source it ' +
+              '(Blockfrost exposes no proposed epoch); present on Koios-backed responses.',
+          },
           expiryEpoch: {
             type: 'integer',
             description: 'When it lapses if nothing happens.',
@@ -1678,9 +1704,21 @@ export const openapi = {
               'unknown, which is not the same as false.** Check it before showing `title` or ' +
               '`abstract`: those are attacker-supplied text a user reads right before voting.',
           },
-          drepVotes: { $ref: '#/components/schemas/VoteTally' },
-          poolVotes: { $ref: '#/components/schemas/VoteTally' },
-          committeeVotes: { $ref: '#/components/schemas/VoteTally' },
+          drepVotes: {
+            $ref: '#/components/schemas/VoteTally',
+            description: 'DRep votes by count and voting power.',
+          },
+          poolVotes: {
+            $ref: '#/components/schemas/VoteTally',
+            description:
+              'Stake-pool votes. Absent for `TreasuryWithdrawals` and `NewConstitution`, where pools have no vote, or when the tally is unavailable.',
+          },
+          committeeVotes: {
+            $ref: '#/components/schemas/CommitteeVoteTally',
+            description:
+              'Committee votes by member count. Absent for `NewCommittee` and `NoConfidence`, ' +
+              'where the constitutional committee has no vote, or when the tally is unavailable.',
+          },
         },
       },
 

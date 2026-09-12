@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createKoiosProvider, type FetchLike } from '../../src/providers/koios/index.js'
+import { z } from 'zod'
+import {
+  createKoiosProvider,
+  type FetchLike,
+  type RetryEvent,
+} from '../../src/providers/koios/index.js'
+import { createKoiosClient } from '../../src/providers/koios/client.js'
 import { KOIOS_BODY_LIMIT_BYTES } from '../../src/providers/koios/schema.js'
 import { BadRequestError, MalformedUpstreamError, ProviderError } from '../../src/domain/errors.js'
 
@@ -133,6 +139,17 @@ describe('koios getAccountState', () => {
     expect(state.delegatedDrep).toBeUndefined()
   })
 
+  it('accepts a negative balance while a proposal deposit is outstanding', async () => {
+    const { fetchImpl } = fakeFetch({
+      json: async () => [{ ...ROW, total_balance: '-89788495927' }],
+    })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getAccountState(STAKE)).resolves.toMatchObject({
+      balance: '-89788495927',
+    })
+  })
+
   it('rejects an unexpected account status as malformed', async () => {
     const { fetchImpl } = fakeFetch({ json: async () => [{ ...ROW, status: 'weird' }] })
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
@@ -160,7 +177,39 @@ describe('koios getAccountUtxos', () => {
     reference_script: null,
   }
 
-  it('maps a utxo with assets and inline datum (regression)', async () => {
+  function pagedWalkFetch(walks: Array<readonly [typeof ROW, typeof ROW]>): {
+    fetchImpl: FetchLike
+    calls: Call[]
+  } {
+    const calls: Call[] = []
+    const fetchImpl: FetchLike = async (url, init) => {
+      const query = new URL(url).searchParams
+      const offset = query.get('offset')
+      const keyset = query.get('or')
+      const walk = walks[Math.floor(calls.length / 2)]
+      calls.push({ url, method: init?.method, body: init?.body, headers: init?.headers })
+      if (
+        walk === undefined ||
+        (offset !== null && offset !== '0') ||
+        (offset === null && keyset === null && calls.length > 1)
+      ) {
+        throw new Error(`unexpected paged request: ${url}`)
+      }
+      const first = keyset === null
+      return {
+        ok: true,
+        status: first ? 206 : 200,
+        headers: {
+          get: (name) => (name === 'content-range' ? (first ? '0-0/2' : '0-0/1') : null),
+        },
+        json: async () => (first ? [walk[0]] : [walk[1]]),
+        text: async () => '',
+      }
+    }
+    return { fetchImpl, calls }
+  }
+
+  it('maps a utxo and does not repeat a single-page read (regression)', async () => {
     const { fetchImpl, calls } = fakeFetch({ json: async () => [ROW] })
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
@@ -180,13 +229,32 @@ describe('koios getAccountUtxos', () => {
       _stake_addresses: [STAKE],
       _extended: true,
     })
-    expect(calls[0]?.url).toBe(
-      `${BASE}/account_utxos?order=tx_hash.asc,tx_index.asc&limit=1000&offset=0`,
-    )
+    expect(calls[0]?.url).toBe(`${BASE}/account_utxos?order=tx_hash.asc,tx_index.asc&limit=1000`)
     expect(calls[0]?.headers).toMatchObject({
       prefer: 'count=exact',
     })
     expect(calls[0]?.headers).not.toHaveProperty('range')
+    expect(calls).toHaveLength(1)
+  })
+
+  it.each([
+    ['missing', { verifyConsistency: true }],
+    ['not a function', { verifyConsistency: true, rowKey: 'not-a-function' }],
+  ])('fails before reading when the consistency row key is %s', async (_description, options) => {
+    const { fetchImpl, calls } = fakeFetch({ json: async () => [ROW] })
+    const client = createKoiosClient({ baseUrl: BASE, fetchImpl })
+
+    const result = client.batchAllPages(
+      z.object({ tx_hash: z.string(), tx_index: z.number() }),
+      '/account_utxos',
+      { _stake_addresses: [STAKE] },
+      options as never,
+    )
+
+    await expect(result).rejects.toThrow(
+      'koios consistency verification requires a row-key function',
+    )
+    expect(calls).toHaveLength(0)
   })
 
   it('maps a datum hash and reference script when present', async () => {
@@ -240,8 +308,8 @@ describe('koios getAccountUtxos', () => {
     const calls: Call[] = []
     const fetchImpl: FetchLike = async (url, init) => {
       calls.push({ url, method: init?.method, body: init?.body, headers: init?.headers })
-      const offset = new URL(url).searchParams.get('offset')
-      if (offset === '0') {
+      const query = new URL(url).searchParams
+      if (query.get('or') === null) {
         return {
           ok: true,
           status: 206,
@@ -250,27 +318,68 @@ describe('koios getAccountUtxos', () => {
           text: async () => '',
         }
       }
-      if (offset === '1000') {
+      if (query.get('or') !== null) {
         return {
           ok: true,
           status: 200,
-          headers: { get: (name) => (name === 'content-range' ? '1000-1500/1501' : null) },
+          headers: { get: (name) => (name === 'content-range' ? '0-500/501' : null) },
           json: async () => rows.slice(1_000),
           text: async () => '',
         }
       }
-      throw new Error(`unexpected offset: ${offset}`)
+      throw new Error(`unexpected keyset: ${query.get('or')}`)
     }
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
     const utxos = await provider.getAccountUtxos(STAKE)
 
     expect(utxos).toHaveLength(1_501)
-    expect(calls.map((call) => new URL(call.url).searchParams.get('offset'))).toEqual(['0', '1000'])
+    expect(calls).toHaveLength(2)
+    expect(new URL(calls[1]!.url).searchParams.get('or')).toContain('tx_hash.gt.')
     expect(utxos[1_500]).toMatchObject({
       value: '900719925474099312345',
       assets: [{ quantity: '900719925474099398765' }],
     })
+  })
+
+  it('uses a composite keyset cursor instead of a second full walk', async () => {
+    const beforeSpend = { ...ROW, tx_hash: '11' }
+    const created = { ...ROW, tx_hash: '33' }
+    const { fetchImpl, calls } = pagedWalkFetch([[beforeSpend, created]])
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    const utxos = await provider.getAccountUtxos(STAKE)
+    expect(utxos.map((utxo) => utxo.txHash)).toEqual(['11', '33'])
+    expect(calls).toHaveLength(2)
+    expect(new URL(calls[1]!.url).searchParams.get('or')).toContain('tx_hash.gt.11')
+  })
+
+  it('advances the composite cursor through rows sharing a transaction hash', async () => {
+    const first = { ...ROW, tx_hash: '11', tx_index: 1 }
+    const second = { ...ROW, tx_hash: '11', tx_index: 2 }
+    const third = { ...ROW, tx_hash: '11', tx_index: 3 }
+    const calls: Call[] = []
+    const fetchImpl: FetchLike = async (url, init) => {
+      calls.push({ url, method: init?.method, body: init?.body, headers: init?.headers })
+      const keyset = new URL(url).searchParams.get('or')
+      const page = keyset === null ? [first, second] : [third]
+      return {
+        ok: true,
+        status: keyset === null ? 206 : 200,
+        headers: {
+          get: (name: string) =>
+            name === 'content-range' ? (keyset === null ? '0-1/3' : '0-0/1') : null,
+        },
+        json: async () => page,
+        text: async () => '',
+      }
+    }
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    await expect(provider.getAccountUtxos(STAKE)).resolves.toHaveLength(3)
+    expect(new URL(calls[1]!.url).searchParams.get('or')).toContain(
+      'and(tx_hash.eq.11,tx_index.gt.2)',
+    )
   })
 
   it('fails closed when a 206 response omits Content-Range', async () => {
@@ -303,7 +412,7 @@ describe('koios getAccountUtxos', () => {
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
 
     await expect(provider.getAccountUtxos(STAKE)).rejects.toThrow(
-      'koios returned a full page without Content-Range',
+      'koios omitted Content-Range from a keyset response',
     )
   })
 
@@ -316,10 +425,10 @@ describe('koios getAccountUtxos', () => {
     )
   })
 
-  it('fails closed when a later page overlaps the first page', async () => {
+  it('fails closed when a later keyset page does not advance', async () => {
     const fetchImpl: FetchLike = async (url) => {
-      const offset = new URL(url).searchParams.get('offset')
-      return offset === '0'
+      const keyset = new URL(url).searchParams.get('or')
+      return keyset === null
         ? {
             ok: true,
             status: 206,
@@ -338,13 +447,13 @@ describe('koios getAccountUtxos', () => {
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
 
     await expect(provider.getAccountUtxos(STAKE)).rejects.toThrow(
-      'koios returned a non-contiguous page',
+      'koios returned a non-advancing keyset page',
     )
   })
 
-  it('fails closed when contiguous page metadata repeats an output', async () => {
+  it('fails closed when a keyset page repeats an output', async () => {
     const fetchImpl: FetchLike = async (url) => {
-      const first = new URL(url).searchParams.get('offset') === '0'
+      const first = new URL(url).searchParams.get('or') === null
       return {
         ok: true,
         status: first ? 206 : 200,
@@ -358,32 +467,32 @@ describe('koios getAccountUtxos', () => {
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
 
     await expect(provider.getAccountUtxos(STAKE)).rejects.toThrow(
-      'koios returned a duplicate row across pages',
+      'koios returned a non-advancing keyset page',
     )
   })
 
-  it('restarts the whole snapshot after a duplicate page and accepts a fresh result', async () => {
+  it('retries after a non-advancing keyset page and accepts a fresh result', async () => {
     const calls: string[] = []
-    let snapshot = 1
+    let attempt = 1
     const fresh = { ...ROW, tx_hash: 'bb22' }
     const fetchImpl: FetchLike = async (url) => {
-      const offset = String(new URL(url).searchParams.get('offset'))
-      calls.push(offset)
-      if (snapshot === 1 && offset === '0') {
+      const query = new URL(url).searchParams
+      calls.push(url)
+      if (attempt === 1) {
+        if (query.get('or') === null) {
+          return {
+            ok: true,
+            status: 206,
+            headers: { get: (name) => (name === 'content-range' ? '0-0/2' : null) },
+            json: async () => [ROW],
+            text: async () => '',
+          }
+        }
+        attempt = 2
         return {
           ok: true,
           status: 206,
           headers: { get: (name) => (name === 'content-range' ? '0-0/2' : null) },
-          json: async () => [ROW],
-          text: async () => '',
-        }
-      }
-      if (snapshot === 1) {
-        snapshot = 2
-        return {
-          ok: true,
-          status: 200,
-          headers: { get: (name) => (name === 'content-range' ? '1-1/2' : null) },
           json: async () => [ROW],
           text: async () => '',
         }
@@ -406,7 +515,9 @@ describe('koios getAccountUtxos', () => {
     await expect(provider.getAccountUtxos(STAKE)).resolves.toEqual([
       expect.objectContaining({ txHash: 'bb22' }),
     ])
-    expect(calls).toEqual(['0', '1', '0'])
+    expect(calls).toHaveLength(3)
+    expect(new URL(calls[1]!).searchParams.get('or')).not.toBeNull()
+    expect(new URL(calls[2]!).searchParams.get('or')).toBeNull()
   })
 
   it('fails closed when a complete status still reports rows remaining', async () => {
@@ -435,14 +546,14 @@ describe('koios getAccountUtxos', () => {
     )
   })
 
-  it('rejects a total that changes between pages', async () => {
+  it('rejects a keyset page with a non-zero range start', async () => {
     const fetchImpl: FetchLike = async (url) => {
-      const first = new URL(url).searchParams.get('offset') === '0'
+      const first = new URL(url).searchParams.get('or') === null
       return {
         ok: true,
         status: 206,
         headers: {
-          get: (name) => (name === 'content-range' ? (first ? '0-0/2' : '1-1/3') : null),
+          get: (name) => (name === 'content-range' ? (first ? '0-0/2' : '1-1/1') : null),
         },
         json: async () => [first ? ROW : { ...ROW, tx_hash: 'bb22' }],
         text: async () => '',
@@ -451,21 +562,80 @@ describe('koios getAccountUtxos', () => {
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
 
     await expect(provider.getAccountUtxos(STAKE)).rejects.toThrow(
-      'koios changed the paged result total',
+      'koios returned contradictory Content-Range',
     )
   })
 
-  it('rejects an aggregate above the row safety bound', async () => {
+  it('rejects a keyset response above the row safety bound', async () => {
     const { fetchImpl } = fakeFetch({
       status: 206,
-      headers: { get: (name) => (name === 'content-range' ? '0-0/100001' : null) },
-      json: async () => [ROW],
+      headers: { get: (name) => (name === 'content-range' ? '0-100000/100001' : null) },
+      json: async () => Array.from({ length: 100001 }, (_, i) => ({ ...ROW, tx_hash: String(i) })),
     })
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
 
     await expect(provider.getAccountUtxos(STAKE)).rejects.toThrow(
       'koios paged result exceeds 100000 rows',
     )
+  })
+
+  // The cursor is one of the caller's own output references, and a failed page reports the path it
+  // fetched. Without a separate display path it leaves the process twice: in the 502 body the http
+  // layer builds from this message, and in the retry warn line at the default LOG_LEVEL.
+  const CURSOR_HASH = 'c'.repeat(64)
+
+  function failingCursorPageFetch(): FetchLike {
+    return async (url) => {
+      if (new URL(url).searchParams.get('or') === null) {
+        return {
+          ok: true,
+          status: 206,
+          headers: { get: (name) => (name === 'content-range' ? '0-0/2' : null) },
+          json: async () => [{ ...ROW, tx_hash: CURSOR_HASH }],
+          text: async () => '',
+        }
+      }
+      return {
+        ok: false,
+        status: 502,
+        headers: { get: () => null },
+        json: async () => ({}),
+        text: async () => 'upstream unavailable',
+      }
+    }
+  }
+
+  it('keeps the keyset cursor out of the error a failed page raises', async () => {
+    const provider = createKoiosProvider({
+      baseUrl: BASE,
+      fetchImpl: failingCursorPageFetch(),
+      readAttempts: 1,
+    })
+
+    const error = await provider.getAccountUtxos(STAKE).catch((err: unknown) => err)
+
+    expect(error).toBeInstanceOf(ProviderError)
+    expect((error as Error).message).toBe(
+      'koios returned 502 for /account_utxos?order=tx_hash.asc,tx_index.asc',
+    )
+    expect((error as Error).message).not.toContain(CURSOR_HASH)
+  })
+
+  it('keeps the keyset cursor out of the retry log', async () => {
+    const retries: RetryEvent[] = []
+    const provider = createKoiosProvider({
+      baseUrl: BASE,
+      fetchImpl: failingCursorPageFetch(),
+      readAttempts: 2,
+      retryBackoffMs: 0,
+      onRetry: (event) => retries.push(event),
+    })
+
+    await expect(provider.getAccountUtxos(STAKE)).rejects.toBeInstanceOf(ProviderError)
+
+    expect(retries).toHaveLength(1)
+    expect(retries[0]!.path).toBe('/account_utxos?order=tx_hash.asc,tx_index.asc')
+    expect(retries[0]!.message).not.toContain(CURSOR_HASH)
   })
 })
 

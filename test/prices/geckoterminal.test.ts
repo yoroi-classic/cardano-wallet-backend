@@ -14,6 +14,7 @@ import {
 } from '../../src/domain/errors.js'
 
 const SUBJECT = 'cafe'.repeat(14) // 56 hex chars, shaped like a policy id; the value doesn't matter
+const HEALTHY_SUBJECT = 'beef'.repeat(14)
 const NATIVE_ID = 'cardano_0x'
 
 interface FakeResponse {
@@ -453,6 +454,50 @@ describe('geckoterminal client — unhappy path', () => {
     const activity = await client(undefined, fetchImpl).getTokenActivity([SUBJECT], '24h')
 
     expect(activity).toEqual([])
+  })
+
+  it('omits an oversized 24h operand while retaining healthy siblings in the batch', async () => {
+    const oversizedVolume = `1${'0'.repeat(309)}`
+    const malformedPool = pool({ volumeH24: oversizedVolume })
+    const healthyPool = pool({ baseId: `cardano_${HEALTHY_SUBJECT}` })
+    const { fetchImpl } = fakeFetch({
+      '/tokens/multi/': {
+        json: multiResponse(
+          { subject: SUBJECT, pools: [malformedPool] },
+          { subject: HEALTHY_SUBJECT, pools: [healthyPool] },
+        ),
+      },
+    })
+
+    const activity = await client(undefined, fetchImpl).getTokenActivity(
+      [SUBJECT, HEALTHY_SUBJECT],
+      '24h',
+    )
+
+    expect(activity).toHaveLength(1)
+    expect(activity[0]?.subject).toBe(HEALTHY_SUBJECT)
+    expect(activity[0]?.volumeAda).toBe('591187.5812361061')
+  })
+
+  it('omits a pool with a non-finite 24h change while retaining healthy siblings', async () => {
+    const malformedPool = pool({ changeH24: `1${'0'.repeat(309)}` })
+    const healthyPool = pool({ baseId: `cardano_${HEALTHY_SUBJECT}` })
+    const { fetchImpl } = fakeFetch({
+      '/tokens/multi/': {
+        json: multiResponse(
+          { subject: SUBJECT, pools: [malformedPool] },
+          { subject: HEALTHY_SUBJECT, pools: [healthyPool] },
+        ),
+      },
+    })
+
+    const activity = await client(undefined, fetchImpl).getTokenActivity(
+      [SUBJECT, HEALTHY_SUBJECT],
+      '24h',
+    )
+
+    expect(activity).toHaveLength(1)
+    expect(activity[0]?.subject).toBe(HEALTHY_SUBJECT)
   })
 
   it('omits a subject with an ADA pool but no candles yet for the 7d/30d window', async () => {

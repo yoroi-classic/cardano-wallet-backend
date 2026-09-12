@@ -89,7 +89,13 @@ function releaseJobNames(source) {
     const explicitKey = /^ {2}\?[ \t]*(.*)$/.exec(line)
     if (explicitKey !== null) {
       const key = parseKey(explicitKey[1] ?? '')
-      const next = lines[index + 1] ?? ''
+      let nextIndex = index + 1
+      while (nextIndex < lines.length) {
+        const candidate = lines[nextIndex] ?? ''
+        if (candidate.trim() !== '' && !/^\s*#/.test(candidate)) break
+        nextIndex += 1
+      }
+      const next = lines[nextIndex] ?? ''
       if (key !== undefined && /^ {2}:[ \t]*/.test(next)) jobs.push(key)
     }
   }
@@ -173,6 +179,17 @@ assert.throws(
     ),
   /Expected values to be strictly deep-equal/,
   'release gate must reject explicit additional job keys',
+)
+assert.throws(
+  () =>
+    assert.deepEqual(
+      releaseJobNames(
+        `${workflow}\n  ? publish\n  # comments and blank lines must not hide the value\n\n  :\n    runs-on: ubuntu-latest\n`,
+      ),
+      ['tag'],
+    ),
+  /Expected values to be strictly deep-equal/,
+  'release gate must reject explicit job keys separated from their value',
 )
 assert.throws(
   () =>
@@ -272,6 +289,15 @@ function runBodies(source) {
       for (let next = index + 1; next < lines.length; next += 1) {
         const continuation = lines[next] ?? ''
         if (continuation.trim() !== '' && continuation.search(/\S/) <= indent) break
+        if (/^\s*#/.test(continuation)) continue
+        body.push(continuation)
+        index = next
+      }
+    } else {
+      for (let next = index + 1; next < lines.length; next += 1) {
+        const continuation = lines[next] ?? ''
+        if (continuation.trim() !== '' && continuation.search(/\S/) <= indent) break
+        if (/^\s*#/.test(continuation)) continue
         body.push(continuation)
         index = next
       }
@@ -292,6 +318,10 @@ function continueOnErrorValues(source) {
     )
     for (const match of matches) values.push(match[1] ?? match[2] ?? match[3])
   }
+  const explicitKeyValues = removeYamlComments(source).matchAll(
+    /^\s*\?\s*(?:"continue-on-error"|'continue-on-error'|continue-on-error)\s*\n(?:\s*\n)*\s*:\s*(?:"([^"]*)"|'([^']*)'|([^,}\s]+))/gm,
+  )
+  for (const match of explicitKeyValues) values.push(match[1] ?? match[2] ?? match[3])
   return values
 }
 
@@ -328,6 +358,11 @@ for (const bypass of [
     `guard must reject non-false continue-on-error: ${bypass}`,
   )
 }
+assert.throws(
+  () => assertContinueOnErrorIsFalseOnly('      ? continue-on-error\n      : true\n'),
+  /CI must not convert failed steps/,
+  'guard must reject explicit continue-on-error keys',
+)
 assert.doesNotMatch(
   runBodies(ciWorkflow).join('\n'),
   /\|\|/,
@@ -344,6 +379,11 @@ for (const ignored of [
     `guard must reject ignored CI command: ${ignored}`,
   )
 }
+assert.match(
+  runBodies('      - run: npm test\n          || true\n').join('\n'),
+  /\|\|/,
+  'CI run guard must scan continued plain run scalars',
+)
 assert.match(
   runBodies("      run: |\n          note='\n          keep # ' ; npm run lint || true\n").join(
     '\n',
@@ -392,6 +432,60 @@ function shellFunction(source, name) {
 }
 
 const releaseWithoutComments = removeYamlComments(workflow)
+
+function executableCallCount(source, name) {
+  return (
+    removeYamlComments(source).match(new RegExp(`^\\s+(?:if ! )?${name}(?:; then)?\\s*$`, 'gm')) ??
+    []
+  ).length
+}
+
+function assertExecutableReleaseCalls(source) {
+  assert.equal(
+    executableCallCount(source, 'require_current_main'),
+    4,
+    'release must execute every current-main revalidation call',
+  )
+  assert.equal(
+    executableCallCount(source, 'require_release_tag'),
+    3,
+    'release must execute every tag revalidation call',
+  )
+  assert.equal(
+    executableCallCount(source, 'delete_created_release'),
+    1,
+    'release must execute its rollback release deletion call',
+  )
+  assert.equal(
+    executableCallCount(source, 'delete_created_tag'),
+    3,
+    'release must execute every rollback tag deletion call',
+  )
+}
+
+assertExecutableReleaseCalls(workflow)
+assert.throws(
+  () =>
+    assertExecutableReleaseCalls(
+      workflow.replace(
+        '            delete_created_release\n',
+        '            : delete_created_release\n',
+      ),
+    ),
+  /release must execute its rollback release deletion call/,
+  'release gate must reject prefixed rollback calls',
+)
+assert.throws(
+  () =>
+    assertExecutableReleaseCalls(
+      workflow.replace(
+        '              delete_created_tag\n',
+        '              : delete_created_tag\n',
+      ),
+    ),
+  /release must execute every rollback tag deletion call/,
+  'release gate must reject prefixed tag rollback calls',
+)
 const currentMainFunction = shellFunction(releaseWithoutComments, 'require_current_main')
 assert.equal(
   currentMainFunction,

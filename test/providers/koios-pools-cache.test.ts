@@ -102,6 +102,20 @@ describe('the pool list is cached', () => {
     expect(koios.countOf('/pool_list')).toBe(1)
   })
 
+  it('keeps ticker and limit variants separate on the cached path', async () => {
+    const koios = fakeKoios()
+    const p = provider(koios)
+
+    await p.getPoolList({ limit: 50, offset: 0 })
+    await p.getPoolList({ limit: 50, offset: 0, ticker: 'ADA' })
+    await p.getPoolList({ limit: 10, offset: 0, ticker: 'ADA' })
+
+    // Each request has a distinct page contract. Dropping ticker or limit from the page key
+    // would serve a previously cached page and suppress the corresponding upstream reads.
+    expect(koios.countOf('/pool_list')).toBe(3)
+    expect(koios.countOf('/pool_info')).toBe(3)
+  })
+
   it('scans the registered set once, however many pages are asked for', async () => {
     const koios = fakeKoios()
     const p = provider(koios)
@@ -144,13 +158,14 @@ describe('the pool list is cached', () => {
 
     await p.getPoolList({ limit: 50, offset: 0, ticker: 'ADA' })
     await p.getPoolList({ limit: 50, offset: 0, ticker: 'ADA' })
+    await p.getPoolList({ limit: 50, offset: 1, ticker: 'ADA' })
 
-    // The page cache still applies (same key), so /pool_info is spared...
-    expect(koios.countOf('/pool_info')).toBe(1)
-    // ...but the *ranking* is not cached for a search: each distinct search term is a different
-    // upstream scan and a different key, and caching an unbounded space of user-supplied strings
-    // is how a cache becomes a memory leak.
-    expect(koios.countOf('/pool_list')).toBe(1)
+    // Different pages must not hide the ranking behaviour behind the page cache. The *ranking*
+    // is not cached for a search, so each page scans upstream even when the search term is the
+    // same. Caching an unbounded space of user-supplied strings is how a cache becomes a memory
+    // leak.
+    expect(koios.countOf('/pool_list')).toBe(2)
+    expect(koios.countOf('/pool_info')).toBe(2)
   })
 })
 
@@ -245,6 +260,33 @@ describe('the pool list survives an upstream wobble', () => {
     expect(koios.countOf('/pool_info')).toBe(1)
 
     await p.getPoolList({ limit: 50, offset: 0 })
+    expect(koios.countOf('/pool_info')).toBe(2)
+  })
+
+  it('keeps concurrent uncached requests with different limits separate', async () => {
+    const koios = fakeKoios({ tipFails: true })
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let firstPoolInfo = true
+    const fetchImpl: FetchLike = async (url) => {
+      if (url.replace(BASE, '').split('?')[0] === '/pool_info' && firstPoolInfo) {
+        firstPoolInfo = false
+        await gate
+      }
+      return koios.fetchImpl(url)
+    }
+    const p = createKoiosProvider({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    const wide = p.getPoolList({ limit: 50, offset: 0 })
+    const narrow = p.getPoolList({ limit: 1, offset: 0 })
+    await Promise.resolve()
+    release()
+
+    await expect(wide).resolves.toHaveLength(2)
+    await expect(narrow).resolves.toHaveLength(1)
+    expect(koios.countOf('/pool_list')).toBe(2)
     expect(koios.countOf('/pool_info')).toBe(2)
   })
 

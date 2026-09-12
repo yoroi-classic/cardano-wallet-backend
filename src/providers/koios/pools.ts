@@ -322,6 +322,8 @@ export function createPoolMethods(koios: KoiosClient, deps: PoolMethodDeps = {})
 
   function serveUncached(params: PoolListParams, epoch: undefined): Promise<PoolInfo[]> {
     const { limit, offset, ticker } = params
+    // Every caller-supplied page dimension belongs in the in-flight key; sharing a promise across
+    // limits would return the first request's row count to the other caller.
     const key = `${ticker ?? ''}:${offset}:${limit}`
     const pending = uncachedInFlight.get(key)
     if (pending !== undefined) return pending

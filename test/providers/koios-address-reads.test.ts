@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { createKoiosProvider, type FetchLike } from '../../src/providers/koios/index.js'
+import { createKoiosClient } from '../../src/providers/koios/client.js'
 import { MalformedUpstreamError, ProviderError } from '../../src/domain/errors.js'
+import { z } from 'zod'
 
 const BASE = 'https://preprod.koios.rest/api/v1'
 
@@ -827,6 +829,61 @@ describe('koios getTxHistoryByAddresses', () => {
 
     await expect(provider.getTxHistoryByAddresses([BYRON_A])).rejects.toThrow(
       'koios returned rows for an empty Content-Range on /address_txs',
+    )
+  })
+
+  it('accepts an empty tail only when Content-Range total matches the consumed offset', async () => {
+    const fetchImpl: FetchLike = async (url) => {
+      const offset = new URL(url).searchParams.get('offset')
+      return {
+        ok: true,
+        status: offset === '0' ? 206 : 200,
+        headers: {
+          get: (name) => (name === 'content-range' ? (offset === '0' ? '0-0/2' : '*/1') : null),
+        },
+        json: async () => (offset === '0' ? [{ id: 'first' }] : []),
+        text: async () => '',
+      }
+    }
+    const client = createKoiosClient({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    await expect(client.batchAllPages(z.object({ id: z.string() }), '/rows', {})).resolves.toEqual([
+      { id: 'first' },
+    ])
+  })
+
+  it('rejects an empty tail whose Content-Range total disagrees with the consumed offset', async () => {
+    const fetchImpl: FetchLike = async (url) => {
+      const offset = new URL(url).searchParams.get('offset')
+      return {
+        ok: true,
+        status: offset === '0' ? 206 : 200,
+        headers: {
+          get: (name) => (name === 'content-range' ? (offset === '0' ? '0-0/2' : '*/2') : null),
+        },
+        json: async () => (offset === '0' ? [{ id: 'first' }] : []),
+        text: async () => '',
+      }
+    }
+    const client = createKoiosClient({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    await expect(client.batchAllPages(z.object({ id: z.string() }), '/rows', {})).rejects.toThrow(
+      'koios returned a contradictory empty Content-Range on /rows',
+    )
+  })
+
+  it('rejects an empty Content-Range total outside the safe integer range', async () => {
+    const fetchImpl: FetchLike = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: (name) => (name === 'content-range' ? '*/9007199254740992' : null) },
+      json: async () => [],
+      text: async () => '',
+    })
+    const client = createKoiosClient({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+
+    await expect(client.batchAllPages(z.object({ id: z.string() }), '/rows', {})).rejects.toThrow(
+      'koios returned contradictory Content-Range for /rows',
     )
   })
 

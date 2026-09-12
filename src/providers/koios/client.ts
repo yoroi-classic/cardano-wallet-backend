@@ -141,7 +141,8 @@ type PagedBatchOptions<Row> =
       verifyConsistency: true
     }
 
-export type KoiosContentRange = { start: number; end: number; total: number } | { total: number } | null
+export type KoiosContentRange =
+  { start: number; end: number; total: number } | { total: number } | null
 
 export interface KoiosBatchPage<Row> {
   rows: Row[]

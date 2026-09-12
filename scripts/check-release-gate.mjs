@@ -328,8 +328,10 @@ function runBodies(source) {
   }
   const flowMapRunValues = (source) => {
     const values = []
-    let open = source.indexOf('{')
-    while (open !== -1) {
+    const flowMapStart = /(?:^|\n)(?:[ \t]*(?:-\s*)?\{|[ \t]*[^#\n{}]+:\s*\{)/g
+    let openMatch = flowMapStart.exec(source)
+    while (openMatch !== null) {
+      const open = openMatch.index + openMatch[0].lastIndexOf('{')
       let quote
       let escaped = false
       let close = -1
@@ -379,7 +381,8 @@ function runBodies(source) {
         const key = match?.[1] ?? match?.[2] ?? match?.[3]
         if (key === 'run') values.push(resolveRunAlias(match[4] ?? ''))
       }
-      open = source.indexOf('{', close + 1)
+      flowMapStart.lastIndex = close + 1
+      openMatch = flowMapStart.exec(source)
     }
     return values
   }
@@ -587,6 +590,17 @@ assert.match(
   /\|\|/,
   'CI run guard must scan multiline flow-map run entries',
 )
+for (const prefix of [
+  '      # { an unrelated comment\n',
+  "      run: echo '{'\n",
+  '      run: |\n          echo "{"\n',
+]) {
+  assert.match(
+    runBodies(`${prefix}      - { run: npm test || true }\n`).join('\n'),
+    /\|\|/,
+    'CI run guard must not let unrelated braces hide flow-map run entries',
+  )
+}
 assert.match(
   runBodies('      run: npm test\n        # shell continuation\n        || true\n').join('\n'),
   /\|\|/,
@@ -693,6 +707,10 @@ function assertRollbackCallsExecute(source) {
     .slice(0, end + 1)
     .map((line) => line.replace(/^ {10}/, ''))
     .join('\n')
+  const probeEnv = { ...process.env }
+  for (const key of Object.keys(probeEnv)) {
+    if (key.startsWith('GITHUB_')) delete probeEnv[key]
+  }
   execFileSync(
     'bash',
     [
@@ -713,12 +731,29 @@ function assertRollbackCallsExecute(source) {
         'test "$calls" = " release tag"',
       ].join('\n'),
     ],
-    { stdio: 'pipe' },
+    { stdio: 'pipe', env: probeEnv },
   )
 }
 
 assertExecutableReleaseCalls(workflow)
 assertRollbackCallsExecute(workflow)
+const inheritedGithubWorkflow = process.env.GITHUB_WORKFLOW
+process.env.GITHUB_WORKFLOW = 'ci'
+try {
+  assert.throws(
+    () =>
+      assertRollbackCallsExecute(
+        workflow.replace(
+          '            delete_created_release\n',
+          '            if [ "$GITHUB_WORKFLOW" != ci ]; then exit 1; fi\n            delete_created_release\n',
+        ),
+      ),
+    'release rollback probe must not inherit GitHub runner environment',
+  )
+} finally {
+  if (inheritedGithubWorkflow === undefined) delete process.env.GITHUB_WORKFLOW
+  else process.env.GITHUB_WORKFLOW = inheritedGithubWorkflow
+}
 assert.throws(
   () =>
     assertRollbackCallsExecute(

@@ -1,37 +1,223 @@
 name: release
 
-# When a version lands on main, tag it and cut a GitHub release from package.json.
-# Tagging only, no publish. Skips cleanly if the tag already exists.
+# After CI succeeds for the current main commit, tag it and cut a GitHub release
+# from package.json. Tagging only, no publish.
 on:
-  push:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
     branches: [main]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   tag:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
+    concurrency:
+      group: release-main
+      cancel-in-progress: false
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
+      - name: Verify the successful commit is still main
+        env:
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -eu
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          git fetch origin main --depth=1
+          main_sha="$(git rev-parse FETCH_HEAD)"
+          if [ "$main_sha" != "$RELEASE_SHA" ]; then
+            echo "::error::Successful CI commit $RELEASE_SHA is no longer the main head ($main_sha)"
+            exit 1
+          fi
       - name: Read version
         id: v
         run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
       - name: Tag and release if new
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
           VERSION: ${{ steps.v.outputs.version }}
         run: |
+          set -eu
           tag="v${VERSION}"
-          if git rev-parse "$tag" >/dev/null 2>&1; then
-            echo "tag $tag already exists, nothing to do"
+          tag_created=false
+          created_release_id=
+
+          require_current_main() {
+            main_sha="$(git ls-remote --exit-code origin refs/heads/main | cut -f1)"
+            if [ "$main_sha" != "$RELEASE_SHA" ]; then
+              echo "::error::Successful CI commit $RELEASE_SHA is no longer the main head ($main_sha)"
+              return 1
+            fi
+          }
+
+          require_release_tag() {
+            if ! remote_tag_refs="$(
+              git ls-remote --exit-code origin "refs/tags/$tag" "refs/tags/$tag^{}"
+            )"; then
+              echo "::error::Tag $tag no longer exists on origin"
+              return 1
+            fi
+            remote_tag_sha="$(
+              printf '%s\n' "$remote_tag_refs" |
+                awk '$2 ~ /\^\{\}$/ { peeled = $1 } $2 !~ /\^\{\}$/ { direct = $1 }
+                  END { print peeled != "" ? peeled : direct }'
+            )"
+            if [ "$remote_tag_sha" != "$RELEASE_SHA" ]; then
+              echo "::error::Tag $tag points to $remote_tag_sha on origin, not $RELEASE_SHA"
+              return 1
+            fi
+          }
+
+          delete_created_tag() {
+            # A release recreated by another actor after this run deleted its own release owns the
+            # tag now. Fail closed instead of orphaning that release by deleting a tag solely
+            # because its commit still matches ours.
+            if ! tag_release_state="$(release_state_by_tag)"; then
+              echo "::error::Refusing to delete $tag because its release state is unknown"
+              return 1
+            fi
+            if [ "$tag_release_state" != absent ]; then
+              echo "::error::Refusing to delete $tag because a release currently uses it"
+              return 1
+            fi
+            remote_tag_sha="$(git ls-remote origin "refs/tags/$tag" | cut -f1)"
+            if [ "$remote_tag_sha" != "$RELEASE_SHA" ]; then
+              echo "::error::Refusing to delete $tag because it no longer points to $RELEASE_SHA"
+              return 1
+            fi
+            git push origin ":refs/tags/$tag"
+          }
+
+          release_state_for() {
+            endpoint="$1"
+            if response="$(gh api --include "$endpoint" 2>&1)"; then
+              :
+            fi
+            http_status="$(printf '%s\n' "$response" | awk 'NR == 1 { print $2 }')"
+            case "$http_status" in
+              200) printf '%s\n' exists ;;
+              404) printf '%s\n' absent ;;
+              *)
+                echo "::warning::Could not reconcile release $tag (HTTP status: ${http_status:-unknown})" >&2
+                return 1
+                ;;
+            esac
+          }
+
+          release_state_by_tag() {
+            release_state_for "repos/${GITHUB_REPOSITORY}/releases/tags/$tag"
+          }
+
+          release_state_by_id() {
+            release_state_for "repos/${GITHUB_REPOSITORY}/releases/$created_release_id"
+          }
+
+          delete_created_release() {
+            if [ -z "$created_release_id" ]; then
+              echo "::error::Cannot roll back a release without this run's release ID"
+              return 1
+            fi
+            for attempt in 1 2 3; do
+              state=unknown
+              if state="$(release_state_by_id)" && [ "$state" = absent ]; then
+                return 0
+              fi
+
+              if [ "$state" = exists ] &&
+                ! gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/$created_release_id"
+              then
+                echo "::warning::Release deletion attempt $attempt failed for release $created_release_id"
+              fi
+
+              if state="$(release_state_by_id)" && [ "$state" = absent ]; then
+                return 0
+              fi
+              if [ "$attempt" -lt 3 ]; then
+                sleep "$attempt"
+              fi
+            done
+
+            echo "::error::Release $created_release_id still exists or could not be reconciled after 3 attempts"
+            return 1
+          }
+
+          existing_sha="$(git rev-parse --verify --quiet "refs/tags/${tag}^{commit}" || true)"
+          if [ -n "$existing_sha" ] && [ "$existing_sha" != "$RELEASE_SHA" ]; then
+            echo "::error::Tag $tag already points to $existing_sha, not $RELEASE_SHA"
+            exit 1
+          fi
+          if [ -z "$existing_sha" ]; then
+            require_current_main
+            git tag "$tag" "$RELEASE_SHA"
+            git push origin "refs/tags/$tag"
+            tag_created=true
+            if ! require_current_main; then
+              delete_created_tag
+              exit 1
+            fi
+          fi
+          if ! require_release_tag; then
+            exit 1
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release $tag already exists at $RELEASE_SHA"
             exit 0
           fi
-          git tag "$tag"
-          git push origin "$tag"
-          gh release create "$tag" --title "$tag" --generate-notes
+          if ! require_current_main; then
+            if [ "$tag_created" = true ]; then
+              delete_created_tag
+            fi
+            exit 1
+          fi
+          # Re-read the remote tag immediately before the Releases API write. target_commitish is
+          # ignored when a tag exists, and GitHub creates the tag when it is missing.
+          if ! require_release_tag; then
+            exit 1
+          fi
+          created_release_id="$(
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/releases" \
+              -f tag_name="$tag" \
+              -f target_commitish="$RELEASE_SHA" \
+              -f name="$tag" \
+              -F generate_release_notes=true \
+              --jq '.id'
+          )"
+          case "$created_release_id" in
+            '' | *[!0-9]*)
+              echo "::error::GitHub did not return the created release ID"
+              exit 1
+              ;;
+          esac
+          release_still_valid=true
+          if ! require_current_main; then
+            release_still_valid=false
+          fi
+          if ! require_release_tag; then
+            release_still_valid=false
+          fi
+          if [ "$release_still_valid" = false ]; then
+            # Confirm the release is absent before touching its tag. If GitHub is unavailable or
+            # remains inconsistent after retries, fail closed and leave the tag in place so a
+            # rerun cannot mistake an orphaned release for a completed rollback.
+            delete_created_release
+            if [ "$tag_created" = true ]; then
+              delete_created_tag
+            fi
+            exit 1
+          fi

@@ -257,7 +257,7 @@ for (const safetyCall of [
 }
 
 function runBodies(source) {
-  const cleaned = removeYamlComments(source)
+  const cleaned = source
   const lines = cleaned.split('\n')
   const bodies = []
   for (let index = 0; index < lines.length; index += 1) {
@@ -343,6 +343,11 @@ for (const ignored of [
     `guard must reject ignored CI command: ${ignored}`,
   )
 }
+assert.match(
+  runBodies("      run: |\n          note='\n          keep # ' ; npm run lint || true\n").join('\n'),
+  /\|\|/,
+  'CI run guard must inspect shell continuations across YAML block-scalar lines',
+)
 const ignoredReleaseDeletion =
   /(?:gh release delete|gh api[^\n]*(?:--method|-X)\s+DELETE[^\n]*releases\/)[^\n]*\|\|/
 assert.doesNotMatch(

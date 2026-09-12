@@ -302,11 +302,17 @@ function runBodies(source) {
     return match !== null && stepMetadata.has(match[1] ?? match[2] ?? match[3])
   }
   const resolveRunAlias = (value) => {
-    const alias = /^\*([A-Za-z0-9_-]+)(?:\s+#.*)?$/.exec(value.trim())
-    if (alias === null) return value
-    const target = anchors.get(alias[1])
-    assert.ok(target, `CI run step uses unresolved YAML anchor: ${alias[1]}`)
-    return target
+    let resolved = value
+    const visited = new Set()
+    while (true) {
+      const alias = /^\*([A-Za-z0-9_-]+)(?:\s+#.*)?$/.exec(resolved.trim())
+      if (alias === null) return resolved
+      assert.ok(!visited.has(alias[1]), `CI run step uses cyclic YAML anchor: ${alias[1]}`)
+      visited.add(alias[1])
+      const target = anchors.get(alias[1])
+      assert.ok(target, `CI run step uses unresolved YAML anchor: ${alias[1]}`)
+      resolved = target
+    }
   }
   const flowMapRunValues = (line) => {
     const values = []
@@ -510,10 +516,22 @@ assert.match(
   /\|\|/,
   'CI run guard must resolve run-step YAML anchors',
 )
+assert.match(
+  runBodies(
+    '      run: *outer\n      outer: &outer *base\n      base: &base npm test || true\n',
+  ).join('\n'),
+  /\|\|/,
+  'CI run guard must resolve chained run-step YAML anchors',
+)
 assert.throws(
   () => runBodies('      run: *unknown\n'),
   /unresolved YAML anchor/,
   'CI run guard must fail closed on unresolved run-step YAML anchors',
+)
+assert.throws(
+  () => runBodies('      run: *a\n      a: &a *b\n      b: &b *a\n'),
+  /cyclic YAML anchor/,
+  'CI run guard must reject cyclic run-step YAML anchors',
 )
 assert.match(
   runBodies('      - { "run": "npm test || true" }\n').join('\n'),

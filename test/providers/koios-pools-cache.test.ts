@@ -143,6 +143,7 @@ describe('the pool list is cached', () => {
     const p = provider(koios)
 
     await p.getPoolList({ limit: 50, offset: 0, ticker: 'ADA' })
+    await p.getPoolList({ limit: 50, offset: 0, ticker: 'ADA' })
     await p.getPoolList({ limit: 50, offset: 1, ticker: 'ADA' })
 
     // Different pages must not hide the ranking behaviour behind the page cache. The *ranking*

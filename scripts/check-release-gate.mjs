@@ -289,7 +289,6 @@ function runBodies(source) {
       for (let next = index + 1; next < lines.length; next += 1) {
         const continuation = lines[next] ?? ''
         if (continuation.trim() !== '' && continuation.search(/\S/) <= indent) break
-        if (/^\s*#/.test(continuation)) continue
         body.push(continuation)
         index = next
       }
@@ -417,6 +416,11 @@ assert.match(
   ),
   /\|\|/,
   'CI run guard must inspect shell continuations across YAML block-scalar lines',
+)
+assert.match(
+  runBodies("      run: |\n          note='\n          # ' ; npm run lint || true\n").join('\n'),
+  /\|\|/,
+  'CI run guard must preserve comment-looking lines inside shell quotes',
 )
 for (const scalarHeader of ['| # explain', '> # explain']) {
   assert.match(

@@ -112,7 +112,8 @@ interface ResponseWithMetadata {
   contentRange: string | null
 }
 
-export type KoiosContentRange = { start: number; end: number; total: number } | { total: 0 } | null
+export type KoiosContentRange =
+  { start: number; end: number; total: number } | { total: number } | null
 
 export interface KoiosBatchPage<Row> {
   rows: Row[]
@@ -472,7 +473,14 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
   }
 
   function parseContentRange(value: string, path: string): Exclude<KoiosContentRange, null> {
-    if (value === '*/0') return { total: 0 }
+    const emptyMatch = /^\*\/(\d+)$/.exec(value)
+    if (emptyMatch !== null) {
+      const total = Number(emptyMatch[1])
+      if (!Number.isSafeInteger(total)) {
+        throw new MalformedUpstreamError(`koios returned contradictory Content-Range for ${path}`)
+      }
+      return { total }
+    }
 
     const match = /^(\d+)-(\d+)\/(\d+)$/.exec(value)
     if (!match) {
@@ -625,7 +633,7 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
 
           const range = parseContentRange(response.contentRange, path)
           if (!('start' in range)) {
-            if (expectedStart !== 0 || page.length !== 0) {
+            if (page.length !== 0 || range.total !== expectedStart) {
               throw new MalformedUpstreamError(
                 `koios returned rows for an empty Content-Range on ${path}`,
               )

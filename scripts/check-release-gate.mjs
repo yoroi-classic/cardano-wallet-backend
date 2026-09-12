@@ -2,6 +2,7 @@
 // write-enabled release workflow. Static assertions pin the GitHub Actions
 // wiring; the small model below exercises the event and rerun decisions.
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 
 const workflow = readFileSync('.github/workflows/release.yml', 'utf8')
@@ -277,12 +278,42 @@ function runBodies(source) {
   const cleaned = source
   const lines = cleaned.split('\n')
   const bodies = []
+  const anchors = new Map()
+  for (const line of lines) {
+    for (const match of line.matchAll(/&([A-Za-z0-9_-]+)(?:\s+([^#]+?))?(?:\s+#.*)?$/g)) {
+      if (match[2] !== undefined) anchors.set(match[1], match[2].trim())
+    }
+  }
+  const stepMetadata = new Set([
+    'continue-on-error',
+    'env',
+    'if',
+    'id',
+    'name',
+    'shell',
+    'timeout-minutes',
+    'uses',
+    'with',
+    'working-directory',
+  ])
+  const isSiblingStepField = (line, indent) => {
+    if (line.search(/\S/) !== indent + 2) return false
+    const match = /^(?:"([^"]*)"|'([^']*)'|([A-Za-z][\w-]*))\s*:/.exec(line.slice(indent + 2))
+    return match !== null && stepMetadata.has(match[1] ?? match[2] ?? match[3])
+  }
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? ''
-    const match = /^(\s*)(?:-\s*)?run\s*:\s*(.*)$/.exec(line)
+    const match = /^(\s*)(?:-\s*)?(?:"run"|'run'|run)\s*:\s*(.*)$/.exec(line)
     if (match === null) continue
     const indent = (match[1] ?? '').length
     const firstLine = match[2] ?? ''
+    const alias = /^\*([A-Za-z0-9_-]+)(?:\s+#.*)?$/.exec(firstLine.trim())
+    if (alias !== null) {
+      const target = anchors.get(alias[1])
+      assert.ok(target, `CI run step uses unresolved YAML anchor: ${alias[1]}`)
+      bodies.push(target)
+      continue
+    }
     const body = [firstLine]
     const scalarHeader = firstLine.replace(/^((?:\||>)[-+]?)(?:\s+#.*)?$/, '$1')
     if (/^(?:\||>)[-+]?\s*$/.test(scalarHeader)) {
@@ -296,6 +327,7 @@ function runBodies(source) {
       for (let next = index + 1; next < lines.length; next += 1) {
         const continuation = lines[next] ?? ''
         if (continuation.trim() !== '' && continuation.search(/\S/) <= indent) break
+        if (isSiblingStepField(continuation, indent)) break
         if (/^\s*#/.test(continuation)) continue
         body.push(continuation)
         index = next
@@ -303,7 +335,7 @@ function runBodies(source) {
     }
     bodies.push(body.join('\n'))
   }
-  for (const match of cleaned.matchAll(/\{\s*run\s*:\s*([^,}]+)(?:,|})/g)) {
+  for (const match of cleaned.matchAll(/\{\s*(?:"run"|'run'|run)\s*:\s*([^,}]+)(?:,|})/g)) {
     bodies.push(match[1] ?? '')
   }
   return bodies
@@ -410,6 +442,26 @@ assert.match(
   /\|\|/,
   'CI run guard must scan continued plain run scalars',
 )
+assert.doesNotMatch(
+  runBodies('      - run: npm test\n        name: "metadata || true"\n').join('\n'),
+  /\|\|/,
+  'CI run guard must not scan sibling step metadata as shell text',
+)
+assert.match(
+  runBodies('      run: *lint\n      value: &lint npm test || true\n').join('\n'),
+  /\|\|/,
+  'CI run guard must resolve run-step YAML anchors',
+)
+assert.throws(
+  () => runBodies('      run: *unknown\n'),
+  /unresolved YAML anchor/,
+  'CI run guard must fail closed on unresolved run-step YAML anchors',
+)
+assert.match(
+  runBodies('      - { "run": "npm test || true" }\n').join('\n'),
+  /\|\|/,
+  'CI run guard must scan quoted flow-map run keys',
+)
 assert.match(
   runBodies("      run: |\n          note='\n          keep # ' ; npm run lint || true\n").join(
     '\n',
@@ -464,11 +516,17 @@ function shellFunction(source, name) {
 
 const releaseWithoutComments = removeYamlComments(workflow)
 
+function releaseStepBody(source) {
+  const body = runBodies(source).find((candidate) => candidate.includes('require_current_main() {'))
+  assert.ok(body, 'release step must contain its shell body')
+  return body
+}
+
 function executableCallCount(source, name) {
-  return (
-    removeYamlComments(source).match(new RegExp(`^\\s+(?:if ! )?${name}(?:; then)?\\s*$`, 'gm')) ??
-    []
-  ).length
+  const callPattern = new RegExp(`^\\s+(?:if ! )?${name}(?:; then)?\\s*$`)
+  return releaseStepBody(source)
+    .split('\n')
+    .filter((line) => callPattern.test(line)).length
 }
 
 function assertExecutableReleaseCalls(source) {
@@ -494,7 +552,42 @@ function assertExecutableReleaseCalls(source) {
   )
 }
 
+function assertRollbackCallsExecute(source) {
+  const body = releaseStepBody(source)
+  const start = body.indexOf('          if [ "$release_still_valid" = false ]; then')
+  assert.notEqual(start, -1, 'release step must contain its rollback branch')
+  const rollbackLines = body.slice(start).split('\n')
+  const end = rollbackLines.findIndex((line, index) => index > 0 && line === '          fi')
+  assert.notEqual(end, -1, 'release rollback branch must be complete')
+  const rollback = rollbackLines
+    .slice(0, end + 1)
+    .filter((line) => line.trim() !== 'exit 1')
+    .map((line) => line.replace(/^ {10}/, ''))
+    .join('\n')
+  execFileSync(
+    'bash',
+    [
+      '-eu',
+      '-o',
+      'pipefail',
+      '-c',
+      [
+        'set -eu',
+        'calls=',
+        'delete_created_release() { calls="$calls release"; }',
+        'delete_created_tag() { calls="$calls tag"; }',
+        'release_still_valid=false',
+        'tag_created=true',
+        rollback,
+        'test "$calls" = " release tag"',
+      ].join('\n'),
+    ],
+    { stdio: 'pipe' },
+  )
+}
+
 assertExecutableReleaseCalls(workflow)
+assertRollbackCallsExecute(workflow)
 assert.throws(
   () =>
     assertExecutableReleaseCalls(
@@ -516,6 +609,17 @@ assert.throws(
     ),
   /release must execute every rollback tag deletion call/,
   'release gate must reject prefixed tag rollback calls',
+)
+assert.throws(
+  () =>
+    assertRollbackCallsExecute(
+      workflow.replace(
+        '            delete_created_release\n',
+        '            : delete_created_release\n',
+      ),
+    ),
+  /Command failed/,
+  'release gate must reject rollback branches that do not execute release deletion',
 )
 const currentMainFunction = shellFunction(releaseWithoutComments, 'require_current_main')
 assert.equal(

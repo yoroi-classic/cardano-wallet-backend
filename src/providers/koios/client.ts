@@ -614,7 +614,11 @@ export function createKoiosClient(config: KoiosConfig): KoiosClient {
       const range = parseContentRange(response.contentRange, path)
       if (!('start' in range)) {
         const expectedEmptyTotal = keyset === undefined ? expectedStart : 0
-        if (page.length !== 0 || range.total !== expectedEmptyTotal) {
+        if (
+          (keyset !== undefined && lastCursor !== undefined) ||
+          page.length !== 0 ||
+          range.total !== expectedEmptyTotal
+        ) {
           throw new MalformedUpstreamError(
             `koios returned a contradictory empty Content-Range on ${path}`,
           )

@@ -222,6 +222,49 @@ describe('koios batchAllPages', () => {
     ])
   })
 
+  it('rejects an empty Content-Range on a keyset continuation', async () => {
+    const fetchImpl: FetchLike = async (url) => {
+      const keyset = new URL(url).searchParams.get('or')
+      return {
+        ok: true,
+        status: keyset === null ? 206 : 200,
+        headers: {
+          get: (name) => (name === 'content-range' ? (keyset === null ? '0-0/2' : '*/0') : null),
+        },
+        json: async () => (keyset === null ? [{ id: 'first' }] : []),
+        text: async () => '',
+      }
+    }
+    const client = createKoiosClient({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+    const options = {
+      rowKey: (row: { id: string }) => row.id,
+      keyset: (row: { id: string }): readonly [string, number] => [row.id, 0],
+    }
+
+    await expect(
+      client.batchAllPages(z.object({ id: z.string() }), '/rows', {}, options),
+    ).rejects.toThrow('koios returned a contradictory empty Content-Range on /rows')
+  })
+
+  it('accepts an empty Content-Range on the first keyset page', async () => {
+    const fetchImpl: FetchLike = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: (name) => (name === 'content-range' ? '*/0' : null) },
+      json: async () => [],
+      text: async () => '',
+    })
+    const client = createKoiosClient({ baseUrl: BASE, fetchImpl, readAttempts: 1 })
+    const options = {
+      rowKey: (row: { id: string }) => row.id,
+      keyset: (row: { id: string }): readonly [string, number] => [row.id, 0],
+    }
+
+    await expect(
+      client.batchAllPages(z.object({ id: z.string() }), '/rows', {}, options),
+    ).resolves.toEqual([])
+  })
+
   it('rejects an empty tail whose Content-Range total disagrees with the consumed offset', async () => {
     const fetchImpl: FetchLike = async (url) => {
       const offset = new URL(url).searchParams.get('offset')

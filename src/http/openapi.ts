@@ -1090,11 +1090,20 @@ export const openapi = {
 
       ResolvedUtxo: {
         type: 'object',
-        required: ['txHash', 'outputIndex', 'address', 'value', 'assets', 'spent'],
+        required: ['txHash', 'outputIndex', 'address', 'blockHeight', 'value', 'assets', 'spent'],
         properties: {
           txHash: HEX(32, 'The transaction that created this output'),
           outputIndex: { type: 'integer', minimum: 0 },
           address: { type: 'string' },
+          blockHeight: {
+            type: 'integer',
+            minimum: 0,
+            description:
+              'Height of the block that created this output. Authoritative provenance from the ' +
+              'chain, never the current tip: persist this rather than stamping a snapshot with ' +
+              'the tip height, which would make every output look as new as the read that ' +
+              'fetched it.',
+          },
           value: LOVELACE,
           assets: { type: 'array', items: { $ref: '#/components/schemas/Asset' } },
           datumHash: { type: 'string' },
@@ -1299,11 +1308,20 @@ export const openapi = {
 
       Utxo: {
         type: 'object',
-        required: ['txHash', 'outputIndex', 'address', 'value', 'assets'],
+        required: ['txHash', 'outputIndex', 'address', 'blockHeight', 'value', 'assets'],
         properties: {
           txHash: HEX(32, 'The transaction that created this output'),
           outputIndex: { type: 'integer', minimum: 0 },
           address: { type: 'string' },
+          blockHeight: {
+            type: 'integer',
+            minimum: 0,
+            description:
+              'Height of the block that created this output. Authoritative provenance from the ' +
+              'chain, never the current tip: persist this rather than stamping a snapshot with ' +
+              'the tip height, which would make every output look as new as the read that ' +
+              'fetched it.',
+          },
           value: { ...LOVELACE, description: 'Lovelace held by this output.' },
           assets: { type: 'array', items: { $ref: '#/components/schemas/Asset' } },
           datumHash: { type: 'string' },
@@ -1317,6 +1335,26 @@ export const openapi = {
         required: ['value', 'assets'],
         properties: {
           address: { type: 'string' },
+          value: LOVELACE,
+          assets: { type: 'array', items: { $ref: '#/components/schemas/Asset' } },
+        },
+      },
+
+      TxInput: {
+        type: 'object',
+        required: ['txHash', 'outputIndex', 'value', 'assets'],
+        properties: {
+          address: { type: 'string' },
+          txHash: HEX(32, 'The transaction that created the output this input consumed'),
+          outputIndex: {
+            type: 'integer',
+            minimum: 0,
+            description:
+              'Index of the consumed output within that transaction. With `txHash` this ' +
+              'identifies the spent output exactly. Do not match inputs by address and value ' +
+              'instead: a transaction can consume two outputs with the same address and the ' +
+              'same value, and nothing else in the response tells them apart.',
+          },
           value: LOVELACE,
           assets: { type: 'array', items: { $ref: '#/components/schemas/Asset' } },
         },
@@ -1382,7 +1420,7 @@ export const openapi = {
           blockTime: { type: 'integer', description: 'Unix seconds.' },
           fee: LOVELACE,
           ttl: { type: 'integer' },
-          inputs: { type: 'array', items: { $ref: '#/components/schemas/TxIo' } },
+          inputs: { type: 'array', items: { $ref: '#/components/schemas/TxInput' } },
           outputs: { type: 'array', items: { $ref: '#/components/schemas/TxIo' } },
           withdrawals: { type: 'array', items: { $ref: '#/components/schemas/Withdrawal' } },
           certificates: { type: 'array', items: { $ref: '#/components/schemas/TxCertificate' } },

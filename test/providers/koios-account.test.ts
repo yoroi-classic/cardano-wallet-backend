@@ -170,6 +170,7 @@ describe('koios getAccountUtxos', () => {
     tx_hash: 'aa11',
     tx_index: 2,
     address: 'addr_test1xyz',
+    block_height: 10_000_000,
     value: '2000000',
     asset_list: [{ policy_id: 'a'.repeat(56), asset_name: '414243', quantity: '5' }],
     datum_hash: null,
@@ -220,6 +221,7 @@ describe('koios getAccountUtxos', () => {
         txHash: 'aa11',
         outputIndex: 2,
         address: 'addr_test1xyz',
+        blockHeight: 10_000_000,
         value: '2000000',
         assets: [{ policyId: 'a'.repeat(56), assetName: '414243', quantity: '5' }],
         inlineDatum: 'd87980',
@@ -765,7 +767,15 @@ describe('koios getTxHistory', () => {
       tx_block_index: 0,
       fee: '150000',
       invalid_after: 999,
-      inputs: [{ payment_addr: { bech32: 'addr_in' }, value: '5000000', asset_list: null }],
+      inputs: [
+        {
+          payment_addr: { bech32: 'addr_in' },
+          tx_hash: 'cd'.repeat(32),
+          tx_index: 1,
+          value: '5000000',
+          asset_list: null,
+        },
+      ],
       outputs: [
         {
           payment_addr: { bech32: 'addr_out' },
@@ -814,7 +824,15 @@ describe('koios getTxHistory', () => {
       blockTime: 90,
       fee: '150000',
       ttl: 999,
-      inputs: [{ address: 'addr_in', value: '5000000', assets: [] }],
+      inputs: [
+        {
+          address: 'addr_in',
+          txHash: 'cd'.repeat(32),
+          outputIndex: 1,
+          value: '5000000',
+          assets: [],
+        },
+      ],
       outputs: [
         {
           address: 'addr_out',

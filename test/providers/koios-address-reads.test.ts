@@ -48,6 +48,7 @@ describe('koios getUtxosByAddresses', () => {
     tx_hash: 'aa11',
     tx_index: 2,
     address: BYRON_A,
+    block_height: 10_000_000,
     value: '2000000',
     asset_list: [{ policy_id: 'a'.repeat(56), asset_name: '414243', quantity: '5' }],
     datum_hash: null,
@@ -66,6 +67,7 @@ describe('koios getUtxosByAddresses', () => {
         txHash: 'aa11',
         outputIndex: 2,
         address: BYRON_A,
+        blockHeight: 10_000_000,
         value: '2000000',
         assets: [{ policyId: 'a'.repeat(56), assetName: '414243', quantity: '5' }],
         inlineDatum: 'd87980',
@@ -97,6 +99,29 @@ describe('koios getUtxosByAddresses', () => {
 
     await expect(provider.getUtxosByAddresses([])).resolves.toEqual([])
     expect(calls).toHaveLength(0)
+  })
+
+  // The creation height is the whole of #110's contract, and it is required on the public shape.
+  // A row that omits it must fail rather than be mapped without one: the alternative is a UTxO
+  // reaching a client with a fabricated or absent provenance it would then persist.
+  it('rejects a utxo row that carries no creation height', async () => {
+    const withoutHeight: Record<string, unknown> = { ...ROW }
+    delete withoutHeight.block_height
+    const { fetchImpl } = fakeFetch(async () => [withoutHeight])
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getUtxosByAddresses([BYRON_A])).rejects.toBeInstanceOf(
+      MalformedUpstreamError,
+    )
+  })
+
+  it('maps the creation height from the row rather than inferring it', async () => {
+    const { fetchImpl } = fakeFetch(async () => [{ ...ROW, block_height: 4_961_506 }])
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [utxo] = await provider.getUtxosByAddresses([BYRON_A])
+
+    expect(utxo?.blockHeight).toBe(4_961_506)
   })
 
   it('rejects a malformed utxo shape as upstream-malformed, not a 500', async () => {
@@ -222,13 +247,77 @@ describe('koios getTxHistoryByAddresses', () => {
     expect(JSON.parse(String(listCall?.body))).toEqual({ _addresses: [BYRON_A] })
   })
 
+  // The case that makes #105's reference necessary rather than convenient. Address and value are
+  // identical on both inputs, so a client matching by those two fields cannot tell them apart and
+  // has to guess or fail closed. The reference distinguishes them.
+  it('distinguishes two inputs with identical address and value', async () => {
+    const source = 'cd'.repeat(32)
+    const detailed = {
+      ...txInfoRowFor('aa', 10),
+      inputs: [
+        {
+          payment_addr: { bech32: BYRON_A },
+          tx_hash: source,
+          tx_index: 0,
+          value: '5000000',
+          asset_list: null,
+        },
+        {
+          payment_addr: { bech32: BYRON_A },
+          tx_hash: source,
+          tx_index: 1,
+          value: '5000000',
+          asset_list: null,
+        },
+      ],
+    }
+    const { fetchImpl } = fakeFetchByPath({
+      '/address_txs': [{ tx_hash: 'aa', block_height: 10, block_time: 100, epoch_no: 1 }],
+      '/tx_info': [detailed],
+    })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [tx] = await provider.getTxHistoryByAddresses([BYRON_A])
+
+    expect(tx?.inputs).toEqual([
+      { address: BYRON_A, txHash: source, outputIndex: 0, value: '5000000', assets: [] },
+      { address: BYRON_A, txHash: source, outputIndex: 1, value: '5000000', assets: [] },
+    ])
+  })
+
+  // Fail closed: an input we cannot identify must not be mapped without its reference, because the
+  // caller would then be back to matching by address and amount without being told.
+  it('rejects a history input that carries no source reference', async () => {
+    const detailed = {
+      ...txInfoRowFor('aa', 10),
+      inputs: [{ payment_addr: { bech32: BYRON_A }, value: '5000000', asset_list: null }],
+    }
+    const { fetchImpl } = fakeFetchByPath({
+      '/address_txs': [{ tx_hash: 'aa', block_height: 10, block_time: 100, epoch_no: 1 }],
+      '/tx_info': [detailed],
+    })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getTxHistoryByAddresses([BYRON_A])).rejects.toBeInstanceOf(
+      MalformedUpstreamError,
+    )
+  })
+
   // Full field mapping, not just the hash: inputs, outputs, withdrawals and a certificate, both
   // a recognized kind and an unrecognized one falling back to 'other'.
   it('maps inputs, outputs, withdrawals and certificates (regression)', async () => {
     const detailed = {
       ...txInfoRowFor('aa', 10),
       invalid_after: 999,
-      inputs: [{ payment_addr: { bech32: BYRON_A }, value: '5000000', asset_list: null }],
+      inputs: [
+        {
+          payment_addr: { bech32: BYRON_A },
+          tx_hash: 'cd'.repeat(32),
+          tx_index: 1,
+          value: '5000000',
+          asset_list: null,
+        },
+      ],
       outputs: [
         {
           payment_addr: null, // some Byron outputs can't be expressed as bech32
@@ -260,7 +349,9 @@ describe('koios getTxHistoryByAddresses', () => {
       blockTime: 100,
       fee: '150000',
       ttl: 999,
-      inputs: [{ address: BYRON_A, value: '5000000', assets: [] }],
+      inputs: [
+        { address: BYRON_A, txHash: 'cd'.repeat(32), outputIndex: 1, value: '5000000', assets: [] },
+      ],
       outputs: [
         {
           address: undefined,
@@ -925,6 +1016,7 @@ describe('koios address reads — 413 body-limit adaptation', () => {
         tx_hash: `${addr}#${suffix}`,
         tx_index: index,
         address: addr,
+        block_height: 10_000_000,
         value,
         asset_list: null,
         datum_hash: null,

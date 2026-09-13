@@ -3,6 +3,7 @@ import { MalformedUpstreamError } from '../../domain/errors.js'
 import type {
   CertificateKind,
   TxCertificate,
+  TxInput,
   TxIo,
   WalletTransaction,
   Withdrawal,
@@ -25,6 +26,21 @@ const txIoRow = z.object({
   payment_addr: z.object({ bech32: z.string() }).nullish(),
   value: numeric,
   asset_list: z.array(assetItem).nullish(),
+})
+
+// An input additionally carries the reference of the output it consumed. Koios puts `tx_hash` and
+// `tx_index` on both sides of a transaction, but they mean different things: on an output they are
+// the containing transaction and that output's own position, while on an input they point at the
+// *source* transaction the output came from. Only the latter is information the caller cannot
+// already derive, which is why the reference is read here and not on the output row.
+//
+// Read strictly, so a row without a usable reference fails rather than yielding an input the
+// caller cannot identify. Failing closed is the point of #105: the frontend adapter's alternative
+// is to match inputs by address and amount, which is wrong whenever a transaction consumes two
+// equal outputs from one address.
+const txInputRow = txIoRow.extend({
+  tx_hash: z.string().regex(/^[0-9a-fA-F]{64}$/),
+  tx_index: z.number().int().nonnegative(),
 })
 
 const withdrawalRow = z.object({ stake_addr: z.string(), amount: numeric })
@@ -69,7 +85,7 @@ export const txInfoRow = z.object({
   tx_block_index: z.number(),
   fee: numeric,
   invalid_after: invalidAfter.nullish(),
-  inputs: z.array(txIoRow).nullish(),
+  inputs: z.array(txInputRow).nullish(),
   outputs: z.array(txIoRow).nullish(),
   withdrawals: z.array(withdrawalRow).nullish(),
   certificates: z.array(certRow).nullish(),
@@ -88,6 +104,10 @@ function mapTxIo(row: z.infer<typeof txIoRow>): TxIo {
   }
 }
 
+function mapTxInput(row: z.infer<typeof txInputRow>): TxInput {
+  return { ...mapTxIo(row), txHash: row.tx_hash, outputIndex: row.tx_index }
+}
+
 export function mapTx(row: z.infer<typeof txInfoRow>): WalletTransaction {
   const withdrawals: Withdrawal[] = (row.withdrawals ?? []).map((w) => ({
     stakeAddress: w.stake_addr,
@@ -103,7 +123,7 @@ export function mapTx(row: z.infer<typeof txInfoRow>): WalletTransaction {
     blockTime: row.tx_timestamp,
     fee: String(row.fee),
     ttl: row.invalid_after ?? undefined,
-    inputs: (row.inputs ?? []).map(mapTxIo),
+    inputs: (row.inputs ?? []).map(mapTxInput),
     outputs: (row.outputs ?? []).map(mapTxIo),
     withdrawals,
     certificates,

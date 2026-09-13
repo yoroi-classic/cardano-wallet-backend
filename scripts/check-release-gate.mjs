@@ -278,6 +278,16 @@ function runBodies(source) {
   const cleaned = source
   const lines = cleaned.split('\n')
   const bodies = []
+  const decodeYamlScalar = (value) => {
+    const doubleQuoted = /^"([\s\S]*)"$/.exec(value.trim())
+    if (doubleQuoted !== null) {
+      return doubleQuoted[1]
+        .replace(/\\x([0-9a-fA-F]{2})/g, (_, hex) => String.fromCharCode(Number.parseInt(hex, 16)))
+        .replace(/\\([\\"])/g, '$1')
+    }
+    const singleQuoted = /^'([\s\S]*)'$/.exec(value.trim())
+    return singleQuoted === null ? value : singleQuoted[1].replace(/''/g, "'")
+  }
   const stepMetadata = new Set([
     'continue-on-error',
     'env',
@@ -328,16 +338,31 @@ function runBodies(source) {
   }
   const flowMapRunValues = (source) => {
     const values = []
+    const lines = source.split('\n')
+    let blockIndent = -1
+    const structuralSource = lines
+      .map((line) => {
+        const indentation = line.search(/\S/)
+        if (blockIndent >= 0) {
+          if (line.trim() === '' || indentation > blockIndent) return ''
+          blockIndent = -1
+        }
+        if (/\b(?:run|name|if|with)\s*:\s*[|>][-+]?\s*(?:#.*)?$/.test(line)) {
+          blockIndent = indentation
+        }
+        return line
+      })
+      .join('\n')
     const flowMapStart =
-      /(?:^|\n)(?:[ \t]*(?:-\s*)?(?:&[A-Za-z0-9_-]+\s*)?\{|[ \t]*[^#\n{}]+:\s*(?:&[A-Za-z0-9_-]+\s*)?\{)/g
-    let openMatch = flowMapStart.exec(source)
+      /(?:^|\n)(?:[ \t]*(?:-\s*)?(?:&[A-Za-z0-9_-]+\s*)?\{|[ \t]*(?:"[^"]*"|'[^']*'|[A-Za-z][\w-]*)\s*:\s*(?:&[A-Za-z0-9_-]+\s*)?\{)/g
+    let openMatch = flowMapStart.exec(structuralSource)
     while (openMatch !== null) {
       const open = openMatch.index + openMatch[0].lastIndexOf('{')
       let quote
       let escaped = false
       let close = -1
-      for (let index = open + 1; index < source.length; index += 1) {
-        const character = source[index]
+      for (let index = open + 1; index < structuralSource.length; index += 1) {
+        const character = structuralSource[index]
         if (escaped) {
           escaped = false
           continue
@@ -359,7 +384,7 @@ function runBodies(source) {
       quote = undefined
       escaped = false
       for (let index = open + 1; index <= close; index += 1) {
-        const character = source[index] ?? ','
+        const character = structuralSource[index] ?? ','
         if (escaped) {
           escaped = false
           continue
@@ -371,7 +396,7 @@ function runBodies(source) {
         }
         if (character === '"' || character === "'") quote = character
         else if (character === ',' || index === close) {
-          entries.push(source.slice(entryStart, index))
+          entries.push(structuralSource.slice(entryStart, index))
           entryStart = index + 1
         }
       }
@@ -392,7 +417,7 @@ function runBodies(source) {
     const match = /^(\s*)(-\s*)?(?:"run"|'run'|run)\s*:\s*(.*)$/.exec(line)
     if (match === null) continue
     const indent = (match[1] ?? '').length
-    const firstLine = match[3] ?? ''
+    const firstLine = decodeYamlScalar(match[3] ?? '')
     const resolvedFirstLine = resolveRunAlias(firstLine)
     if (resolvedFirstLine !== firstLine) {
       bodies.push(resolvedFirstLine)
@@ -740,6 +765,29 @@ function assertRollbackCallsExecute(source) {
     { stdio: 'pipe', env: probeEnv },
   )
 }
+
+const expectedRollbackBranch = `          if [ "$release_still_valid" = false ]; then
+            # Confirm the release is absent before touching its tag. If GitHub is unavailable or
+            # remains inconsistent after retries, fail closed and leave the tag in place so a
+            # rerun cannot mistake an orphaned release for a completed rollback.
+            delete_created_release
+            if [ "$tag_created" = true ]; then
+              delete_created_tag
+            fi
+            exit 1
+          fi`
+assert.ok(
+  workflow.includes(expectedRollbackBranch),
+  'release rollback branch must retain its trusted, executable body',
+)
+assert.throws(
+  () => assert.ok(
+    workflow
+      .replace('            delete_created_release\n', '            if [ -n "${GITHUB_ACTIONS:-}" ]; then exit 1; fi\n            delete_created_release\n')
+      .includes(expectedRollbackBranch),
+  ),
+  'release gate must reject environment-dependent rollback branches',
+)
 
 assertExecutableReleaseCalls(workflow)
 assertRollbackCallsExecute(workflow)

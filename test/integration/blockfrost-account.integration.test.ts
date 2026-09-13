@@ -1,15 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
   BLOCKFROST_PROJECT_ID,
-  discover,
+  discoverRewardAddress,
   integrationProvider,
 } from './support/provider-blockfrost.js'
 
 const skip = BLOCKFROST_PROJECT_ID === undefined
-
-interface PoolExtended {
-  reward_account: string
-}
 
 describe('blockfrost account (integration)', () => {
   it.skipIf(skip)(
@@ -18,8 +14,7 @@ describe('blockfrost account (integration)', () => {
       // A registered pool's own reward account is registered and has real reward/withdrawal
       // history; pick one at runtime so the test does not rot. rewardsSum - withdrawalsSum ==
       // rewardsAvailable is an accounting identity that must hold for any registered account.
-      const pools = await discover<PoolExtended[]>('/pools/extended?count=1')
-      const rewardAddress = pools[0]?.reward_account
+      const rewardAddress = await discoverRewardAddress()
       expect(rewardAddress).toMatch(/^stake_test1[0-9a-z]+$/)
 
       const state = await integrationProvider().getAccountState(rewardAddress as string)
@@ -33,8 +28,7 @@ describe('blockfrost account (integration)', () => {
   )
 
   it.skipIf(skip)('returns the utxos controlled by the same registered account', async () => {
-    const pools = await discover<PoolExtended[]>('/pools/extended?count=1')
-    const rewardAddress = pools[0]?.reward_account
+    const rewardAddress = await discoverRewardAddress()
     expect(rewardAddress).toMatch(/^stake_test1[0-9a-z]+$/)
 
     const utxos = await integrationProvider().getAccountUtxos(rewardAddress as string)
@@ -49,8 +43,7 @@ describe('blockfrost account (integration)', () => {
     'returns reward history, oldest first, with a derived spendable epoch',
     async () => {
       // A registered pool's own reward account has earned real rewards over many epochs.
-      const pools = await discover<PoolExtended[]>('/pools/extended?count=1')
-      const rewardAddress = pools[0]?.reward_account
+      const rewardAddress = await discoverRewardAddress()
       expect(rewardAddress).toMatch(/^stake_test1[0-9a-z]+$/)
 
       const rewards = await integrationProvider().getRewardHistory(rewardAddress as string)
@@ -69,8 +62,7 @@ describe('blockfrost account (integration)', () => {
   )
 
   it.skipIf(skip)('returns a stake account transaction history, oldest first', async () => {
-    const pools = await discover<PoolExtended[]>('/pools/extended?count=1')
-    const rewardAddress = pools[0]?.reward_account
+    const rewardAddress = await discoverRewardAddress()
     expect(rewardAddress).toMatch(/^stake_test1[0-9a-z]+$/)
 
     const history = await integrationProvider().getTxHistory(rewardAddress as string)

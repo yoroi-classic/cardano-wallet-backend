@@ -2,15 +2,12 @@ import { describe, expect, it } from 'vitest'
 import {
   BLOCKFROST_PROJECT_ID,
   discover,
+  discoverRewardAddress,
   integrationProvider,
 } from './support/provider-blockfrost.js'
 import { alternatePaymentAddress } from '../support/alternate-payment-address.js'
 
 const skip = BLOCKFROST_PROJECT_ID === undefined
-
-interface PoolExtended {
-  reward_account: string
-}
 
 interface AccountAddress {
   address: string
@@ -22,8 +19,7 @@ describe('blockfrost addresses (integration)', () => {
     async () => {
       // A registered pool's reward account controls at least one real address; pick one at
       // runtime so the test does not rot.
-      const pools = await discover<PoolExtended[]>('/pools/extended?count=1')
-      const rewardAddress = pools[0]?.reward_account
+      const rewardAddress = await discoverRewardAddress()
       expect(rewardAddress).toMatch(/^stake_test1[0-9a-z]+$/)
 
       const owned = await discover<AccountAddress[]>(`/accounts/${rewardAddress}/addresses?count=1`)
@@ -45,8 +41,7 @@ describe('blockfrost addresses (integration)', () => {
   )
 
   it.skipIf(skip)('returns the utxos and transaction history of a live used address', async () => {
-    const pools = await discover<PoolExtended[]>('/pools/extended?count=1')
-    const rewardAddress = pools[0]?.reward_account
+    const rewardAddress = await discoverRewardAddress()
     const owned = await discover<AccountAddress[]>(`/accounts/${rewardAddress}/addresses?count=1`)
     const usedAddress = owned[0]?.address
     expect(usedAddress).toBeDefined()

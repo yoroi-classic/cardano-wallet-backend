@@ -781,11 +781,15 @@ assert.ok(
   'release rollback branch must retain its trusted, executable body',
 )
 assert.throws(
-  () => assert.ok(
-    workflow
-      .replace('            delete_created_release\n', '            if [ -n "${GITHUB_ACTIONS:-}" ]; then exit 1; fi\n            delete_created_release\n')
-      .includes(expectedRollbackBranch),
-  ),
+  () =>
+    assert.ok(
+      workflow
+        .replace(
+          '            delete_created_release\n',
+          '            if [ -n "${GITHUB_ACTIONS:-}" ]; then exit 1; fi\n            delete_created_release\n',
+        )
+        .includes(expectedRollbackBranch),
+    ),
   'release gate must reject environment-dependent rollback branches',
 )
 

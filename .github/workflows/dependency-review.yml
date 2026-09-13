@@ -1,0 +1,32 @@
+name: dependency-review
+
+on:
+  pull_request:
+    branches: [development, preview, preprod, main]
+    paths:
+      - 'package.json'
+      - 'package-lock.json'
+      - 'e2e/package.json'
+      - 'e2e/package-lock.json'
+      - '.github/workflows/*.yml'
+      - '.github/workflows/*.yaml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-review-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Dependency review
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          vulnerability-check: true
+          license-check: false
+          show-patched-versions: true

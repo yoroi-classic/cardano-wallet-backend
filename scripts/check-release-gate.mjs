@@ -979,6 +979,18 @@ for (const required of [
 ]) {
   assert.ok(ciWithoutComments.includes(required), `CI release check missing: ${required}`)
 }
+const trustedCheckStart = ciWithoutComments.indexOf('      - name: Check release gate contract')
+assert.notEqual(trustedCheckStart, -1, 'CI must run the trusted release-gate checker')
+const nextStepStart = ciWithoutComments.indexOf('\n      - name:', trustedCheckStart + 1)
+const trustedCheck = ciWithoutComments.slice(
+  trustedCheckStart,
+  nextStepStart === -1 ? undefined : nextStepStart,
+)
+assert.doesNotMatch(
+  trustedCheck,
+  /^\s+if\s*:/m,
+  'trusted release-gate checker must not be conditionally skipped',
+)
 assert.equal(
   packageJson.scripts['check:release-gate'],
   'node scripts/check-release-gate.mjs',

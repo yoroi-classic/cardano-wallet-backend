@@ -175,7 +175,10 @@ jobs:
           if ! require_release_tag; then
             exit 1
           fi
-          if gh release view "$tag" >/dev/null 2>&1; then
+          if ! release_state="$(release_state_by_tag)"; then
+            exit 1
+          fi
+          if [ "$release_state" = exists ]; then
             echo "release $tag already exists at $RELEASE_SHA"
             exit 0
           fi

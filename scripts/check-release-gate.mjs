@@ -254,6 +254,16 @@ function assertRequiredWorkflowLiterals(source) {
   }
 }
 assertRequiredWorkflowLiterals(workflow)
+assert.match(
+  workflow,
+  /if ! release_state="\$\(release_state_by_tag\)"; then\n\s+exit 1\n\s+fi\n\s+if \[ "\$release_state" = exists \]; then/,
+  'release creation must use an explicit release-state lookup',
+)
+assert.doesNotMatch(
+  workflow,
+  /gh release view\s+"\$tag"/,
+  'release creation must fail closed on lookup errors',
+)
 
 for (const safetyCall of [
   'test "$(git rev-parse HEAD)" = "$RELEASE_SHA"',
@@ -490,11 +500,20 @@ function assertContinueOnErrorIsFalseOnly(source) {
   }
 }
 
+function assertNoEscapedMappingKeys(source) {
+  for (const [index, line] of source.split('\n').entries()) {
+    if (/^\s*(?:-\s*)?"[^"\\]*\\[^"\\]*"\s*:/.test(line)) {
+      assert.fail(`CI must not use escaped mapping keys (line ${index + 1})`)
+    }
+  }
+}
+
 const workflowWithoutShellContinuations = removeYamlComments(workflow).replace(
   /\\[ \t]*\r?\n[ \t]*/g,
   ' ',
 )
 const ciWithoutComments = removeYamlComments(ciWorkflow)
+assertNoEscapedMappingKeys(ciWorkflow)
 assertContinueOnErrorIsFalseOnly(ciWorkflow)
 assert.deepEqual(
   continueOnErrorValues('      continue-on-error: false\n'),
@@ -532,6 +551,35 @@ assert.doesNotMatch(
   /\|\|/,
   'CI run steps must not ignore failed commands',
 )
+assert.doesNotMatch(
+  runBodies(ciWorkflow).join('\n'),
+  /(?:^|\n)\s*(?:if\s+(?:npm|yarn|pnpm|npx|node|go|docker|make)\b|!\s*(?:npm|yarn|pnpm|npx|node|go|docker|make)\b|set\s+\+e\b)/,
+  'CI run steps must not mask failed commands with shell control flow',
+)
+for (const escapedKey of [
+  '      "\\u0072un": npm test || true\n',
+  '      "\\u0063ontinue-on-error": true\n',
+]) {
+  assert.throws(
+    () => assertNoEscapedMappingKeys(escapedKey),
+    /CI must not use escaped mapping keys/,
+    `guard must reject escaped mapping keys: ${escapedKey}`,
+  )
+}
+for (const maskedCommand of [
+  '      run: if npm run lint; then echo ok; fi\n',
+  '      run: ! npm run lint\n',
+  '      run: set +e\n',
+]) {
+  assert.throws(
+    () =>
+      assert.doesNotMatch(
+        runBodies(maskedCommand).join('\n'),
+        /(?:^|\n)\s*(?:if\s+(?:npm|yarn|pnpm|npx|node|go|docker|make)\b|!\s*(?:npm|yarn|pnpm|npx|node|go|docker|make)\b|set\s+\+e\b)/,
+      ),
+    `guard must reject masked shell command: ${maskedCommand}`,
+  )
+}
 for (const ignored of [
   'run: npm test || true; echo reached',
   'run: npm test || exit 0',
@@ -690,6 +738,19 @@ function shellFunction(source, name) {
 }
 
 const releaseWithoutComments = removeYamlComments(workflow)
+
+for (const name of [
+  'require_current_main',
+  'require_release_tag',
+  'delete_created_release',
+  'delete_created_tag',
+]) {
+  assert.equal(
+    (releaseWithoutComments.match(new RegExp(`^          ${name}\\(\\) \\{`, 'gm')) ?? []).length,
+    1,
+    `${name} must have exactly one definition`,
+  )
+}
 
 function releaseStepBody(source) {
   const body = runBodies(source).find((candidate) => candidate.includes('require_current_main() {'))

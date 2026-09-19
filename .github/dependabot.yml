@@ -1,0 +1,54 @@
+version: 2
+updates:
+  # Backend npm dependencies. Cooldown so we don't install a release the day it drops
+  # (the prime window for a supply-chain / zero-day injection); a week or two lets the
+  # ecosystem catch and pull bad versions first. Dev deps are grouped into one PR so
+  # overlapping bumps don't open several mutually-conflicting PRs.
+  - package-ecosystem: 'npm'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+      time: '10:00'
+      timezone: 'Etc/UTC'
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 7
+    groups:
+      dev-dependencies:
+        dependency-type: 'development'
+    open-pull-requests-limit: 3
+
+  # Keep the pinned GitHub Actions SHAs current, with the same cooldown.
+  - package-ecosystem: 'github-actions'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+      day: 'tuesday'
+      time: '10:00'
+      timezone: 'Etc/UTC'
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns:
+          - '*'
+    open-pull-requests-limit: 2
+
+  # Keep Docker base images current without flooding the queue.
+  - package-ecosystem: 'docker'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+      day: 'wednesday'
+      time: '10:00'
+      timezone: 'Etc/UTC'
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 2
+
+# Note: the e2e/ harness pins its serialization deps to match the versions the Yoroi
+# extension uses, so it is intentionally not tracked here (we don't want those bumped
+# out of lock-step with the extension).

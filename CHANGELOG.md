@@ -298,7 +298,8 @@ Promotes the reviewed development API and operational changes to preview.
 - Koios account-state reads now reject mismatched or duplicate account rows instead of returning
   another stake address's balance and delegation state.
 - Koios account state accepts signed balances while proposal deposits are outstanding.
-- Koios `proposal_refund` rewards are normalized to the public `refund` kind.
+- Koios `proposal_refund` rewards are served as their own reward kind, distinct from the
+  stake-key deposit `refund` that they are not.
 - Multi-page Koios account and address UTxO reads now page from a composite `tx_hash`/`tx_index`
   cursor rather than an offset, so a spend and a creation between pages can no longer produce a
   same-total snapshot with a silently shifted row.

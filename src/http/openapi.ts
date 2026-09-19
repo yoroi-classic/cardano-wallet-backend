@@ -35,11 +35,14 @@ const LOVELACE = {
     'A lovelace amount as a decimal string. Parse with BigInt, never Number: values can exceed 2^53.',
 } as const
 
+// Only for the fields that genuinely go below zero. Kept separate from LOVELACE so the other
+// twenty-odd amounts, none of which can be negative, keep rejecting a minus sign.
 const SIGNED_LOVELACE = {
-  ...LOVELACE,
-  pattern: '^-?\\d+$',
+  type: 'string',
+  pattern: '^-?(?:0|[1-9]\\d*)$',
   description:
-    'A signed lovelace amount as a decimal string. Account balances can be negative while a proposal deposit is outstanding. Parse with BigInt, never Number.',
+    'A lovelace amount as a decimal string, which may be negative. Parse with BigInt, never ' +
+    'Number: values can exceed 2^53.',
 } as const
 
 const HEX = (bytes: number, description: string) =>
@@ -1066,24 +1069,28 @@ export const openapi = {
           spendableEpoch: {
             type: 'integer',
             description:
-              'The epoch it became withdrawable: `earnedEpoch + 2` on the current protocol. ' +
-              'Both are here because a graph wants the first and a balance projection wants the ' +
-              'second, and they are ten days apart.',
+              'The epoch it became withdrawable. **Do not derive this from `earnedEpoch`:** the ' +
+              'gap depends on the kind. Pool rewards (`member`, `leader`) are paid two epochs in ' +
+              'arrears; `proposal_refund` and `treasury` land the epoch after the one they are ' +
+              'earned for. Both fields are here because a graph wants the first and a balance ' +
+              'projection wants the second.',
           },
           amount: LOVELACE,
           kind: {
             type: 'string',
-            enum: ['member', 'leader', 'treasury', 'reserves', 'refund'],
+            enum: ['member', 'leader', 'treasury', 'reserves', 'refund', 'proposal_refund'],
             description:
               "`member` is a delegator share; `leader` is the pool operator's cut. An operator " +
               'can receive both in the same epoch from the same pool, which is why this is a list ' +
-              'rather than a map keyed by epoch.',
+              'rather than a map keyed by epoch. `refund` is a returned stake-key deposit and ' +
+              '`proposal_refund` a returned governance proposal deposit; they are distinct ' +
+              'because they say different things about where the money came from.',
           },
           poolId: {
             type: 'string',
             description:
-              'The pool that paid it. Absent for treasury, reserves and refunds, which no pool ' +
-              'paid.',
+              'The pool that paid it. Absent for treasury, reserves and both refund kinds, which ' +
+              'no pool paid.',
           },
         },
       },
@@ -1265,7 +1272,10 @@ export const openapi = {
           balance: {
             ...SIGNED_LOVELACE,
             description:
-              'Controlled lovelace: UTxO plus withdrawable rewards; can be negative while a proposal deposit is outstanding.',
+              'Controlled lovelace: UTxO plus withdrawable rewards. **Can be negative.** An ' +
+              'account with an outstanding governance proposal deposit reports a negative ' +
+              'balance until that deposit is returned, because the upstream sum excludes the ' +
+              'pending refund. Parse with BigInt and do not assume a non-negative value.',
           },
           rewardsAvailable: { ...LOVELACE, description: 'Withdrawable right now.' },
           rewardsSum: { ...LOVELACE, description: 'Lifetime rewards earned.' },

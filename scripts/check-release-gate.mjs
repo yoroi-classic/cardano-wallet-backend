@@ -864,6 +864,56 @@ assert.equal(
           }`,
   'require_current_main must retain its executable fail-closed body',
 )
+const normalizeShellFunction = source => source.replace(/\s+/g, ' ').trim()
+assert.equal(
+  normalizeShellFunction(shellFunction(releaseWithoutComments, 'delete_created_release')),
+  normalizeShellFunction(`          delete_created_release() {
+            if [ -z "$created_release_id" ]; then
+              echo "::error::Cannot roll back a release without this run's release ID"
+              return 1
+            fi
+            for attempt in 1 2 3; do
+              state=unknown
+              if state="$(release_state_by_id)" && [ "$state" = absent ]; then
+                return 0
+              fi
+              if [ "$state" = exists ] &&
+                ! gh api --method DELETE "repos/${'${GITHUB_REPOSITORY}'}/releases/$created_release_id"
+              then
+                echo "::warning::Release deletion attempt $attempt failed for release $created_release_id"
+              fi
+              if state="$(release_state_by_id)" && [ "$state" = absent ]; then
+                return 0
+              fi
+              if [ "$attempt" -lt 3 ]; then
+                sleep "$attempt"
+              fi
+            done
+            echo "::error::Release $created_release_id still exists or could not be reconciled after 3 attempts"
+            return 1
+          }`),
+  'delete_created_release must retain its executable rollback body',
+)
+assert.equal(
+  normalizeShellFunction(shellFunction(releaseWithoutComments, 'delete_created_tag')),
+  normalizeShellFunction(`          delete_created_tag() {
+            if ! tag_release_state="$(release_state_by_tag)"; then
+              echo "::error::Refusing to delete $tag because its release state is unknown"
+              return 1
+            fi
+            if [ "$tag_release_state" != absent ]; then
+              echo "::error::Refusing to delete $tag because a release currently uses it"
+              return 1
+            fi
+            remote_tag_sha="$(git ls-remote origin "refs/tags/$tag" | cut -f1)"
+            if [ "$remote_tag_sha" != "$RELEASE_SHA" ]; then
+              echo "::error::Refusing to delete $tag because it no longer points to $RELEASE_SHA"
+              return 1
+            fi
+            git push origin ":refs/tags/$tag"
+          }`),
+  'delete_created_tag must retain its executable rollback body',
+)
 assert.match(
   releaseWithoutComments,
   /test "\$\(git rev-parse HEAD\)" = "\$RELEASE_SHA"\n\s+git fetch origin main --depth=1\n\s+main_sha="\$\(git rev-parse FETCH_HEAD\)"\n\s+if \[ "\$main_sha" != "\$RELEASE_SHA" \]; then\n\s+echo "::error::Successful CI commit \$RELEASE_SHA is no longer the main head \(\$main_sha\)"\n\s+exit 1\n\s+fi/,

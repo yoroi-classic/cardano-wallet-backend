@@ -15,6 +15,7 @@ import {
 import type { TxCapability } from '../capabilities/tx.js'
 import type { BlockfrostClient } from './client.js'
 import { mapWithConcurrency } from './concurrency.js'
+import { resolveTxBlockHeights } from './blocks.js'
 import { fetchTxUtxos, mapResolvedOutput, resolveOutputSpent, type TxUtxos } from './tx-info.js'
 
 // How many distinct transactions this driver resolves at once. Each reference lookup is a single
@@ -175,12 +176,23 @@ export function createTxMethods(client: BlockfrostClient): TxCapability {
       const spentByKey = new Map<string, boolean | undefined>()
       distinct.forEach((entry, i) => spentByKey.set(spentKey(entry.ref), states[i]))
 
+      // One lookup per distinct referenced transaction, and only for those that produced an
+      // output: a reference that did not resolve above costs nothing here.
+      const blockHeights = await resolveTxBlockHeights(
+        client,
+        found.map(({ ref }) => ref.hash),
+      )
+
       return found.flatMap(({ ref, output }) => {
         const spent = spentByKey.get(spentKey(ref))
         // Blockfrost could not establish the spent state. Absent, for the same reason the walk
         // refuses to guess: an output wrongly reported unspent is the one a wallet acts on.
         if (spent === undefined) return []
-        return [mapResolvedOutput(ref.hash, ref.index, output, spent)]
+        const blockHeight = blockHeights.get(ref.hash)
+        // The transaction went from the chain between reading its outputs and reading its block.
+        // Absent, the same answer this walk already gives for a reference that never existed.
+        if (blockHeight === undefined) return []
+        return [mapResolvedOutput(ref.hash, ref.index, output, spent, blockHeight)]
       })
     },
   }

@@ -449,6 +449,7 @@ describe('POST /v1/addresses/utxos', () => {
     txHash: 'a'.repeat(64),
     outputIndex: 0,
     address,
+    blockHeight: 10_000_000,
     value: '2000000',
     assets: [],
   })

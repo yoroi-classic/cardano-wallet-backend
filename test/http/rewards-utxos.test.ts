@@ -76,6 +76,7 @@ describe('POST /v1/tx/utxos', () => {
     txHash: TX,
     outputIndex: 0,
     address: 'addr_test1x',
+    blockHeight: 10_000_000,
     value: '2000000',
     assets: [],
     spent,

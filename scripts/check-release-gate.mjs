@@ -864,7 +864,7 @@ assert.equal(
           }`,
   'require_current_main must retain its executable fail-closed body',
 )
-const normalizeShellFunction = source => source.replace(/\s+/g, ' ').trim()
+const normalizeShellFunction = (source) => source.replace(/\s+/g, ' ').trim()
 assert.equal(
   normalizeShellFunction(shellFunction(releaseWithoutComments, 'delete_created_release')),
   normalizeShellFunction(`          delete_created_release() {

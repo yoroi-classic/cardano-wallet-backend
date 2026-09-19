@@ -408,7 +408,7 @@ function runBodies(source) {
         if (key === 'run') values.push(resolveRunAlias(match[4] ?? ''))
       }
       flowMapStart.lastIndex = close + 1
-      openMatch = flowMapStart.exec(source)
+      openMatch = flowMapStart.exec(structuralSource)
     }
     return values
   }
@@ -779,6 +779,17 @@ const expectedRollbackBranch = `          if [ "$release_still_valid" = false ];
 assert.ok(
   workflow.includes(expectedRollbackBranch),
   'release rollback branch must retain its trusted, executable body',
+)
+const rollbackBranchStart = workflow.indexOf(
+  '          if [ "$release_still_valid" = false ]; then',
+)
+const rollbackBranchEnd = workflow.indexOf('\n          fi', rollbackBranchStart)
+assert.notEqual(rollbackBranchStart, -1, 'release rollback branch must have a start')
+assert.notEqual(rollbackBranchEnd, -1, 'release rollback branch must have an end')
+assert.equal(
+  workflow.slice(rollbackBranchStart, rollbackBranchEnd + '\n          fi'.length),
+  expectedRollbackBranch,
+  'release rollback branch must retain its exact fail-closed body',
 )
 assert.throws(
   () =>

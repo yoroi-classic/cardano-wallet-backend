@@ -1,7 +1,7 @@
 import * as CML from '@dcspark/cardano-multiplatform-lib-nodejs'
 import { mnemonicToEntropy } from 'bip39'
 
-// Derive and sign with the same dcSpark CML family used by the Yoroi clients.
+// Use dcSpark CML as the Yoroi clients' migration target; they currently use CSL.
 
 const HARDENED = 0x80000000
 

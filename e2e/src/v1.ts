@@ -24,6 +24,8 @@ export interface V1ProtocolParams {
   coinsPerUtxoByte: string
   maxValueSize: number
   maxTxSize: number
+  collateralPercent: number
+  maxCollateralInputs: number
 }
 
 export interface V1AccountState {

@@ -1,7 +1,18 @@
-import * as CSL from '@emurgo/cardano-serialization-lib-nodejs'
+import * as CML from '@dcspark/cardano-multiplatform-lib-nodejs'
 import type { V1ProtocolParams, V1Utxo } from './v1.js'
 
-const bn = (v: string | number): CSL.BigNum => CSL.BigNum.from_str(String(v))
+const parseUnsigned = (value: string | number, field: string): bigint => {
+  if (typeof value === 'number' && !Number.isSafeInteger(value)) {
+    throw new Error(`${field} must be a safe integer`)
+  }
+
+  const encoded = String(value)
+  if (!/^(0|[1-9][0-9]*)$/.test(encoded)) {
+    throw new Error(`${field} must be a non-negative integer`)
+  }
+
+  return BigInt(encoded)
+}
 
 export interface BuiltTx {
   cborHex: string
@@ -14,7 +25,7 @@ export interface BuildSelfPaymentInput {
   params: V1ProtocolParams
   address: string
   amountLovelace: string
-  paymentKey: CSL.PrivateKey
+  paymentKey: CML.PrivateKey
 }
 
 /**
@@ -28,50 +39,72 @@ export function spendableUtxosForAddress(utxos: V1Utxo[], address: string): V1Ut
 
 /**
  * Build and sign a simple self-payment: spend the keyed address's ADA-only UTxOs, send a
- * fixed amount back to that address, and let CSL compute fee and change. Token UTxOs are
+ * fixed amount back to that address, and let CML compute fee and change. Token UTxOs are
  * ignored for now (a later expansion), which keeps this first slice to plain ADA.
  */
 export function buildSelfPayment(input: BuildSelfPaymentInput): BuiltTx {
   const { utxos, params, address, amountLovelace, paymentKey } = input
-
-  const config = CSL.TransactionBuilderConfigBuilder.new()
-    .fee_algo(CSL.LinearFee.new(bn(params.minFeeA), bn(params.minFeeB)))
-    .pool_deposit(bn(params.poolDeposit))
-    .key_deposit(bn(params.keyDeposit))
-    .coins_per_utxo_byte(bn(params.coinsPerUtxoByte))
-    .max_value_size(params.maxValueSize)
-    .max_tx_size(params.maxTxSize)
-    .build()
-
-  const builder = CSL.TransactionBuilder.new(config)
-
   const spendable = spendableUtxosForAddress(utxos, address)
   if (spendable.length === 0) {
     throw new Error('no ADA-only UTxOs available at the signing address')
   }
 
-  const available = CSL.TransactionUnspentOutputs.new()
-  for (const u of spendable) {
-    const inputRef = CSL.TransactionInput.new(CSL.TransactionHash.from_hex(u.txHash), u.outputIndex)
-    const output = CSL.TransactionOutput.new(
-      CSL.Address.from_bech32(u.address),
-      CSL.Value.new(bn(u.value)),
+  const config = CML.TransactionBuilderConfigBuilder.new()
+    .fee_algo(
+      CML.LinearFee.new(
+        parseUnsigned(params.minFeeA, 'minFeeA'),
+        parseUnsigned(params.minFeeB, 'minFeeB'),
+        0n,
+      ),
     )
-    available.add(CSL.TransactionUnspentOutput.new(inputRef, output))
+    .ex_unit_prices(
+      CML.ExUnitPrices.new(
+        CML.Rational.new(0n, 1n),
+        CML.Rational.new(0n, 1n),
+      ),
+    )
+    .collateral_percentage(params.collateralPercent)
+    .max_collateral_inputs(params.maxCollateralInputs)
+    .cost_models(CML.CostModels.from_json('{}'))
+    .pool_deposit(parseUnsigned(params.poolDeposit, 'poolDeposit'))
+    .key_deposit(parseUnsigned(params.keyDeposit, 'keyDeposit'))
+    .coins_per_utxo_byte(parseUnsigned(params.coinsPerUtxoByte, 'coinsPerUtxoByte'))
+    .max_value_size(params.maxValueSize)
+    .max_tx_size(params.maxTxSize)
+    .build()
+
+  const builder = CML.TransactionBuilder.new(config)
+  const changeAddress = CML.Address.from_bech32(address)
+
+  for (const u of spendable) {
+    const inputRef = CML.TransactionInput.new(
+      CML.TransactionHash.from_hex(u.txHash),
+      parseUnsigned(u.outputIndex, 'outputIndex'),
+    )
+    const output = CML.TransactionOutput.new(
+      CML.Address.from_bech32(u.address),
+      CML.Value.from_coin(parseUnsigned(u.value, 'UTxO value')),
+    )
+    const input = CML.SingleInputBuilder.new(inputRef, output).payment_key()
+    builder.add_utxo(input)
   }
 
-  builder.add_inputs_from(available, CSL.CoinSelectionStrategyCIP2.LargestFirst)
   builder.add_output(
-    CSL.TransactionOutput.new(CSL.Address.from_bech32(address), CSL.Value.new(bn(amountLovelace))),
+    CML.TransactionOutputBuilder.new()
+      .with_address(changeAddress)
+      .next()
+      .with_value(CML.Value.from_coin(parseUnsigned(amountLovelace, 'amountLovelace')))
+      .build(),
   )
-  builder.add_change_if_needed(CSL.Address.from_bech32(address))
+  builder.select_utxos(CML.CoinSelectionStrategyCIP2.LargestFirst)
 
-  const feeLovelace = builder.get_fee_if_set()?.to_str() ?? '0'
+  const signedBuilder = builder.build(CML.ChangeSelectionAlgo.Default, changeAddress)
+  const body = signedBuilder.body()
+  const bodyHash = CML.hash_transaction(body)
+  const feeLovelace = body.fee().toString()
 
-  // Sign over the exact body bytes via FixedTransaction so the witness matches what's
-  // submitted (no re-serialization hash drift).
-  const fixed = CSL.FixedTransaction.new_from_body_bytes(builder.build().to_bytes())
-  fixed.sign_and_add_vkey_signature(paymentKey)
+  signedBuilder.add_vkey(CML.make_vkey_witness(bodyHash, paymentKey))
+  const transaction = signedBuilder.build_checked()
 
-  return { cborHex: fixed.to_hex(), txHash: fixed.transaction_hash().to_hex(), feeLovelace }
+  return { cborHex: transaction.to_cbor_hex(), txHash: bodyHash.to_hex(), feeLovelace }
 }

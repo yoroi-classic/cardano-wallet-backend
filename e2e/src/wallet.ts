@@ -23,10 +23,7 @@ export interface Wallet {
 /** Derive the first account's payment and stake credentials from a mnemonic. */
 export function deriveWallet(mnemonic: string, networkId: number): Wallet {
   const entropy = mnemonicToEntropy(mnemonic)
-  const root = CML.Bip32PrivateKey.from_bip39_entropy(
-    Buffer.from(entropy, 'hex'),
-    Buffer.from(''),
-  )
+  const root = CML.Bip32PrivateKey.from_bip39_entropy(Buffer.from(entropy, 'hex'), Buffer.from(''))
   const account = root
     .derive(HARDENED + 1852)
     .derive(HARDENED + 1815)
@@ -35,26 +32,12 @@ export function deriveWallet(mnemonic: string, networkId: number): Wallet {
   const stakeBip = account.derive(2).derive(0)
   const unusedBip = account.derive(0).derive(1000)
 
-  const paymentCred = CML.Credential.new_pub_key(
-    paymentBip.to_public().to_raw_key().hash(),
-  )
-  const stakeCred = CML.Credential.new_pub_key(
-    stakeBip.to_public().to_raw_key().hash(),
-  )
-  const unusedCred = CML.Credential.new_pub_key(
-    unusedBip.to_public().to_raw_key().hash(),
-  )
-  const paymentAddress = CML.BaseAddress.new(
-    networkId,
-    paymentCred,
-    stakeCred,
-  ).to_address()
+  const paymentCred = CML.Credential.new_pub_key(paymentBip.to_public().to_raw_key().hash())
+  const stakeCred = CML.Credential.new_pub_key(stakeBip.to_public().to_raw_key().hash())
+  const unusedCred = CML.Credential.new_pub_key(unusedBip.to_public().to_raw_key().hash())
+  const paymentAddress = CML.BaseAddress.new(networkId, paymentCred, stakeCred).to_address()
   const stakeAddress = CML.RewardAddress.new(networkId, stakeCred).to_address()
-  const unusedAddress = CML.BaseAddress.new(
-    networkId,
-    unusedCred,
-    stakeCred,
-  ).to_address()
+  const unusedAddress = CML.BaseAddress.new(networkId, unusedCred, stakeCred).to_address()
 
   return {
     paymentKey: paymentBip.to_raw_key(),

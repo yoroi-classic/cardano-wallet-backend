@@ -60,10 +60,7 @@ describe('E2E self-payment input ownership', () => {
 
     const witnesses = transaction.witness_set().vkeywitnesses()
     assert.equal(witnesses?.len(), 1)
-    assert.equal(
-      witnesses?.get(0).vkey().hash().to_hex(),
-      paymentKey.to_public().hash().to_hex(),
-    )
+    assert.equal(witnesses?.get(0).vkey().hash().to_hex(), paymentKey.to_public().hash().to_hex())
   })
 
   it('does not treat foreign-address or token outputs as spendable by the held key', () => {

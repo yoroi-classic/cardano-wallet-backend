@@ -57,12 +57,7 @@ export function buildSelfPayment(input: BuildSelfPaymentInput): BuiltTx {
         0n,
       ),
     )
-    .ex_unit_prices(
-      CML.ExUnitPrices.new(
-        CML.Rational.new(0n, 1n),
-        CML.Rational.new(0n, 1n),
-      ),
-    )
+    .ex_unit_prices(CML.ExUnitPrices.new(CML.Rational.new(0n, 1n), CML.Rational.new(0n, 1n)))
     .collateral_percentage(params.collateralPercent)
     .max_collateral_inputs(params.maxCollateralInputs)
     .cost_models(CML.CostModels.from_json('{}'))

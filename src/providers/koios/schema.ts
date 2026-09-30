@@ -16,8 +16,24 @@ import type { Asset } from '../../domain/types/common.js'
  */
 export const numeric = z.union([z.number().int().nonnegative().safe(), z.string().regex(/^\d+$/)])
 
-/** Account totals can be negative while a proposal deposit is outstanding. */
-export const signedNumeric = z.union([z.number().int().safe(), z.string().regex(/^-?\d+$/)])
+/**
+ * The same value, permitting a negative.
+ *
+ * Reserved for the one field that genuinely goes below zero. Koios computes an account's
+ * `total_balance` without its `proposal_refund` column, so an account with a governance deposit
+ * outstanding reports a negative controlled balance until the deposit returns. That is upstream's
+ * arithmetic and not a malformed value, and rejecting it took the whole account-state read down
+ * with a 502 for every DRep and SPO who had ever submitted a governance action.
+ *
+ * Deliberately not the default. Every other lovelace field here is a quantity that cannot be
+ * negative, and for those a minus sign really is malformed upstream data worth failing on. Both
+ * branches keep the guarantees `numeric` documents above: a safe integer on the number branch,
+ * every digit preserved on the string branch.
+ */
+export const signedNumeric = z.union([
+  z.number().int().safe(),
+  z.string().regex(/^-?(?:0|[1-9]\d*)$/),
+])
 
 /** A minting policy id is the 28-byte hash of the policy script: always 56 hex chars. */
 export const policyId = z.string().regex(/^[0-9a-fA-F]{56}$/)

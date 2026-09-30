@@ -248,6 +248,24 @@ describe('real responses validate against the schemas the spec publishes', () =>
     expect((res.body as { balance: string }).balance).toBe('9999999999999999999')
   })
 
+  // The published contract has to accept what the route actually returns for a governance
+  // participant, or the schema and the service disagree about a live case.
+  it('GET /v1/account/{stake}/state with a negative balance', async () => {
+    const state = {
+      stakeAddress: STAKE,
+      registered: true,
+      balance: '-89788495927',
+      rewardsAvailable: '250000',
+      rewardsSum: '900000',
+      withdrawalsSum: '650000',
+    }
+    const res = await get({ getAccountState: async () => state }, `/v1/account/${STAKE}/state`)
+
+    expect(res.statusCode).toBe(200)
+    expect(validate('AccountState', res.body)).toEqual([])
+    expect((res.body as { balance: string }).balance).toBe('-89788495927')
+  })
+
   it('GET /v1/account/{stake}/utxos', async () => {
     const utxo = {
       txHash: TX_HASH,
@@ -541,6 +559,14 @@ describe('real responses validate against the schemas the spec publishes', () =>
           },
           // A treasury payout has no pool, so poolId is absent rather than an empty string.
           { earnedEpoch: 31, spendableEpoch: 33, amount: '1', kind: 'treasury' as const },
+          // A governance proposal refund. Also the case where the spendable epoch is one after
+          // the earned one rather than two, so a client must not derive it.
+          {
+            earnedEpoch: 646,
+            spendableEpoch: 647,
+            amount: '100000000000',
+            kind: 'proposal_refund' as const,
+          },
         ],
       },
       `/v1/account/${STAKE}/rewards`,

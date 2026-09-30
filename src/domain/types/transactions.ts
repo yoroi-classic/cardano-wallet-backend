@@ -10,6 +10,15 @@ export interface Utxo {
   outputIndex: number
   /** Bech32 address that controls the output. */
   address: string
+  /**
+   * Height of the block that *created* this output.
+   *
+   * Authoritative provenance, read from the upstream that knows it, never inferred from the
+   * current tip or from when we happened to observe the output. A client persisting a UTxO set
+   * needs the creation height to reason about the age of what it holds, and stamping a whole
+   * snapshot with the tip makes every output look as new as the read that fetched it.
+   */
+  blockHeight: number
   /** Lovelace value, as a string. */
   value: string
   /** Native assets in the output. */
@@ -30,6 +39,26 @@ export interface TxIo {
   value: string
   /** Native assets carried on this input/output. */
   assets: Asset[]
+}
+
+/**
+ * One consumed input of a transaction, carrying the output it spent.
+ *
+ * The reference is what separates this from a bare `TxIo`, and it is the whole reason the type
+ * exists. Address and value alone do not identify a spent output: a transaction can consume two
+ * outputs with the same address and the same value, and nothing in the pair distinguishes them.
+ * A client reconstructing history has to match each input to the output it consumed, and without
+ * the reference its only options are to guess by address and amount, or to fail closed.
+ *
+ * Outputs do not carry one. An output's own reference is the containing transaction's hash and its
+ * position, both of which the caller already holds, whereas an input points at a *different*
+ * transaction and cannot be derived from anything else in the response.
+ */
+export interface TxInput extends TxIo {
+  /** Hash of the transaction that created the consumed output. */
+  txHash: string
+  /** Index of the consumed output within that transaction. */
+  outputIndex: number
 }
 
 /** A reward withdrawal within a transaction. */
@@ -82,7 +111,7 @@ export interface WalletTransaction {
   fee: string
   /** Time-to-live (invalid-after slot), if the transaction set one. */
   ttl?: number
-  inputs: TxIo[]
+  inputs: TxInput[]
   outputs: TxIo[]
   withdrawals: Withdrawal[]
   certificates: TxCertificate[]

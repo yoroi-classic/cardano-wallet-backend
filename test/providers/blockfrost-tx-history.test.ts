@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createBlockfrostProvider, type FetchLike } from '../../src/providers/blockfrost/index.js'
 import { HISTORY_PAGE_SIZE } from '../../src/providers/blockfrost/tx-info.js'
-import { ProviderError } from '../../src/domain/errors.js'
+import { MalformedUpstreamError, ProviderError } from '../../src/domain/errors.js'
 
 const BASE = 'https://cardano-preprod.blockfrost.io/api/v0'
 const PROJECT_ID = 'preprodTestProjectId'
@@ -44,6 +44,8 @@ const defaultInput = {
   address: 'addr_in',
   amount: [{ unit: 'lovelace', quantity: '2000000' }],
   collateral: false,
+  tx_hash: '00'.repeat(32),
+  output_index: 0,
   reference: false,
 }
 const defaultOutput = {
@@ -238,6 +240,8 @@ const HISTORY_CONFIG: FakeConfig = {
           address: 'addr_in',
           amount: [{ unit: 'lovelace', quantity: '5000000' }],
           collateral: false,
+          tx_hash: '01'.repeat(32),
+          output_index: 1,
           reference: false,
         },
       ],
@@ -301,7 +305,15 @@ describe('blockfrost getTxHistory — hydration parity', () => {
       blockTime: 90,
       fee: '150000',
       ttl: 999,
-      inputs: [{ address: 'addr_in', value: '5000000', assets: [] }],
+      inputs: [
+        {
+          address: 'addr_in',
+          txHash: '01'.repeat(32),
+          outputIndex: 1,
+          value: '5000000',
+          assets: [],
+        },
+      ],
       outputs: [
         {
           address: 'addr_out',
@@ -337,18 +349,24 @@ describe('blockfrost getTxHistory — hydration parity', () => {
               address: 'real',
               amount: [{ unit: 'lovelace', quantity: '9000000' }],
               collateral: false,
+              tx_hash: '02'.repeat(32),
+              output_index: 2,
               reference: false,
             },
             {
               address: 'coll',
               amount: [{ unit: 'lovelace', quantity: '5000000' }],
               collateral: true,
+              tx_hash: '03'.repeat(32),
+              output_index: 3,
               reference: false,
             },
             {
               address: 'ref',
               amount: [{ unit: 'lovelace', quantity: '4000000' }],
               collateral: false,
+              tx_hash: '04'.repeat(32),
+              output_index: 4,
               reference: true,
             },
           ],
@@ -359,7 +377,63 @@ describe('blockfrost getTxHistory — hydration parity', () => {
 
     const [tx] = await p.getTxHistory(STAKE)
 
-    expect(tx?.inputs).toEqual([{ address: 'real', value: '9000000', assets: [] }])
+    expect(tx?.inputs).toEqual([
+      { address: 'real', txHash: '02'.repeat(32), outputIndex: 2, value: '9000000', assets: [] },
+    ])
+  })
+
+  // The case that makes #105's reference necessary rather than convenient: two inputs a client
+  // cannot tell apart from address and value alone.
+  it('distinguishes two inputs with identical address and value', async () => {
+    const source = 'ab'.repeat(32)
+    const input = (outputIndex: number): Record<string, unknown> => ({
+      address: 'same_addr',
+      amount: [{ unit: 'lovelace', quantity: '5000000' }],
+      collateral: false,
+      reference: false,
+      tx_hash: source,
+      output_index: outputIndex,
+    })
+    const config: FakeConfig = {
+      accountAddresses: { [STAKE]: ['addr_a'] },
+      addressTxs: { addr_a: [{ tx_hash: 'cc', tx_index: 0, block_height: 5, block_time: 50 }] },
+      blocks: { hc: 3 },
+      txs: { cc: { blockHash: 'hc', blockHeight: 5, inputs: [input(0), input(1)] } },
+    }
+    const { provider: p } = provider(config)
+
+    const [tx] = await p.getTxHistory(STAKE)
+
+    expect(tx?.inputs).toEqual([
+      { address: 'same_addr', txHash: source, outputIndex: 0, value: '5000000', assets: [] },
+      { address: 'same_addr', txHash: source, outputIndex: 1, value: '5000000', assets: [] },
+    ])
+  })
+
+  // Fail closed rather than mapping an input the caller cannot identify.
+  it('rejects a history input that carries no source reference', async () => {
+    const config: FakeConfig = {
+      accountAddresses: { [STAKE]: ['addr_a'] },
+      addressTxs: { addr_a: [{ tx_hash: 'cc', tx_index: 0, block_height: 5, block_time: 50 }] },
+      blocks: { hc: 3 },
+      txs: {
+        cc: {
+          blockHash: 'hc',
+          blockHeight: 5,
+          inputs: [
+            {
+              address: 'addr_in',
+              amount: [{ unit: 'lovelace', quantity: '5000000' }],
+              collateral: false,
+              reference: false,
+            },
+          ],
+        },
+      },
+    }
+    const { provider: p } = provider(config)
+
+    await expect(p.getTxHistory(STAKE)).rejects.toBeInstanceOf(MalformedUpstreamError)
   })
 
   it('maps every certificate kind, ordered by certificate index', async () => {

@@ -1,17 +1,18 @@
 # e2e vertical slice
 
 A small end-to-end harness that drives the backend's `/v1` surface against a real
-network, using the same CSL primitive the Yoroi browser extension uses. Think of it as a
-richer, live test suite that sits next to the software it exercises.
+network, using CML as the Yoroi clients' migration target. The mobile and extension
+clients still use CSL; this harness exercises the target library, not their current
+implementation.
 
 ## What it does
 
 The first slice keeps to the minimum that proves the path works:
 
-1. Derive the account's payment and stake addresses from a mnemonic (CIP-1852, via CSL).
+1. Derive the account's payment and stake addresses from a mnemonic (CIP-1852, via CML).
 2. Read the account's state and UTxOs from the backend (`/v1/account/{stake}/...`).
 3. Build and sign a simple self-payment (send a little ADA back to our own address),
-   using our `/v1` protocol parameters and UTxOs to feed CSL's transaction builder.
+   using our `/v1` protocol parameters and UTxOs to feed CML's transaction builder.
 4. Submit it (`/v1/tx/submit`) and poll until it confirms (`/v1/tx/{hash}/status`).
 
 If the address has no spendable ADA yet, it stops after step 2 and prints the address to
@@ -19,13 +20,10 @@ fund from the faucet, so the read path is still exercised without funds.
 
 ## Why it's built this way
 
-It uses `@emurgo/cardano-serialization-lib-nodejs` at the same version the extension pins,
-and derives and signs the same way the extension does. So a transaction it builds against
-our backend's data is the same shape the real wallet would produce. Getting a tx built
-from our `/v1` data to submit and confirm reinforces that our data contract is complete
-and correct enough to drive the real wallet's transaction building. It does not exercise
-the extension's own data-fetch layer, that still moves to `/v1` separately, so this proves
-the primitives and the data, not the whole extension.
+It uses `@dcspark/cardano-multiplatform-lib-nodejs` to derive an account and build and sign a
+transaction from `/v1` data. A successful submission and confirmation verifies that the backend
+contract can drive the CML migration target. It does not exercise the current CSL-based wallet
+implementation or the extension's own data-fetch layer, which still moves to `/v1` separately.
 
 ## Run it
 

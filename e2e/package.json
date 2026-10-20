@@ -2,7 +2,7 @@
   "name": "cardano-wallet-backend-e2e",
   "version": "0.1.0",
   "private": true,
-  "description": "End-to-end vertical slice: drives the /v1 backend on preprod with the same CSL the Yoroi extension uses",
+  "description": "End-to-end vertical slice: drives the /v1 backend on preprod with CML",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -13,7 +13,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@emurgo/cardano-serialization-lib-nodejs": "14.1.2",
+    "@dcspark/cardano-multiplatform-lib-nodejs": "6.2.0",
     "bip39": "3.1.0"
   },
   "devDependencies": {

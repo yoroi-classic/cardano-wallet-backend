@@ -4,7 +4,7 @@ import type { AccountReward, AccountState, RewardKind } from '../../domain/types
 import type { Utxo, WalletTransaction } from '../../domain/types/transactions.js'
 import type { AccountCapability } from '../capabilities/account.js'
 import type { BlockfrostClient } from './client.js'
-import { resolveBlockHeights } from './blocks.js'
+import { resolveBlockHeights, retryUtxoScanAfterRollback } from './blocks.js'
 import { amountList, numeric, splitAmount } from './schema.js'
 import { addressSetTxHistory } from './tx-info.js'
 
@@ -235,35 +235,38 @@ export function createAccountMethods(client: BlockfrostClient): AccountCapabilit
 
     async getAccountUtxos(stakeAddress: string): Promise<Utxo[]> {
       const path = `/accounts/${encodeURIComponent(stakeAddress)}/utxos`
-      let previous = await scanAccountUtxos(client, path)
-      const seenUnits = new Map<string, string>()
-      // Resolved only once a scan has settled, so the extra block lookups are never spent on a
-      // page walk that is about to be discarded and repeated.
-      const settle = async (rows: AccountUtxoRow[]): Promise<Utxo[]> => {
-        const blockHeights = await resolveBlockHeights(
-          client,
-          rows.map((row) => row.block),
-        )
-        return rows.map((row) => mapUtxo(row, seenUnits, blockHeights))
-      }
-      if (!previous.needsVerification && !previous.hasDuplicate) {
-        return settle(previous.rows)
-      }
-
-      for (let scan = 2; scan <= UTXO_CONSISTENCY_SCANS; scan += 1) {
-        const current = await scanAccountUtxos(client, path)
-        if (
-          !previous.hasDuplicate &&
-          !current.hasDuplicate &&
-          sameKeys(previous.keys, current.keys)
-        ) {
-          return settle(current.rows)
+      return retryUtxoScanAfterRollback(async () => {
+        let previous = await scanAccountUtxos(client, path)
+        // Resolve only after a scan settles, so block lookups are never spent on a page walk
+        // already discarded due to offset-page churn. A rollback during these lookups rejects
+        // with CreationBlockRolledBackError and the outer helper repeats the complete scan.
+        const settle = async (rows: AccountUtxoRow[]): Promise<Utxo[]> => {
+          const blockHeights = await resolveBlockHeights(
+            client,
+            rows.map((row) => row.block),
+          )
+          const seenUnits = new Map<string, string>()
+          return rows.map((row) => mapUtxo(row, seenUnits, blockHeights))
         }
-        previous = current
-      }
+        if (!previous.needsVerification && !previous.hasDuplicate) {
+          return settle(previous.rows)
+        }
 
-      // Never include the stake address or output references: both identify the wallet.
-      throw new ProviderError('blockfrost account utxos changed during paged read; retry')
+        for (let scan = 2; scan <= UTXO_CONSISTENCY_SCANS; scan += 1) {
+          const current = await scanAccountUtxos(client, path)
+          if (
+            !previous.hasDuplicate &&
+            !current.hasDuplicate &&
+            sameKeys(previous.keys, current.keys)
+          ) {
+            return settle(current.rows)
+          }
+          previous = current
+        }
+
+        // Never include the stake address or output references: both identify the wallet.
+        throw new ProviderError('blockfrost account utxos changed during paged read; retry')
+      })
     },
 
     async getTxHistory(stakeAddress: string, afterBlock?: number): Promise<WalletTransaction[]> {

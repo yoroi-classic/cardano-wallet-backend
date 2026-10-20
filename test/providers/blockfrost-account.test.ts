@@ -214,6 +214,19 @@ describe('blockfrost account — paged UTxO consistency', () => {
    */
   const pageReads = (calls: string[]): string[] => calls.filter((url) => url.includes('/utxos'))
 
+  it('repeats the complete account scan when a creation block rolls back', async () => {
+    const block = '7eb8e27d18686c7db9a18f8bbcfe34e3fed6e047afaa2d969904d15e934847e6'
+    const { fetchImpl, calls } = scriptedFetch({
+      [`/accounts/${STAKE}/utxos`]: [[utxoRow({ block })], []],
+      [`/blocks/${block}`]: [{ status: 404 }, { status: 404 }],
+    })
+    const provider = createBlockfrostProvider({ baseUrl: BASE, projectId: PROJECT_ID, fetchImpl })
+
+    await expect(provider.getAccountUtxos(STAKE)).resolves.toEqual([])
+    expect(pageReads(calls)).toHaveLength(2)
+    expect(calls.filter((url) => url.includes(`/blocks/${block}`))).toHaveLength(2)
+  })
+
   function sequencedProvider(pageRows: unknown[]): {
     provider: ReturnType<typeof createBlockfrostProvider>
     calls: string[]

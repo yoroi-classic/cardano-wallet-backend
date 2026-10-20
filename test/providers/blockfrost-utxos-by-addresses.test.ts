@@ -123,6 +123,36 @@ describe('blockfrost getUtxosByAddresses', () => {
     expect(blockLookups).toBe(2)
   })
 
+  it('rescans addresses when a rollback removes a creation block during height resolution', async () => {
+    const block = 'e'.repeat(64)
+    let addressScans = 0
+    let blockLookups = 0
+    const fetchImpl: FetchLike = async (rawUrl) => {
+      const url = new URL(rawUrl)
+      if (url.pathname.includes('/blocks/')) {
+        blockLookups += 1
+        return {
+          ok: false,
+          status: 404,
+          json: async () => ({}),
+          text: async () => '',
+        }
+      }
+      addressScans += 1
+      return {
+        ok: true,
+        status: 200,
+        json: async () => (addressScans === 1 ? [utxo({ address: 'addr_a', block })] : []),
+        text: async () => '',
+      }
+    }
+    const p = createBlockfrostProvider({ baseUrl: BASE, projectId: PROJECT_ID, fetchImpl })
+
+    await expect(p.getUtxosByAddresses(['addr_a'])).resolves.toEqual([])
+    expect(addressScans).toBe(2)
+    expect(blockLookups).toBe(2)
+  })
+
   // The cost of this provider's extra round trip is bounded by the number of distinct blocks, not
   // the number of outputs. Change from one transaction lands in one block, which is the common case.
   it('resolves one block once however many of its outputs are held', async () => {

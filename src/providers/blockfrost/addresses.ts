@@ -6,7 +6,7 @@ import type { BlockfrostClient } from './client.js'
 import { mapWithConcurrency } from './concurrency.js'
 import { notImplemented } from './not-implemented.js'
 import { amountList, splitAmount } from './schema.js'
-import { resolveBlockHeights } from './blocks.js'
+import { resolveBlockHeights, retryUtxoScanAfterRollback } from './blocks.js'
 import { addressSetTxHistory } from './tx-info.js'
 
 // How many address lookups this driver keeps in flight at once. Blockfrost answers "used" as a
@@ -153,21 +153,26 @@ export function createAddressMethods(client: BlockfrostClient): AddressCapabilit
 
     async getUtxosByAddresses(addresses: string[]): Promise<Utxo[]> {
       if (addresses.length === 0) return []
-      // Blockfrost has no batch utxo endpoint, so read each address's utxos under a bounded fan-out
-      // and merge them in the caller's address order, preserving Koios's merged-set semantics.
-      const perAddress = await mapWithConcurrency(addresses, ADDRESS_UTXO_CONCURRENCY, (address) =>
-        fetchAddressUtxos(client, address),
-      )
-      // Resolve creation heights across the whole merged set rather than per address: several
-      // addresses of one wallet are routinely paid by the same transaction, so deduplicating
-      // globally collapses lookups that a per-address pass would repeat.
-      const blockHeights = await resolveBlockHeights(
-        client,
-        perAddress.flat().map((row) => row.block),
-      )
-      return perAddress.flatMap((rows, index) =>
-        rows.map((row) => mapUtxo(row, addresses[index] as string, blockHeights)),
-      )
+      return retryUtxoScanAfterRollback(async () => {
+        // Blockfrost has no batch utxo endpoint, so read each address's utxos under a bounded
+        // fan-out and merge them in caller order, preserving Koios's merged-set semantics.
+        const perAddress = await mapWithConcurrency(
+          addresses,
+          ADDRESS_UTXO_CONCURRENCY,
+          (address) => fetchAddressUtxos(client, address),
+        )
+        // Resolve creation heights across the whole merged set rather than per address: several
+        // addresses of one wallet are routinely paid by the same transaction, so deduplicating
+        // globally collapses lookups that a per-address pass would repeat. If a rollback removes
+        // one of those blocks, retry this entire scan so returned UTxOs share a consistent view.
+        const blockHeights = await resolveBlockHeights(
+          client,
+          perAddress.flat().map((row) => row.block),
+        )
+        return perAddress.flatMap((rows, index) =>
+          rows.map((row) => mapUtxo(row, addresses[index] as string, blockHeights)),
+        )
+      })
     },
 
     async getTxHistoryByAddresses(

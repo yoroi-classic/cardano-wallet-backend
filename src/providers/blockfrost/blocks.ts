@@ -28,6 +28,30 @@ const BLOCK_LOOKUP_CONCURRENCY = 10
 // before surfacing the inconsistency; persistent absence still fails closed so a wallet read never
 // returns a balance built from an incomplete set.
 const BLOCK_LOOKUP_ATTEMPTS = 2
+const UTXO_ROLLBACK_SCAN_ATTEMPTS = 3
+
+/** A creation block vanished after the UTxO row was read; callers must scan the UTxOs again. */
+export class CreationBlockRolledBackError extends ProviderError {
+  constructor() {
+    super('blockfrost creation block disappeared during UTxO read; retry')
+  }
+}
+
+/** Retry the complete UTxO scan when block-height resolution proves its snapshot went stale. */
+export async function retryUtxoScanAfterRollback<T>(scan: () => Promise<T>): Promise<T> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await scan()
+    } catch (error) {
+      if (
+        !(error instanceof CreationBlockRolledBackError) ||
+        attempt >= UTXO_ROLLBACK_SCAN_ATTEMPTS
+      ) {
+        throw error
+      }
+    }
+  }
+}
 
 /** `/blocks/{hash}` (Blockfrost OpenAPI spec, `block_content`), projected to the height. */
 const blockHeightRow = z.object({
@@ -72,7 +96,7 @@ export async function resolveBlockHeights(
         )
         if (block !== undefined) return [hash, block.height]
       }
-      throw new ProviderError('blockfrost creation block disappeared during UTxO read; retry')
+      throw new CreationBlockRolledBackError()
     },
   )
   return new Map(entries)

@@ -28,6 +28,9 @@ const UTXO_PAGE_SIZE = 100
 // that never returns a short page cannot loop forever. It is not a functional limit: a legitimately
 // large address pages to completion well under it.
 const UTXO_MAX_PAGES = 10_000
+// Offset pages have no snapshot token. Require two consecutive complete walks to agree, allowing
+// one additional walk after observed churn, just like the account UTxO reader.
+const UTXO_CONSISTENCY_SCANS = 3
 
 // A minimal projection of `address_content` (Blockfrost OpenAPI spec, `/addresses/{address}`).
 // We only need to know whether the address exists at all, so this is a light shape check
@@ -90,25 +93,61 @@ function mapUtxo(
 async function fetchAddressUtxos(
   client: BlockfrostClient,
   address: string,
-): Promise<z.infer<typeof addressUtxoRow>[]> {
+): Promise<AddressUtxoScan> {
   const path = `/addresses/${encodeURIComponent(address)}/utxos`
   const rows: z.infer<typeof addressUtxoRow>[] = []
+  const keys: string[] = []
+  const seen = new Set<string>()
+  let hasDuplicate = false
+
+  const append = (pageRows: z.infer<typeof addressUtxoRow>[]): void => {
+    for (const row of pageRows) {
+      const key = `${row.tx_hash}#${row.output_index}`
+      if (seen.has(key)) hasDuplicate = true
+      seen.add(key)
+      keys.push(key)
+      rows.push(row)
+    }
+  }
 
   for (let page = 1; page <= UTXO_MAX_PAGES; page += 1) {
     const pageRows = await client.getOrUndefined(
       z.array(addressUtxoRow),
-      `${path}?count=${UTXO_PAGE_SIZE}&page=${page}`,
+      `${path}?count=${UTXO_PAGE_SIZE}&page=${page}&order=asc`,
     )
-    if (pageRows === undefined) return []
-    rows.push(...pageRows)
-    if (pageRows.length < UTXO_PAGE_SIZE) return rows
+    if (pageRows === undefined) {
+      if (page === 1) return { rows: [], keys: [], needsVerification: false, hasDuplicate: false }
+      throw new ProviderError('blockfrost address utxos changed during paged read; retry')
+    }
+    append(pageRows)
+    if (pageRows.length < UTXO_PAGE_SIZE) {
+      return { rows, keys, needsVerification: page > 1, hasDuplicate }
+    }
   }
 
+  const probe = await client.getOrUndefined(
+    z.array(addressUtxoRow),
+    `${path}?count=${UTXO_PAGE_SIZE}&page=${UTXO_MAX_PAGES + 1}&order=asc`,
+  )
+  if (probe === undefined || probe.length === 0) {
+    return { rows, keys, needsVerification: true, hasDuplicate }
+  }
   // Only reachable if an address returns a million UTxOs without ever shortening a page, which no
   // real address does; surfacing it loudly beats looping without end against a misbehaving upstream.
   throw new ProviderError(
     `blockfrost address utxos exceed this provider's ${UTXO_MAX_PAGES * UTXO_PAGE_SIZE}-utxo runaway guard`,
   )
+}
+
+interface AddressUtxoScan {
+  rows: z.infer<typeof addressUtxoRow>[]
+  keys: string[]
+  needsVerification: boolean
+  hasDuplicate: boolean
+}
+
+function sameKeys(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((key, index) => key === right[index])
 }
 
 export function createAddressMethods(client: BlockfrostClient): AddressCapability {
@@ -159,7 +198,24 @@ export function createAddressMethods(client: BlockfrostClient): AddressCapabilit
         const perAddress = await mapWithConcurrency(
           addresses,
           ADDRESS_UTXO_CONCURRENCY,
-          (address) => fetchAddressUtxos(client, address),
+          async (address): Promise<z.infer<typeof addressUtxoRow>[]> => {
+            let previous = await fetchAddressUtxos(client, address)
+            if (!previous.needsVerification && !previous.hasDuplicate) return previous.rows
+
+            for (let scan = 2; scan <= UTXO_CONSISTENCY_SCANS; scan += 1) {
+              const current = await fetchAddressUtxos(client, address)
+              if (
+                !previous.hasDuplicate &&
+                !current.hasDuplicate &&
+                sameKeys(previous.keys, current.keys)
+              ) {
+                return current.rows
+              }
+              previous = current
+            }
+
+            throw new ProviderError('blockfrost address utxos changed during paged read; retry')
+          },
         )
         // Resolve creation heights across the whole merged set rather than per address: several
         // addresses of one wallet are routinely paid by the same transaction, so deduplicating

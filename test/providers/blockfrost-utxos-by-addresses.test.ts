@@ -153,6 +153,46 @@ describe('blockfrost getUtxosByAddresses', () => {
     expect(blockLookups).toBe(2)
   })
 
+  it('repeats paged address reads until consecutive UTxO sets agree', async () => {
+    let scan = 0
+    let rowsForScan: Record<string, unknown>[] = []
+    const firstView = [
+      ...Array.from({ length: 100 }, (_value, index) =>
+        utxo({ address: 'addr_a', tx_hash: `${index}`.padStart(64, '0') }),
+      ),
+      utxo({ address: 'addr_a', tx_hash: '101'.padStart(64, '0') }),
+    ]
+    const stableView = Array.from({ length: 101 }, (_value, index) =>
+      utxo({ address: 'addr_a', tx_hash: `${index + 1}`.padStart(64, '0') }),
+    )
+    const fetchImpl: FetchLike = async (rawUrl) => {
+      const url = new URL(rawUrl)
+      if (url.pathname.includes('/blocks/')) {
+        return { ok: true, status: 200, json: async () => ({ height: 42 }), text: async () => '' }
+      }
+      const page = Number(url.searchParams.get('page'))
+      if (page === 1) {
+        scan += 1
+        rowsForScan = scan === 1 ? firstView : stableView
+      }
+      const count = Number(url.searchParams.get('count'))
+      return {
+        ok: true,
+        status: 200,
+        json: async () => rowsForScan.slice((page - 1) * count, page * count),
+        text: async () => '',
+      }
+    }
+    const p = createBlockfrostProvider({ baseUrl: BASE, projectId: PROJECT_ID, fetchImpl })
+
+    const utxos = await p.getUtxosByAddresses(['addr_a'])
+
+    expect(utxos.map((item) => item.txHash)).toEqual(
+      Array.from({ length: 101 }, (_value, index) => `${index + 1}`.padStart(64, '0')),
+    )
+    expect(scan).toBe(3)
+  })
+
   // The cost of this provider's extra round trip is bounded by the number of distinct blocks, not
   // the number of outputs. Change from one transaction lands in one block, which is the common case.
   it('resolves one block once however many of its outputs are held', async () => {

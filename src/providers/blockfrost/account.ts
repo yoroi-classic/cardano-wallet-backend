@@ -4,6 +4,7 @@ import type { AccountReward, AccountState, RewardKind } from '../../domain/types
 import type { Utxo, WalletTransaction } from '../../domain/types/transactions.js'
 import type { AccountCapability } from '../capabilities/account.js'
 import type { BlockfrostClient } from './client.js'
+import { resolveBlockHeights, retryUtxoScanAfterRollback } from './blocks.js'
 import { amountList, numeric, splitAmount } from './schema.js'
 import { addressSetTxHistory } from './tx-info.js'
 
@@ -27,6 +28,9 @@ const accountUtxoRow = z.object({
   // backward compatibility, so it is not read here.
   output_index: z.number().int().nonnegative(),
   amount: amountList,
+  // Creation block, as a hash. Blockfrost puts no height on the row, so this is the only route to
+  // the creation provenance the contract promises; resolved through blocks.ts per distinct block.
+  block: z.string(),
   data_hash: z.string().nullish(),
   inline_datum: z.string().nullish(),
   reference_script_hash: z.string().nullish(),
@@ -34,12 +38,27 @@ const accountUtxoRow = z.object({
 
 type AccountUtxoRow = z.infer<typeof accountUtxoRow>
 
-function mapUtxo(row: AccountUtxoRow, seenUnits: Map<string, string>): Utxo {
+function mapUtxo(
+  row: AccountUtxoRow,
+  seenUnits: Map<string, string>,
+  blockHeights: ReadonlyMap<string, number>,
+): Utxo {
   const { value, assets } = splitAmount(row.amount, seenUnits)
+  const blockHeight = blockHeights.get(row.block)
+  if (blockHeight === undefined) {
+    // Unreachable while the heights are resolved from these same rows. It throws rather than
+    // substituting anything: a fabricated creation height would be persisted by the client as
+    // though we had authority for it. The message names no output reference, which would
+    // identify the wallet.
+    throw new ProviderError(
+      'blockfrost account utxo references a block whose height was not resolved',
+    )
+  }
   return {
     txHash: row.tx_hash,
     outputIndex: row.output_index,
     address: row.address,
+    blockHeight,
     value,
     assets,
     datumHash: row.data_hash ?? undefined,
@@ -216,26 +235,38 @@ export function createAccountMethods(client: BlockfrostClient): AccountCapabilit
 
     async getAccountUtxos(stakeAddress: string): Promise<Utxo[]> {
       const path = `/accounts/${encodeURIComponent(stakeAddress)}/utxos`
-      let previous = await scanAccountUtxos(client, path)
-      const seenUnits = new Map<string, string>()
-      if (!previous.needsVerification && !previous.hasDuplicate) {
-        return previous.rows.map((row) => mapUtxo(row, seenUnits))
-      }
-
-      for (let scan = 2; scan <= UTXO_CONSISTENCY_SCANS; scan += 1) {
-        const current = await scanAccountUtxos(client, path)
-        if (
-          !previous.hasDuplicate &&
-          !current.hasDuplicate &&
-          sameKeys(previous.keys, current.keys)
-        ) {
-          return current.rows.map((row) => mapUtxo(row, seenUnits))
+      return retryUtxoScanAfterRollback(async () => {
+        let previous = await scanAccountUtxos(client, path)
+        // Resolve only after a scan settles, so block lookups are never spent on a page walk
+        // already discarded due to offset-page churn. A rollback during these lookups rejects
+        // with CreationBlockRolledBackError and the outer helper repeats the complete scan.
+        const settle = async (rows: AccountUtxoRow[]): Promise<Utxo[]> => {
+          const blockHeights = await resolveBlockHeights(
+            client,
+            rows.map((row) => row.block),
+          )
+          const seenUnits = new Map<string, string>()
+          return rows.map((row) => mapUtxo(row, seenUnits, blockHeights))
         }
-        previous = current
-      }
+        if (!previous.needsVerification && !previous.hasDuplicate) {
+          return settle(previous.rows)
+        }
 
-      // Never include the stake address or output references: both identify the wallet.
-      throw new ProviderError('blockfrost account utxos changed during paged read; retry')
+        for (let scan = 2; scan <= UTXO_CONSISTENCY_SCANS; scan += 1) {
+          const current = await scanAccountUtxos(client, path)
+          if (
+            !previous.hasDuplicate &&
+            !current.hasDuplicate &&
+            sameKeys(previous.keys, current.keys)
+          ) {
+            return settle(current.rows)
+          }
+          previous = current
+        }
+
+        // Never include the stake address or output references: both identify the wallet.
+        throw new ProviderError('blockfrost account utxos changed during paged read; retry')
+      })
     },
 
     async getTxHistory(stakeAddress: string, afterBlock?: number): Promise<WalletTransaction[]> {

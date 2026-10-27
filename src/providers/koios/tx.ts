@@ -22,6 +22,10 @@ const utxoRow = z.object({
   tx_hash: z.string().regex(/^[0-9a-fA-F]{64}$/),
   tx_index: z.number().int().nonnegative(),
   address: z.string(),
+  // Creation-block provenance (#110). Present on this RPC's rows, so it costs no extra call.
+  // Strict: a UTxO with no creation height is malformed upstream data, and defaulting it would
+  // put a fabricated provenance into a client's persisted store.
+  block_height: z.number().int().nonnegative(),
   value: numeric,
   asset_list: z.array(assetItem).nullish(),
   datum_hash: z.string().nullish(),
@@ -99,6 +103,7 @@ export function createTxMethods(koios: KoiosClient): TxCapability {
             txHash: row.tx_hash,
             outputIndex: row.tx_index,
             address: row.address,
+            blockHeight: row.block_height,
             value: String(row.value),
             assets: mapAssets(row.asset_list),
             datumHash: row.datum_hash ?? undefined,

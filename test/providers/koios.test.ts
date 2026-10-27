@@ -425,6 +425,7 @@ describe('koios provider — asset identifiers', () => {
       tx_hash: 'aa',
       tx_index: 0,
       address: 'addr_test1',
+      block_height: 10_000_000,
       value: '2000000',
       asset_list: [{ policy_id: policyId, asset_name: assetName, quantity: '1' }],
     },

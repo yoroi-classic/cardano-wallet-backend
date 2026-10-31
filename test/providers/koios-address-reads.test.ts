@@ -102,6 +102,20 @@ describe('koios getUtxosByAddresses', () => {
     })
   })
 
+  it('maps a native reference script with null size and bytes', async () => {
+    const { fetchImpl } = fakeFetch(async () => [
+      {
+        ...ROW,
+        reference_script: { hash: 'c'.repeat(56), size: null, type: 'timelock', bytes: null },
+      },
+    ])
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [utxo] = await provider.getUtxosByAddresses([BYRON_A])
+
+    expect(utxo?.referenceScript).toEqual({ hash: 'c'.repeat(56), type: 'timelock' })
+  })
+
   it('sends every requested address in one _addresses set', async () => {
     const { fetchImpl, calls } = fakeFetch(async () => [])
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })

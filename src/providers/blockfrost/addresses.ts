@@ -6,6 +6,7 @@ import type { BlockfrostClient } from './client.js'
 import { mapWithConcurrency } from './concurrency.js'
 import { notImplemented } from './not-implemented.js'
 import { amountList, splitAmount } from './schema.js'
+import { resolveBlockHeights, retryUtxoScanAfterRollback } from './blocks.js'
 import { addressSetTxHistory } from './tx-info.js'
 
 // How many address lookups this driver keeps in flight at once. Blockfrost answers "used" as a
@@ -27,6 +28,9 @@ const UTXO_PAGE_SIZE = 100
 // that never returns a short page cannot loop forever. It is not a functional limit: a legitimately
 // large address pages to completion well under it.
 const UTXO_MAX_PAGES = 10_000
+// Offset pages have no snapshot token. Require two consecutive complete walks to agree, allowing
+// one additional walk after observed churn, just like the account UTxO reader.
+const UTXO_CONSISTENCY_SCANS = 3
 
 // A minimal projection of `address_content` (Blockfrost OpenAPI spec, `/addresses/{address}`).
 // We only need to know whether the address exists at all, so this is a light shape check
@@ -43,17 +47,33 @@ const addressUtxoRow = z.object({
   tx_hash: z.string(),
   output_index: z.number().int().nonnegative(),
   amount: amountList,
+  // Creation block, as a hash. Required by the spec, and read strictly because it is the only
+  // route to the creation height this provider can offer: unlike Koios, Blockfrost puts no height
+  // on the row. Resolved through blocks.ts, once per distinct block.
+  block: z.string(),
   data_hash: z.string().nullish(),
   inline_datum: z.string().nullish(),
   reference_script_hash: z.string().nullish(),
 })
 
-function mapUtxo(row: z.infer<typeof addressUtxoRow>, queriedAddress: string): Utxo {
+function mapUtxo(
+  row: z.infer<typeof addressUtxoRow>,
+  queriedAddress: string,
+  blockHeights: ReadonlyMap<string, number>,
+): Utxo {
   const { value, assets } = splitAmount(row.amount)
+  const blockHeight = blockHeights.get(row.block)
+  if (blockHeight === undefined) {
+    // Unreachable while the heights are resolved from these same rows, which is why it throws
+    // rather than substituting anything: a UTxO that reached a client with a fabricated creation
+    // height would be persisted as though we had authority for it.
+    throw new ProviderError('blockfrost utxo references a block whose height was not resolved')
+  }
   return {
     txHash: row.tx_hash,
     outputIndex: row.output_index,
     address: row.address ?? queriedAddress,
+    blockHeight,
     value,
     assets,
     datumHash: row.data_hash ?? undefined,
@@ -63,30 +83,71 @@ function mapUtxo(row: z.infer<typeof addressUtxoRow>, queriedAddress: string): U
 }
 
 /**
- * Every UTxO controlled by one address, walked page by page until a short page ends it. A never-used
+ * Every UTxO row controlled by one address, walked page by page until a short page ends it.
+ * Rows are returned unmapped: creation heights are resolved once across the whole merged set by
+ * the caller, so mapping cannot happen until every address has been read. A never-used
  * address answers 404, meaning it controls nothing rather than being an error. The whole set is
  * returned however large it is; the page ceiling is only a runaway guard against an upstream that
  * never shortens a page, not a limit on a real address.
  */
-async function fetchAddressUtxos(client: BlockfrostClient, address: string): Promise<Utxo[]> {
+async function fetchAddressUtxos(
+  client: BlockfrostClient,
+  address: string,
+): Promise<AddressUtxoScan> {
   const path = `/addresses/${encodeURIComponent(address)}/utxos`
   const rows: z.infer<typeof addressUtxoRow>[] = []
+  const keys: string[] = []
+  const seen = new Set<string>()
+  let hasDuplicate = false
+
+  const append = (pageRows: z.infer<typeof addressUtxoRow>[]): void => {
+    for (const row of pageRows) {
+      const key = `${row.tx_hash}#${row.output_index}`
+      if (seen.has(key)) hasDuplicate = true
+      seen.add(key)
+      keys.push(key)
+      rows.push(row)
+    }
+  }
 
   for (let page = 1; page <= UTXO_MAX_PAGES; page += 1) {
     const pageRows = await client.getOrUndefined(
       z.array(addressUtxoRow),
-      `${path}?count=${UTXO_PAGE_SIZE}&page=${page}`,
+      `${path}?count=${UTXO_PAGE_SIZE}&page=${page}&order=asc`,
     )
-    if (pageRows === undefined) return []
-    rows.push(...pageRows)
-    if (pageRows.length < UTXO_PAGE_SIZE) return rows.map((row) => mapUtxo(row, address))
+    if (pageRows === undefined) {
+      if (page === 1) return { rows: [], keys: [], needsVerification: false, hasDuplicate: false }
+      throw new ProviderError('blockfrost address utxos changed during paged read; retry')
+    }
+    append(pageRows)
+    if (pageRows.length < UTXO_PAGE_SIZE) {
+      return { rows, keys, needsVerification: page > 1, hasDuplicate }
+    }
   }
 
+  const probe = await client.getOrUndefined(
+    z.array(addressUtxoRow),
+    `${path}?count=${UTXO_PAGE_SIZE}&page=${UTXO_MAX_PAGES + 1}&order=asc`,
+  )
+  if (probe === undefined || probe.length === 0) {
+    return { rows, keys, needsVerification: true, hasDuplicate }
+  }
   // Only reachable if an address returns a million UTxOs without ever shortening a page, which no
   // real address does; surfacing it loudly beats looping without end against a misbehaving upstream.
   throw new ProviderError(
     `blockfrost address utxos exceed this provider's ${UTXO_MAX_PAGES * UTXO_PAGE_SIZE}-utxo runaway guard`,
   )
+}
+
+interface AddressUtxoScan {
+  rows: z.infer<typeof addressUtxoRow>[]
+  keys: string[]
+  needsVerification: boolean
+  hasDuplicate: boolean
+}
+
+function sameKeys(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((key, index) => key === right[index])
 }
 
 export function createAddressMethods(client: BlockfrostClient): AddressCapability {
@@ -131,12 +192,43 @@ export function createAddressMethods(client: BlockfrostClient): AddressCapabilit
 
     async getUtxosByAddresses(addresses: string[]): Promise<Utxo[]> {
       if (addresses.length === 0) return []
-      // Blockfrost has no batch utxo endpoint, so read each address's utxos under a bounded fan-out
-      // and merge them in the caller's address order, preserving Koios's merged-set semantics.
-      const perAddress = await mapWithConcurrency(addresses, ADDRESS_UTXO_CONCURRENCY, (address) =>
-        fetchAddressUtxos(client, address),
-      )
-      return perAddress.flat()
+      return retryUtxoScanAfterRollback(async () => {
+        // Blockfrost has no batch utxo endpoint, so read each address's utxos under a bounded
+        // fan-out and merge them in caller order, preserving Koios's merged-set semantics.
+        const perAddress = await mapWithConcurrency(
+          addresses,
+          ADDRESS_UTXO_CONCURRENCY,
+          async (address): Promise<z.infer<typeof addressUtxoRow>[]> => {
+            let previous = await fetchAddressUtxos(client, address)
+            if (!previous.needsVerification && !previous.hasDuplicate) return previous.rows
+
+            for (let scan = 2; scan <= UTXO_CONSISTENCY_SCANS; scan += 1) {
+              const current = await fetchAddressUtxos(client, address)
+              if (
+                !previous.hasDuplicate &&
+                !current.hasDuplicate &&
+                sameKeys(previous.keys, current.keys)
+              ) {
+                return current.rows
+              }
+              previous = current
+            }
+
+            throw new ProviderError('blockfrost address utxos changed during paged read; retry')
+          },
+        )
+        // Resolve creation heights across the whole merged set rather than per address: several
+        // addresses of one wallet are routinely paid by the same transaction, so deduplicating
+        // globally collapses lookups that a per-address pass would repeat. If a rollback removes
+        // one of those blocks, retry this entire scan so returned UTxOs share a consistent view.
+        const blockHeights = await resolveBlockHeights(
+          client,
+          perAddress.flat().map((row) => row.block),
+        )
+        return perAddress.flatMap((rows, index) =>
+          rows.map((row) => mapUtxo(row, addresses[index] as string, blockHeights)),
+        )
+      })
     },
 
     async getTxHistoryByAddresses(

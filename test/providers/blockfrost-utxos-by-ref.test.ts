@@ -26,6 +26,9 @@ function held(txHash: string, index: number): Record<string, unknown> {
   return { tx_hash: txHash, output_index: index }
 }
 
+// The creation height every `/txs/{hash}` lookup answers with.
+const DEFAULT_BLOCK_HEIGHT = 10_000_000
+
 /**
  * Answers `/txs/{hash}/utxos` from a per-hash output list; a hash not in the map is a 404.
  *
@@ -52,6 +55,21 @@ function provider(
       const ordered = url.searchParams.get('order') === 'desc' ? [...rows].reverse() : rows
       const slice = ordered.slice((page - 1) * count, page * count)
       return { ok: true, status: 200, json: async () => slice, text: async () => '' }
+    }
+
+    // `/txs/{hash}` (no suffix) carries the creation height. `/txs/{hash}/utxos` has no block
+    // information at all, so this is where a by-reference lookup gets its provenance. A hash the
+    // fixture does not know 404s here exactly as it does below.
+    const tx = url.pathname.match(/\/txs\/([^/]+)$/)
+    if (tx !== null) {
+      if (byHash[tx[1]!] === undefined)
+        return { ok: false, status: 404, json: async () => ({}), text: async () => '' }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ block_height: DEFAULT_BLOCK_HEIGHT }),
+        text: async () => '',
+      }
     }
 
     const m = url.pathname.match(/\/txs\/([^/]+)\/utxos$/)
@@ -95,6 +113,7 @@ describe('blockfrost getUtxosByRef', () => {
         txHash: HASH_A,
         outputIndex: 1,
         address: 'addr_out_1',
+        blockHeight: DEFAULT_BLOCK_HEIGHT,
         value: '4800000',
         assets: [{ policyId: 'd'.repeat(56), assetName: '4142', quantity: '3' }],
         inlineDatum: 'd87980',
@@ -102,6 +121,69 @@ describe('blockfrost getUtxosByRef', () => {
         spent: false,
       },
     ])
+  })
+
+  // `/txs/{hash}/utxos` carries no block information, so a by-reference lookup takes its creation
+  // height from the referenced transaction itself.
+  it('takes the creation height from the referenced transaction', async () => {
+    const fetchImpl: FetchLike = async (rawUrl) => {
+      const url = new URL(rawUrl)
+      if (/\/txs\/[^/]+$/.test(url.pathname)) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ block_height: 4_961_506 }),
+          text: async () => '',
+        }
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ hash: HASH_A, inputs: [], outputs: [output(0)] }),
+        text: async () => '',
+      }
+    }
+    const p = createBlockfrostProvider({ baseUrl: BASE, projectId: PROJECT_ID, fetchImpl })
+
+    const [utxo] = await p.getUtxosByRef([`${HASH_A}#0`])
+
+    expect(utxo?.blockHeight).toBe(4_961_506)
+  })
+
+  // A rollback between reading a transaction's outputs and reading its block. "Nothing here" is
+  // the same answer this walk already gives for a reference that never existed, and it must not
+  // take the rest of the batch down with it.
+  it('drops a reference whose transaction went from the chain mid-read', async () => {
+    // Only HASH_A's block lookup 404s. HASH_B's resolves, so the batch keeps it, which is the
+    // isolation this test exists to prove: one rolled-back reference must not empty the result.
+    const fetchImpl: FetchLike = async (rawUrl) => {
+      const url = new URL(rawUrl)
+      const tx = url.pathname.match(/\/txs\/([^/]+)$/)
+      if (tx !== null) {
+        if (tx[1] === HASH_A) {
+          return { ok: false, status: 404, json: async () => ({}), text: async () => '' }
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ block_height: 4_961_506 }),
+          text: async () => '',
+        }
+      }
+      const utxos = url.pathname.match(/\/txs\/([^/]+)\/utxos$/)
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ hash: utxos?.[1], inputs: [], outputs: [output(0)] }),
+        text: async () => '',
+      }
+    }
+    const p = createBlockfrostProvider({ baseUrl: BASE, projectId: PROJECT_ID, fetchImpl })
+
+    const utxos = await p.getUtxosByRef([`${HASH_A}#0`, `${HASH_B}#0`])
+
+    expect(utxos.map((u) => u.txHash)).toEqual([HASH_B])
+    expect(utxos[0]?.blockHeight).toBe(4_961_506)
   })
 
   it('reports a consumed output as spent', async () => {
@@ -118,7 +200,10 @@ describe('blockfrost getUtxosByRef', () => {
     const utxos = await p.getUtxosByRef([`${HASH_A}#0`, `${HASH_A}#1`])
 
     expect(utxos.map((u) => u.outputIndex)).toEqual([0, 1])
-    expect(callsTo(/\/txs\//)).toBe(1)
+    expect(callsTo(/\/txs\/[^/]+\/utxos$/)).toBe(1)
+    // The creation height is resolved per distinct transaction too, so two references into one
+    // transaction share a single lookup rather than repeating it.
+    expect(callsTo(/\/txs\/[^/]+$/)).toBe(1)
   })
 
   it('omits a reference whose transaction is not on chain, keeping the rest in order', async () => {
@@ -338,6 +423,14 @@ describe('blockfrost getUtxosByRef — collateral outputs', () => {
       if (/\/addresses\//.test(url.pathname)) {
         const rows = Array.from({ length: 100 }, (_, i) => held(HASH_B, i))
         return { ok: true, status: 200, json: async () => rows, text: async () => '' }
+      }
+      if (/\/txs\/[^/]+$/.test(url.pathname)) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ block_height: DEFAULT_BLOCK_HEIGHT }),
+          text: async () => '',
+        }
       }
       return {
         ok: true,

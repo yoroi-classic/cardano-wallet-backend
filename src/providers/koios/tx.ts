@@ -8,7 +8,7 @@ import {
 } from '../../domain/types/transactions.js'
 import type { TxCapability } from '../capabilities/tx.js'
 import type { KoiosClient } from './client.js'
-import { assetItem, mapAssets, numeric } from './schema.js'
+import { assetItem, mapAssets, numeric, referenceScript } from './schema.js'
 
 const txStatusRow = z.object({
   tx_hash: z.string(),
@@ -22,11 +22,15 @@ const utxoRow = z.object({
   tx_hash: z.string().regex(/^[0-9a-fA-F]{64}$/),
   tx_index: z.number().int().nonnegative(),
   address: z.string(),
+  // Creation-block provenance (#110). Present on this RPC's rows, so it costs no extra call.
+  // Strict: a UTxO with no creation height is malformed upstream data, and defaulting it would
+  // put a fabricated provenance into a client's persisted store.
+  block_height: z.number().int().nonnegative(),
   value: numeric,
   asset_list: z.array(assetItem).nullish(),
   datum_hash: z.string().nullish(),
   inline_datum: z.object({ bytes: z.string() }).nullish(),
-  reference_script: z.object({ hash: z.string() }).nullish(),
+  reference_script: referenceScript.nullish(),
   // Strict, and deliberately not defaulted. This is the field the whole endpoint exists for: a
   // wallet that offers a *spent* output as collateral builds a transaction the node rejects, and
   // the user sees a failure with no explanation. Reading a missing value as "unspent" would be
@@ -99,11 +103,13 @@ export function createTxMethods(koios: KoiosClient): TxCapability {
             txHash: row.tx_hash,
             outputIndex: row.tx_index,
             address: row.address,
+            blockHeight: row.block_height,
             value: String(row.value),
             assets: mapAssets(row.asset_list),
             datumHash: row.datum_hash ?? undefined,
             inlineDatum: row.inline_datum?.bytes ?? undefined,
             referenceScriptHash: row.reference_script?.hash ?? undefined,
+            referenceScript: row.reference_script ?? undefined,
             spent: row.is_spent,
           },
         ]

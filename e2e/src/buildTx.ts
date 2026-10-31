@@ -37,11 +37,7 @@ export function spendableUtxosForAddress(utxos: V1Utxo[], address: string): V1Ut
   return utxos.filter((utxo) => utxo.address === address && utxo.assets.length === 0)
 }
 
-/**
- * Build and sign a simple self-payment: spend the keyed address's ADA-only UTxOs, send a
- * fixed amount back to that address, and let CML compute fee and change. Token UTxOs are
- * ignored for now (a later expansion), which keeps this first slice to plain ADA.
- */
+/** Build and sign a simple ADA self-payment using CML. */
 export function buildSelfPayment(input: BuildSelfPaymentInput): BuiltTx {
   const { utxos, params, address, amountLovelace, paymentKey } = input
   const spendable = spendableUtxosForAddress(utxos, address)
@@ -71,17 +67,16 @@ export function buildSelfPayment(input: BuildSelfPaymentInput): BuiltTx {
   const builder = CML.TransactionBuilder.new(config)
   const changeAddress = CML.Address.from_bech32(address)
 
-  for (const u of spendable) {
+  for (const utxo of spendable) {
     const inputRef = CML.TransactionInput.new(
-      CML.TransactionHash.from_hex(u.txHash),
-      parseUnsigned(u.outputIndex, 'outputIndex'),
+      CML.TransactionHash.from_hex(utxo.txHash),
+      parseUnsigned(utxo.outputIndex, 'outputIndex'),
     )
     const output = CML.TransactionOutput.new(
-      CML.Address.from_bech32(u.address),
-      CML.Value.from_coin(parseUnsigned(u.value, 'UTxO value')),
+      CML.Address.from_bech32(utxo.address),
+      CML.Value.from_coin(parseUnsigned(utxo.value, 'UTxO value')),
     )
-    const input = CML.SingleInputBuilder.new(inputRef, output).payment_key()
-    builder.add_utxo(input)
+    builder.add_utxo(CML.SingleInputBuilder.new(inputRef, output).payment_key())
   }
 
   builder.add_output(

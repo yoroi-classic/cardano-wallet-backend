@@ -4,12 +4,12 @@ import { REWARD_KINDS, type AccountReward, type AccountState } from '../../domai
 import type { Utxo, WalletTransaction } from '../../domain/types/transactions.js'
 import type { AccountCapability } from '../capabilities/account.js'
 import type { KoiosClient } from './client.js'
-import { assetItem, mapAssets, numeric, signedNumeric } from './schema.js'
+import { assetItem, mapAssets, numeric, referenceScript, signedNumeric } from './schema.js'
 import { hydrateTxHistory } from './tx-info.js'
 
 // How many transactions we detail per page. Matches the extension's request size.
 const HISTORY_PAGE_SIZE = 50
-
+// Koios defaults list responses to 1,000 rows. Wallets can have more live outputs.
 const accountInfoRow = z.object({
   stake_address: z.string(),
   // Koios documents exactly these two values; anything else is unexpected upstream data
@@ -29,11 +29,15 @@ const accountUtxoRow = z.object({
   tx_hash: z.string(),
   tx_index: z.number(),
   address: z.string(),
+  // Creation-block provenance (#110). Present on this RPC's rows, so it costs no extra call.
+  // Strict: a UTxO with no creation height is malformed upstream data, and defaulting it would
+  // put a fabricated provenance into a client's persisted store.
+  block_height: z.number().int().nonnegative(),
   value: numeric,
   asset_list: z.array(assetItem).nullish(),
   datum_hash: z.string().nullish(),
   inline_datum: z.object({ bytes: z.string() }).nullish(),
-  reference_script: z.object({ hash: z.string() }).nullish(),
+  reference_script: referenceScript.nullish(),
 })
 
 // One reward, as Koios spells it. `type` is constrained to the set Koios documents rather than
@@ -66,11 +70,13 @@ function mapUtxo(row: z.infer<typeof accountUtxoRow>): Utxo {
     txHash: row.tx_hash,
     outputIndex: row.tx_index,
     address: row.address,
+    blockHeight: row.block_height,
     value: String(row.value),
     assets: mapAssets(row.asset_list),
     datumHash: row.datum_hash ?? undefined,
     inlineDatum: row.inline_datum?.bytes ?? undefined,
     referenceScriptHash: row.reference_script?.hash ?? undefined,
+    referenceScript: row.reference_script ?? undefined,
   }
 }
 

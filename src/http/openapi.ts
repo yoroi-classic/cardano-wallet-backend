@@ -241,6 +241,28 @@ export const openapi = {
       },
     },
 
+    '/v1/account/{stakeAddress}/utxos/complete': {
+      get: {
+        tags: ['account'],
+        operationId: 'getCompleteAccountUtxos',
+        summary: 'Every UTxO the account controls, with an explicit completeness proof',
+        description:
+          'Returns the account UTxO set in one response. `complete: true` is present only after ' +
+          'the provider finishes its full scan; providers that cannot establish a complete set ' +
+          'fail the request instead of returning a partial array. The marker travels with the ' +
+          'data, so clients do not need a separate status request that could reach another ' +
+          'backend instance during a rolling deployment. Older deployments do not implement ' +
+          'this route and must not be treated as supporting complete-set reads.',
+        parameters: [{ $ref: '#/components/parameters/StakeAddress' }],
+        responses: {
+          '200': jsonResponse('Complete account UTxO set', {
+            $ref: '#/components/schemas/CompleteAccountUtxos',
+          }),
+          ...COMMON_ERRORS,
+        },
+      },
+    },
+
     '/v1/account/{stakeAddress}/txs': {
       get: {
         tags: ['account'],
@@ -1314,6 +1336,22 @@ export const openapi = {
             description:
               'The account voting state: a bech32 DRep id, or `abstain` / `no_confidence`. Absent ' +
               'if the account has not delegated its vote.',
+          },
+        },
+      },
+
+      CompleteAccountUtxos: {
+        type: 'object',
+        required: ['complete', 'utxos'],
+        properties: {
+          complete: {
+            const: true,
+            description:
+              'The provider completed a full account scan. A partial or uncertain result is an error.',
+          },
+          utxos: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/Utxo' },
           },
         },
       },

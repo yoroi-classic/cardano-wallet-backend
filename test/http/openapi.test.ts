@@ -285,6 +285,25 @@ describe('real responses validate against the schemas the spec publishes', () =>
     eachMatches('Utxo', res.body)
   })
 
+  it('GET /v1/account/{stake}/utxos/complete', async () => {
+    const utxo = {
+      txHash: TX_HASH,
+      outputIndex: 0,
+      address: 'addr_test1xyz',
+      blockHeight: 10_000_000,
+      value: '2000000',
+      assets: [],
+    }
+    const res = await get(
+      { getAccountUtxos: async () => [utxo] },
+      `/v1/account/${STAKE}/utxos/complete`,
+    )
+
+    expect(res.statusCode).toBe(200)
+    expect(validate('CompleteAccountUtxos', res.body)).toEqual([])
+    expect(res.body).toEqual({ complete: true, utxos: [utxo] })
+  })
+
   it('GET /v1/account/{stake}/txs', async () => {
     const tx = {
       txHash: TX_HASH,

@@ -29,6 +29,12 @@ export function registerAccountRoutes(
     return provider.getAccountUtxos(assertStakeAddress(stake, network))
   })
 
+  app.get('/v1/account/:stake/utxos/complete', async (request) => {
+    const { stake } = request.params as { stake: string }
+    const utxos = await provider.getAccountUtxos(assertStakeAddress(stake, network))
+    return { complete: true, utxos }
+  })
+
   app.get('/v1/account/:stake/txs', async (request) => {
     const { stake } = request.params as { stake: string }
     const { after } = request.query as { after?: string }

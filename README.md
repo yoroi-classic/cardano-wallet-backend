@@ -51,34 +51,35 @@ can exceed 2^53, where `JSON.parse` silently rounds: `7682048683977123456` becom
 
 The summary:
 
-| Method | Path                          | Returns                                                                      |
-| ------ | ----------------------------- | ---------------------------------------------------------------------------- |
-| GET    | `/health`                     | liveness, no upstream call                                                   |
-| GET    | `/v1/openapi.json`            | OpenAPI 3.1 contract for this running build                                  |
-| GET    | `/v1/status`                  | `{ version, network, provider, serverTime, chain, behindSeconds, tip }`      |
-| GET    | `/v1/config`                  | client remote config (feature flags, dApp list), served from our own fork    |
-| GET    | `/v1/chain/tip`               | `{ block, slot, epoch, hash, blockTime }`                                    |
-| GET    | `/v1/chain/protocol-params`   | normalized protocol parameters incl. cost models                             |
-| GET    | `/v1/account/{stake}/state`   | `{ registered, balance, rewardsAvailable, rewardsSum, withdrawalsSum, ... }` |
-| GET    | `/v1/account/{stake}/utxos`   | array of UTxOs incl. assets and inline datums                                |
-| GET    | `/v1/account/{stake}/txs`     | transaction history (oldest first, `?after={block}`)                         |
-| GET    | `/v1/account/{stake}/rewards` | per-epoch reward history, oldest first                                       |
-| POST   | `/v1/addresses/filter-used`   | subset of `{ addresses: [...] }` seen on chain, in input order               |
-| GET    | `/v1/pools`                   | neutral page of registered stake pools: `?limit=&offset=&ticker=`            |
-| POST   | `/v1/pools/info`              | stake-pool info for `{ poolIds: [...] }`, in input order                     |
-| POST   | `/v1/assets/info`             | token metadata for `{ subjects: [...] }` (registry + on-chain), input order  |
-| POST   | `/v1/assets/media`            | signed NFTCDN image/metadata URLs for `{ fingerprints: [...], size? }`       |
-| GET    | `/v1/assets/{fp}/image`       | 302 to a signed, resized NFTCDN image (`?size=`)                             |
-| GET    | `/v1/price/ada`               | ADA fiat price and 24h change per currency, from CoinGecko                   |
-| GET    | `/v1/price/ada/history`       | ADA fiat OHLC history per currency, from CoinGecko                           |
-| POST   | `/v1/price/tokens`            | native-token price and activity in ADA, from GeckoTerminal                   |
-| POST   | `/v1/price/tokens/history`    | native-token OHLC history in ADA, from GeckoTerminal                         |
-| POST   | `/v1/tx/submit`               | `{ txHash }` from `{ "cbor": "<hex tx>" }`                                   |
-| POST   | `/v1/tx/utxos`                | transaction outputs for `{ refs: ["txHash#index", ...] }`, including `spent` |
-| GET    | `/v1/governance/dreps`        | neutral page of registered DReps: `?limit=&offset=`                          |
-| POST   | `/v1/governance/dreps/info`   | DRep info for `{ drepIds: [...] }`, in input order                           |
-| GET    | `/v1/governance/proposals`    | Conway governance actions with derived status and vote tallies               |
-| GET    | `/v1/tx/{hash}/status`        | lifecycle state and pending-overlay action                                   |
+| Method | Path                                 | Returns                                                                                |
+| ------ | ------------------------------------ | -------------------------------------------------------------------------------------- |
+| GET    | `/health`                            | liveness, no upstream call                                                             |
+| GET    | `/v1/openapi.json`                   | OpenAPI 3.1 contract for this running build                                            |
+| GET    | `/v1/status`                         | `{ version, network, provider, serverTime, chain, behindSeconds, tip }`                |
+| GET    | `/v1/config`                         | client remote config (feature flags, dApp list), served from our own fork              |
+| GET    | `/v1/chain/tip`                      | `{ block, slot, epoch, hash, blockTime }`                                              |
+| GET    | `/v1/chain/protocol-params`          | normalized protocol parameters incl. cost models                                       |
+| GET    | `/v1/account/{stake}/state`          | `{ registered, balance, rewardsAvailable, rewardsSum, withdrawalsSum, ... }`           |
+| GET    | `/v1/account/{stake}/utxos`          | array of UTxOs incl. assets and inline datums                                          |
+| GET    | `/v1/account/{stake}/utxos/complete` | `{ complete: true, utxos: [...] }`; marker is returned only after a full provider scan |
+| GET    | `/v1/account/{stake}/txs`            | transaction history (oldest first, `?after={block}`)                                   |
+| GET    | `/v1/account/{stake}/rewards`        | per-epoch reward history, oldest first                                                 |
+| POST   | `/v1/addresses/filter-used`          | subset of `{ addresses: [...] }` seen on chain, in input order                         |
+| GET    | `/v1/pools`                          | neutral page of registered stake pools: `?limit=&offset=&ticker=`                      |
+| POST   | `/v1/pools/info`                     | stake-pool info for `{ poolIds: [...] }`, in input order                               |
+| POST   | `/v1/assets/info`                    | token metadata for `{ subjects: [...] }` (registry + on-chain), input order            |
+| POST   | `/v1/assets/media`                   | signed NFTCDN image/metadata URLs for `{ fingerprints: [...], size? }`                 |
+| GET    | `/v1/assets/{fp}/image`              | 302 to a signed, resized NFTCDN image (`?size=`)                                       |
+| GET    | `/v1/price/ada`                      | ADA fiat price and 24h change per currency, from CoinGecko                             |
+| GET    | `/v1/price/ada/history`              | ADA fiat OHLC history per currency, from CoinGecko                                     |
+| POST   | `/v1/price/tokens`                   | native-token price and activity in ADA, from GeckoTerminal                             |
+| POST   | `/v1/price/tokens/history`           | native-token OHLC history in ADA, from GeckoTerminal                                   |
+| POST   | `/v1/tx/submit`                      | `{ txHash }` from `{ "cbor": "<hex tx>" }`                                             |
+| POST   | `/v1/tx/utxos`                       | transaction outputs for `{ refs: ["txHash#index", ...] }`, including `spent`           |
+| GET    | `/v1/governance/dreps`               | neutral page of registered DReps: `?limit=&offset=`                                    |
+| POST   | `/v1/governance/dreps/info`          | DRep info for `{ drepIds: [...] }`, in input order                                     |
+| GET    | `/v1/governance/proposals`           | Conway governance actions with derived status and vote tallies                         |
+| GET    | `/v1/tx/{hash}/status`               | lifecycle state and pending-overlay action                                             |
 
 Errors come back as `{ "error": { "code", "message" } }` with a stable status code
 (`502` upstream error, `504` upstream timeout, `429` rate limited, `400` bad request,

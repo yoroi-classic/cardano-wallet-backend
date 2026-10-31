@@ -3,7 +3,7 @@ import { MalformedUpstreamError } from '../../domain/errors.js'
 import type { Utxo, WalletTransaction } from '../../domain/types/transactions.js'
 import type { AddressCapability } from '../capabilities/addresses.js'
 import type { KoiosClient } from './client.js'
-import { assetItem, mapAssets, numeric } from './schema.js'
+import { assetItem, mapAssets, numeric, referenceScript } from './schema.js'
 import { hydrateTxHistory } from './tx-info.js'
 
 // How many transactions we detail per page. Matches the stake-account history page (and the
@@ -26,11 +26,15 @@ const addressUtxoRow = z.object({
   tx_hash: z.string(),
   tx_index: z.number(),
   address: z.string(),
+  // Creation-block provenance (#110). Present on this RPC's rows, so it costs no extra call.
+  // Strict: a UTxO with no creation height is malformed upstream data, and defaulting it would
+  // put a fabricated provenance into a client's persisted store.
+  block_height: z.number().int().nonnegative(),
   value: numeric,
   asset_list: z.array(assetItem).nullish(),
   datum_hash: z.string().nullish(),
   inline_datum: z.object({ bytes: z.string() }).nullish(),
-  reference_script: z.object({ hash: z.string() }).nullish(),
+  reference_script: referenceScript.nullish(),
 })
 
 function mapAddressUtxo(row: z.infer<typeof addressUtxoRow>): Utxo {
@@ -38,11 +42,13 @@ function mapAddressUtxo(row: z.infer<typeof addressUtxoRow>): Utxo {
     txHash: row.tx_hash,
     outputIndex: row.tx_index,
     address: row.address,
+    blockHeight: row.block_height,
     value: String(row.value),
     assets: mapAssets(row.asset_list),
     datumHash: row.datum_hash ?? undefined,
     inlineDatum: row.inline_datum?.bytes ?? undefined,
     referenceScriptHash: row.reference_script?.hash ?? undefined,
+    referenceScript: row.reference_script ?? undefined,
   }
 }
 

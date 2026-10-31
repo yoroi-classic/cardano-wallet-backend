@@ -53,6 +53,23 @@ export const assetItem = z.object({
   quantity: numeric,
 })
 
+/** A reference script as returned by Koios's extended UTxO reads. */
+export const referenceScript = z.object({
+  hash: z.string().regex(/^[0-9a-fA-F]{56}$/),
+  size: z
+    .number()
+    .int()
+    .nonnegative()
+    .nullish()
+    .transform((value) => value ?? undefined),
+  type: z.string().optional(),
+  bytes: z
+    .string()
+    .regex(/^([0-9a-fA-F]{2})+$/)
+    .nullish()
+    .transform((value) => value ?? undefined),
+})
+
 /** Map Koios's asset rows onto the domain shape. Absent means no native assets. */
 export function mapAssets(rows: z.infer<typeof assetItem>[] | null | undefined): Asset[] {
   return (rows ?? []).map((a) => ({

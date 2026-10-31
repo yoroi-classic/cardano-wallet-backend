@@ -196,6 +196,7 @@ describe('koios getAccountUtxos', () => {
     tx_hash: 'aa11',
     tx_index: 2,
     address: 'addr_test1xyz',
+    block_height: 10_000_000,
     value: '2000000',
     asset_list: [{ policy_id: 'a'.repeat(56), asset_name: '414243', quantity: '5' }],
     datum_hash: null,
@@ -246,6 +247,7 @@ describe('koios getAccountUtxos', () => {
         txHash: 'aa11',
         outputIndex: 2,
         address: 'addr_test1xyz',
+        blockHeight: 10_000_000,
         value: '2000000',
         assets: [{ policyId: 'a'.repeat(56), assetName: '414243', quantity: '5' }],
         inlineDatum: 'd87980',
@@ -289,15 +291,62 @@ describe('koios getAccountUtxos', () => {
       asset_list: null,
       inline_datum: null,
       datum_hash: 'beef',
-      reference_script: { hash: 'cafe' },
+      reference_script: {
+        hash: 'c'.repeat(56),
+        size: 3,
+        type: 'plutusV3',
+        bytes: '4e4d01000033222220051200120011',
+      },
     }
     const { fetchImpl } = fakeFetch({ json: async () => [row] })
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
     const [utxo] = await provider.getAccountUtxos(STAKE)
 
-    expect(utxo).toMatchObject({ assets: [], datumHash: 'beef', referenceScriptHash: 'cafe' })
+    expect(utxo).toMatchObject({
+      assets: [],
+      datumHash: 'beef',
+      referenceScriptHash: 'c'.repeat(56),
+      referenceScript: {
+        hash: 'c'.repeat(56),
+        size: 3,
+        type: 'plutusV3',
+        bytes: '4e4d01000033222220051200120011',
+      },
+    })
     expect(utxo?.inlineDatum).toBeUndefined()
+  })
+
+  it('maps a native reference script with null size and bytes', async () => {
+    const row = {
+      ...ROW,
+      reference_script: { hash: 'c'.repeat(56), size: null, type: 'timelock', bytes: null },
+    }
+    const { fetchImpl } = fakeFetch({ json: async () => [row] })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [utxo] = await provider.getAccountUtxos(STAKE)
+
+    expect(utxo?.referenceScript).toEqual({ hash: 'c'.repeat(56), type: 'timelock' })
+  })
+
+  it.each([
+    ['55-character hash', { hash: 'c'.repeat(55) }],
+    ['57-character hash', { hash: 'c'.repeat(57) }],
+    ['prefixed hash', { hash: `x${'c'.repeat(56)}` }],
+    ['suffixed hash', { hash: `${'c'.repeat(56)}x` }],
+    ['non-hex hash', { hash: 'g'.repeat(56), type: 'timelock' }],
+    ['odd-length bytes', { hash: 'c'.repeat(56), bytes: 'abc' }],
+    ['non-hex bytes', { hash: 'c'.repeat(56), bytes: 'zz' }],
+    ['empty bytes', { hash: 'c'.repeat(56), bytes: '' }],
+    ['non-hex bytes around valid data', { hash: 'c'.repeat(56), bytes: 'zz4e' }],
+    ['negative size', { hash: 'c'.repeat(56), size: -1 }],
+    ['fractional size', { hash: 'c'.repeat(56), size: 1.5 }],
+  ])('rejects a reference script with %s', async (_description, reference_script) => {
+    const { fetchImpl } = fakeFetch({ json: async () => [{ ...ROW, reference_script }] })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getAccountUtxos(STAKE)).rejects.toBeInstanceOf(MalformedUpstreamError)
   })
 
   it('returns an empty list for an account with no utxos', async () => {
@@ -791,7 +840,15 @@ describe('koios getTxHistory', () => {
       tx_block_index: 0,
       fee: '150000',
       invalid_after: 999,
-      inputs: [{ payment_addr: { bech32: 'addr_in' }, value: '5000000', asset_list: null }],
+      inputs: [
+        {
+          payment_addr: { bech32: 'addr_in' },
+          tx_hash: 'cd'.repeat(32),
+          tx_index: 1,
+          value: '5000000',
+          asset_list: null,
+        },
+      ],
       outputs: [
         {
           payment_addr: { bech32: 'addr_out' },
@@ -840,7 +897,15 @@ describe('koios getTxHistory', () => {
       blockTime: 90,
       fee: '150000',
       ttl: 999,
-      inputs: [{ address: 'addr_in', value: '5000000', assets: [] }],
+      inputs: [
+        {
+          address: 'addr_in',
+          txHash: 'cd'.repeat(32),
+          outputIndex: 1,
+          value: '5000000',
+          assets: [],
+        },
+      ],
       outputs: [
         {
           address: 'addr_out',

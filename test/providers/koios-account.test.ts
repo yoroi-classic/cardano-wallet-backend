@@ -291,15 +291,62 @@ describe('koios getAccountUtxos', () => {
       asset_list: null,
       inline_datum: null,
       datum_hash: 'beef',
-      reference_script: { hash: 'cafe' },
+      reference_script: {
+        hash: 'c'.repeat(56),
+        size: 3,
+        type: 'plutusV3',
+        bytes: '4e4d01000033222220051200120011',
+      },
     }
     const { fetchImpl } = fakeFetch({ json: async () => [row] })
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
     const [utxo] = await provider.getAccountUtxos(STAKE)
 
-    expect(utxo).toMatchObject({ assets: [], datumHash: 'beef', referenceScriptHash: 'cafe' })
+    expect(utxo).toMatchObject({
+      assets: [],
+      datumHash: 'beef',
+      referenceScriptHash: 'c'.repeat(56),
+      referenceScript: {
+        hash: 'c'.repeat(56),
+        size: 3,
+        type: 'plutusV3',
+        bytes: '4e4d01000033222220051200120011',
+      },
+    })
     expect(utxo?.inlineDatum).toBeUndefined()
+  })
+
+  it('maps a native reference script with null size and bytes', async () => {
+    const row = {
+      ...ROW,
+      reference_script: { hash: 'c'.repeat(56), size: null, type: 'timelock', bytes: null },
+    }
+    const { fetchImpl } = fakeFetch({ json: async () => [row] })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [utxo] = await provider.getAccountUtxos(STAKE)
+
+    expect(utxo?.referenceScript).toEqual({ hash: 'c'.repeat(56), type: 'timelock' })
+  })
+
+  it.each([
+    ['55-character hash', { hash: 'c'.repeat(55) }],
+    ['57-character hash', { hash: 'c'.repeat(57) }],
+    ['prefixed hash', { hash: `x${'c'.repeat(56)}` }],
+    ['suffixed hash', { hash: `${'c'.repeat(56)}x` }],
+    ['non-hex hash', { hash: 'g'.repeat(56), type: 'timelock' }],
+    ['odd-length bytes', { hash: 'c'.repeat(56), bytes: 'abc' }],
+    ['non-hex bytes', { hash: 'c'.repeat(56), bytes: 'zz' }],
+    ['empty bytes', { hash: 'c'.repeat(56), bytes: '' }],
+    ['non-hex bytes around valid data', { hash: 'c'.repeat(56), bytes: 'zz4e' }],
+    ['negative size', { hash: 'c'.repeat(56), size: -1 }],
+    ['fractional size', { hash: 'c'.repeat(56), size: 1.5 }],
+  ])('rejects a reference script with %s', async (_description, reference_script) => {
+    const { fetchImpl } = fakeFetch({ json: async () => [{ ...ROW, reference_script }] })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getAccountUtxos(STAKE)).rejects.toBeInstanceOf(MalformedUpstreamError)
   })
 
   it('returns an empty list for an account with no utxos', async () => {

@@ -46,6 +46,7 @@ function addrTest(fill: number): string {
 }
 const USED = addrTest(1)
 const UNUSED = addrTest(2)
+const SCRIPT_ADDRESS = shelleyAddress(3, 0, 56, 5)
 const credential = (fill: number): string =>
   bech32.encode('addr_vkh', bech32.toWords(new Uint8Array(28).fill(fill)), 1023)
 const USED_CREDENTIAL = credential(3)
@@ -469,6 +470,31 @@ describe('POST /v1/addresses/utxos', () => {
 
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual([utxo(BYRON_ICARUS)])
+  })
+
+  it('returns full reference-script data through the plural address route', async () => {
+    const output = {
+      ...utxo(SCRIPT_ADDRESS),
+      referenceScriptHash: 'c'.repeat(56),
+      referenceScript: {
+        hash: 'c'.repeat(56),
+        size: 3,
+        type: 'plutusV3',
+        bytes: '4e4d01000033222220051200120011',
+      },
+    }
+    app = await buildServer({
+      provider: fakeProvider({ getUtxosByAddresses: async () => [output] }),
+    })
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/addresses/utxos',
+      payload: { addresses: [SCRIPT_ADDRESS] },
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual([output])
   })
 
   it('accepts a batch mixing Byron and Shelley addresses', async () => {

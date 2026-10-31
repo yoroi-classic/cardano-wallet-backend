@@ -1095,6 +1095,21 @@ export const openapi = {
         },
       },
 
+      ReferenceScript: {
+        type: 'object',
+        required: ['hash'],
+        properties: {
+          hash: HEX(28, 'The reference script hash'),
+          size: { type: 'integer', minimum: 0 },
+          type: { type: 'string' },
+          bytes: {
+            type: 'string',
+            pattern: '^([0-9a-fA-F]{2})+$',
+            description: 'Reference script CBOR hex.',
+          },
+        },
+      },
+
       ResolvedUtxo: {
         type: 'object',
         required: ['txHash', 'outputIndex', 'address', 'blockHeight', 'value', 'assets', 'spent'],
@@ -1116,6 +1131,7 @@ export const openapi = {
           datumHash: { type: 'string' },
           inlineDatum: { type: 'string', description: 'CBOR hex, when the output carries one.' },
           referenceScriptHash: { type: 'string' },
+          referenceScript: { $ref: '#/components/schemas/ReferenceScript' },
           spent: {
             type: 'boolean',
             description:
@@ -1337,6 +1353,7 @@ export const openapi = {
           datumHash: { type: 'string' },
           inlineDatum: { type: 'string', description: 'CBOR hex, when the output carries one.' },
           referenceScriptHash: { type: 'string' },
+          referenceScript: { $ref: '#/components/schemas/ReferenceScript' },
         },
       },
 

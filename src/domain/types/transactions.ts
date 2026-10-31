@@ -29,6 +29,13 @@ export interface Utxo {
   inlineDatum?: string
   /** Reference script hash (hex), if the output carries a reference script. */
   referenceScriptHash?: string
+  /** Reference script payload when the provider can supply it, in CBOR hex. */
+  referenceScript?: {
+    hash: string
+    size?: number
+    type?: string
+    bytes?: string
+  }
 }
 
 /** One side (input or output) of a transaction. */

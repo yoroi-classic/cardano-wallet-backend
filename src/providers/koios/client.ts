@@ -177,6 +177,7 @@ export const HEAVY_PATHS = [
   '/drep_metadata',
   '/account_utxos',
   '/account_txs',
+  '/address_utxos',
   // Address-keyed row assembly, the same weight as their account-keyed siblings above: a wallet
   // with no stake credential reads its UTxOs and history here, and both walk every matching page.
   '/address_utxos',

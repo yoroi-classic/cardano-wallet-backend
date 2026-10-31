@@ -12,7 +12,7 @@ The first slice keeps to the minimum that proves the path works:
 1. Derive the account's payment and stake addresses from a mnemonic (CIP-1852, via CML).
 2. Read the account's state and UTxOs from the backend (`/v1/account/{stake}/...`).
 3. Build and sign a simple self-payment (send a little ADA back to our own address),
-   using our `/v1` protocol parameters and UTxOs to feed CML's transaction builder.
+   using our `/v1` protocol parameters and UTxOs with CML's transaction builder.
 4. Submit it (`/v1/tx/submit`) and poll until it confirms (`/v1/tx/{hash}/status`).
 
 If the address has no spendable ADA yet, it stops after step 2 and prints the address to

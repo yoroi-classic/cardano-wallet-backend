@@ -3,7 +3,7 @@ import { MalformedUpstreamError } from '../../domain/errors.js'
 import type { Utxo, WalletTransaction } from '../../domain/types/transactions.js'
 import type { AddressCapability } from '../capabilities/addresses.js'
 import type { KoiosClient } from './client.js'
-import { assetItem, mapAssets, numeric } from './schema.js'
+import { assetItem, mapAssets, numeric, referenceScript } from './schema.js'
 import { hydrateTxHistory } from './tx-info.js'
 
 // How many transactions we detail per page. Matches the stake-account history page (and the
@@ -34,7 +34,7 @@ const addressUtxoRow = z.object({
   asset_list: z.array(assetItem).nullish(),
   datum_hash: z.string().nullish(),
   inline_datum: z.object({ bytes: z.string() }).nullish(),
-  reference_script: z.object({ hash: z.string() }).nullish(),
+  reference_script: referenceScript.nullish(),
 })
 
 function mapAddressUtxo(row: z.infer<typeof addressUtxoRow>): Utxo {
@@ -48,6 +48,7 @@ function mapAddressUtxo(row: z.infer<typeof addressUtxoRow>): Utxo {
     datumHash: row.datum_hash ?? undefined,
     inlineDatum: row.inline_datum?.bytes ?? undefined,
     referenceScriptHash: row.reference_script?.hash ?? undefined,
+    referenceScript: row.reference_script ?? undefined,
   }
 }
 

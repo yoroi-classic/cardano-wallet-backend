@@ -331,8 +331,15 @@ describe('koios getAccountUtxos', () => {
   })
 
   it.each([
+    ['55-character hash', { hash: 'c'.repeat(55) }],
+    ['57-character hash', { hash: 'c'.repeat(57) }],
+    ['prefixed hash', { hash: `x${'c'.repeat(56)}` }],
+    ['suffixed hash', { hash: `${'c'.repeat(56)}x` }],
     ['non-hex hash', { hash: 'g'.repeat(56), type: 'timelock' }],
     ['odd-length bytes', { hash: 'c'.repeat(56), bytes: 'abc' }],
+    ['non-hex bytes', { hash: 'c'.repeat(56), bytes: 'zz' }],
+    ['empty bytes', { hash: 'c'.repeat(56), bytes: '' }],
+    ['non-hex bytes around valid data', { hash: 'c'.repeat(56), bytes: 'zz4e' }],
     ['negative size', { hash: 'c'.repeat(56), size: -1 }],
     ['fractional size', { hash: 'c'.repeat(56), size: 1.5 }],
   ])('rejects a reference script with %s', async (_description, reference_script) => {

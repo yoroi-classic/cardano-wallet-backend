@@ -252,6 +252,30 @@ describe('koios getUtxosByRef', () => {
     expect(resolved?.referenceScript).toEqual({ hash: 'c'.repeat(56), type: 'timelock' })
   })
 
+  it.each([
+    ['55-character hash', { hash: 'c'.repeat(55) }],
+    ['57-character hash', { hash: 'c'.repeat(57) }],
+    ['prefixed hash', { hash: `x${'c'.repeat(56)}` }],
+    ['suffixed hash', { hash: `${'c'.repeat(56)}x` }],
+    ['non-hex hash', { hash: 'g'.repeat(56) }],
+    ['odd-length bytes', { hash: 'c'.repeat(56), bytes: 'abc' }],
+    ['non-hex bytes', { hash: 'c'.repeat(56), bytes: 'zz' }],
+    ['empty bytes', { hash: 'c'.repeat(56), bytes: '' }],
+    ['non-hex bytes around valid data', { hash: 'c'.repeat(56), bytes: 'zz4e' }],
+    ['negative size', { hash: 'c'.repeat(56), size: -1 }],
+    ['fractional size', { hash: 'c'.repeat(56), size: 1.5 }],
+  ])(
+    'rejects malformed reference-script metadata with %s',
+    async (_description, reference_script) => {
+      const { fetchImpl } = fakeFetch(async () => [{ ...utxo(TX, 0, false), reference_script }])
+      const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+      await expect(provider.getUtxosByRef([`${TX}#0`])).rejects.toBeInstanceOf(
+        MalformedUpstreamError,
+      )
+    },
+  )
+
   // The field the endpoint exists for. A wallet that offers a spent output as collateral builds a
   // transaction the node rejects, and the user sees a failure with no explanation.
   it('reports a spent output as spent, rather than omitting it', async () => {

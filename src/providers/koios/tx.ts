@@ -8,7 +8,7 @@ import {
 } from '../../domain/types/transactions.js'
 import type { TxCapability } from '../capabilities/tx.js'
 import type { KoiosClient } from './client.js'
-import { assetItem, mapAssets, numeric } from './schema.js'
+import { assetItem, mapAssets, numeric, referenceScript } from './schema.js'
 
 const txStatusRow = z.object({
   tx_hash: z.string(),
@@ -30,17 +30,7 @@ const utxoRow = z.object({
   asset_list: z.array(assetItem).nullish(),
   datum_hash: z.string().nullish(),
   inline_datum: z.object({ bytes: z.string() }).nullish(),
-  reference_script: z
-    .object({
-      hash: z.string().regex(/^[0-9a-fA-F]{56}$/),
-      size: z.number().int().nonnegative().optional(),
-      type: z.string().optional(),
-      bytes: z
-        .string()
-        .regex(/^([0-9a-fA-F]{2})+$/)
-        .optional(),
-    })
-    .nullish(),
+  reference_script: referenceScript.nullish(),
   // Strict, and deliberately not defaulted. This is the field the whole endpoint exists for: a
   // wallet that offers a *spent* output as collateral builds a transaction the node rejects, and
   // the user sees a failure with no explanation. Reading a missing value as "unspent" would be

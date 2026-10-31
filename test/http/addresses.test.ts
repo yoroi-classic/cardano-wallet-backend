@@ -46,6 +46,7 @@ function addrTest(fill: number): string {
 }
 const USED = addrTest(1)
 const UNUSED = addrTest(2)
+const SCRIPT_ADDRESS = shelleyAddress(3, 0, 56, 5)
 const credential = (fill: number): string =>
   bech32.encode('addr_vkh', bech32.toWords(new Uint8Array(28).fill(fill)), 1023)
 const USED_CREDENTIAL = credential(3)
@@ -473,7 +474,7 @@ describe('POST /v1/addresses/utxos', () => {
 
   it('returns full reference-script data through the plural address route', async () => {
     const output = {
-      ...utxo(USED),
+      ...utxo(SCRIPT_ADDRESS),
       referenceScriptHash: 'c'.repeat(56),
       referenceScript: {
         hash: 'c'.repeat(56),
@@ -489,7 +490,7 @@ describe('POST /v1/addresses/utxos', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/v1/addresses/utxos',
-      payload: { addresses: [USED] },
+      payload: { addresses: [SCRIPT_ADDRESS] },
     })
 
     expect(res.statusCode).toBe(200)

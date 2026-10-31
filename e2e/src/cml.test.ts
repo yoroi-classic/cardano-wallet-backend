@@ -16,9 +16,18 @@ test('formats lovelace without unsafe number conversion', () => {
 
 test('CML derives CIP-1852 wallet addresses and builds a signed self-payment', () => {
   const wallet = deriveWallet(testMnemonic, 0)
-  assert.match(wallet.paymentAddress, /^addr_test1/)
-  assert.match(wallet.stakeAddress, /^stake_test1/)
-  assert.match(wallet.unusedAddress, /^addr_test1/)
+  assert.equal(
+    wallet.paymentAddress,
+    'addr_test1qq8ac7qqy0vtulyl7wntmsxc6wex80gvcyjy33qffrhm7sh927ysx5sftuw0dlft05dz3c7revpf7jx0xnlcjz3g69mqkt5dmn',
+  )
+  assert.equal(
+    wallet.stakeAddress,
+    'stake_test1urj40zgr2gy4788kl54h6x3gu0pukq5lfr8nflufpg5dzas324ywz',
+  )
+  assert.equal(
+    wallet.unusedAddress,
+    'addr_test1qp924t8sa4ygwjgc2dqpw4jwdr6383y7h6rx8pxl4nxatg0927ysx5sftuw0dlft05dz3c7revpf7jx0xnlcjz3g69mqy7cyrh',
+  )
 
   const tx = buildSelfPayment({
     utxos: [
@@ -58,4 +67,13 @@ test('CML derives CIP-1852 wallet addresses and builds a signed self-payment', (
   const minimumFee = CML.min_no_script_fee(parsed, CML.LinearFee.new(44n, 155381n, 0n))
   assert.ok(BigInt(tx.feeLovelace) >= minimumFee)
   assert.equal(parsed.body().inputs().len(), 1)
+  const outputs = parsed.body().outputs()
+  const requestedPayment = Array.from({ length: outputs.len() }, (_, index) =>
+    outputs.get(index),
+  ).find(
+    (output) =>
+      output.address().to_bech32() === wallet.paymentAddress &&
+      output.amount().coin().toString() === '3000000',
+  )
+  assert.ok(requestedPayment, 'transaction pays 3,000,000 lovelace to the payment address')
 })

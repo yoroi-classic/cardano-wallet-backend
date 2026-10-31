@@ -4,7 +4,7 @@ import { REWARD_KINDS, type AccountReward, type AccountState } from '../../domai
 import type { Utxo, WalletTransaction } from '../../domain/types/transactions.js'
 import type { AccountCapability } from '../capabilities/account.js'
 import type { KoiosClient } from './client.js'
-import { assetItem, mapAssets, numeric, signedNumeric } from './schema.js'
+import { assetItem, mapAssets, numeric, referenceScript, signedNumeric } from './schema.js'
 import { hydrateTxHistory } from './tx-info.js'
 
 // How many transactions we detail per page. Matches the extension's request size.
@@ -37,17 +37,7 @@ const accountUtxoRow = z.object({
   asset_list: z.array(assetItem).nullish(),
   datum_hash: z.string().nullish(),
   inline_datum: z.object({ bytes: z.string() }).nullish(),
-  reference_script: z
-    .object({
-      hash: z.string().regex(/^[0-9a-fA-F]{56}$/),
-      size: z.number().int().nonnegative().optional(),
-      type: z.string().optional(),
-      bytes: z
-        .string()
-        .regex(/^([0-9a-fA-F]{2})+$/)
-        .optional(),
-    })
-    .nullish(),
+  reference_script: referenceScript.nullish(),
 })
 
 // One reward, as Koios spells it. `type` is constrained to the set Koios documents rather than

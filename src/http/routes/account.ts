@@ -1,18 +1,10 @@
 import type { FastifyInstance } from 'fastify'
-import { bech32 } from '@scure/base'
 import { BadRequestError } from '../../domain/errors.js'
+import { isStakeAddressForNetwork } from '../../domain/stake-address.js'
 import type { ChainProvider } from '../../providers/provider.js'
 
-// Stake addresses use a longer payload than the default bech32 length limit.
-const BECH32_LIMIT = 1023
-const STAKE_PREFIXES = new Set(['stake', 'stake_test'])
-
-// Decode the address and verify it's a well-formed bech32 stake address (valid charset
-// and checksum, stake HRP), so a malformed value is rejected rather than quietly
-// treated as an unknown zero-balance account.
-function assertStakeAddress(value: string): string {
-  const decoded = bech32.decodeUnsafe(value, BECH32_LIMIT)
-  if (!decoded || !STAKE_PREFIXES.has(decoded.prefix)) {
+function assertStakeAddress(value: string, network: string): string {
+  if (!isStakeAddressForNetwork(value, network)) {
     throw new BadRequestError('invalid stake address')
   }
   return value
@@ -22,15 +14,19 @@ function assertStakeAddress(value: string): string {
  * Account-level reads keyed by stake address. Handlers validate the address at the
  * boundary, then hand off to the provider and return the normalized shape.
  */
-export function registerAccountRoutes(app: FastifyInstance, provider: ChainProvider): void {
+export function registerAccountRoutes(
+  app: FastifyInstance,
+  provider: ChainProvider,
+  network: string,
+): void {
   app.get('/v1/account/:stake/state', async (request) => {
     const { stake } = request.params as { stake: string }
-    return provider.getAccountState(assertStakeAddress(stake))
+    return provider.getAccountState(assertStakeAddress(stake, network))
   })
 
   app.get('/v1/account/:stake/utxos', async (request) => {
     const { stake } = request.params as { stake: string }
-    return provider.getAccountUtxos(assertStakeAddress(stake))
+    return provider.getAccountUtxos(assertStakeAddress(stake, network))
   })
 
   app.get('/v1/account/:stake/txs', async (request) => {
@@ -46,7 +42,7 @@ export function registerAccountRoutes(app: FastifyInstance, provider: ChainProvi
       }
       afterBlock = n
     }
-    return provider.getTxHistory(assertStakeAddress(stake), afterBlock)
+    return provider.getTxHistory(assertStakeAddress(stake, network), afterBlock)
   })
 
   /**
@@ -55,8 +51,10 @@ export function registerAccountRoutes(app: FastifyInstance, provider: ChainProvi
    * Replaces the extension's `POST /api/account/rewardHistory`.
    *
    * `after` pages forward on the epoch the reward was **earned for**, not the epoch it became
-   * spendable. Cardano pays two epochs in arrears, so the two differ by ten days, and paging on
-   * the wrong one shifts every point on the graph by that much while still looking plausible.
+   * spendable. A pool reward is paid two epochs in arrears, so the two differ by ten days, and
+   * paging on the wrong one shifts every point on the graph by that much while still looking
+   * plausible. The gap is not the same for every kind, which is another reason to page on the
+   * earned epoch rather than trying to convert between them.
    */
   app.get('/v1/account/:stake/rewards', async (request) => {
     const { stake } = request.params as { stake: string }
@@ -71,6 +69,6 @@ export function registerAccountRoutes(app: FastifyInstance, provider: ChainProvi
       afterEpoch = n
     }
 
-    return provider.getRewardHistory(assertStakeAddress(stake), afterEpoch)
+    return provider.getRewardHistory(assertStakeAddress(stake, network), afterEpoch)
   })
 }

@@ -26,9 +26,6 @@ export interface V1ProtocolParams {
   maxTxSize: number
   collateralPercent: number
   maxCollateralInputs: number
-  priceMem: number
-  priceStep: number
-  costModels: Record<string, unknown>
 }
 
 export interface V1AccountState {

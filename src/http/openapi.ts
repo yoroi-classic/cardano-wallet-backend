@@ -35,6 +35,16 @@ const LOVELACE = {
     'A lovelace amount as a decimal string. Parse with BigInt, never Number: values can exceed 2^53.',
 } as const
 
+// Only for the fields that genuinely go below zero. Kept separate from LOVELACE so the other
+// twenty-odd amounts, none of which can be negative, keep rejecting a minus sign.
+const SIGNED_LOVELACE = {
+  type: 'string',
+  pattern: '^-?(?:0|[1-9]\\d*)$',
+  description:
+    'A lovelace amount as a decimal string, which may be negative. Parse with BigInt, never ' +
+    'Number: values can exceed 2^53.',
+} as const
+
 const HEX = (bytes: number, description: string) =>
   ({
     type: 'string',
@@ -84,19 +94,19 @@ const COMMON_ERRORS = {
 } as const
 
 /**
- * Every price endpoint carries this warning, because the shape below is a promise and the
- * behaviour today is a 501, and a client author needs to know both.
+ * Every price endpoint carries this warning: what it returns, and what it refuses to.
  */
-const PRICE_NOT_IMPLEMENTED =
-  '**NOT IMPLEMENTED YET. This endpoint answers `501`.** The path, the request and the response ' +
-  'shape are final, so an adapter can be written against them now and will start working the day ' +
-  'a market-data provider is wired behind them, with no client change.\n\n' +
+const PRICE_DESCRIPTION =
+  'Sourced from CoinGecko (ADA fiat price and history) and GeckoTerminal (native-token price and ' +
+  'history, in ADA). Price is the one domain in this API with no on-chain source, so a real ' +
+  'market-data provider sits behind it rather than Koios or Blockfrost.\n\n' +
   '**It never returns a price of zero, null, or a placeholder, and it never will.** A wallet ' +
   'handed a `0` renders a portfolio worth $0.00, and the user cannot tell "the market crashed" ' +
-  'from "the backend is unfinished". One of those is a reason to panic-sell. On a 501, render ' +
-  '"price unavailable".\n\n' +
-  'Price is the one domain here with no on-chain source: the chain does not know what ADA is ' +
-  'worth in dollars. It needs a market-data provider, and that choice is still open.'
+  'from "the data didn\'t arrive". One of those is a reason to panic-sell. If the upstream ' +
+  'provider fails, this answers `502`/`504`, never a guessed number.\n\n' +
+  'A deployment with no price provider wired (a bare test harness; never a real deployment, since ' +
+  'neither upstream needs a credential to work) answers `501` instead, with the same guarantee: ' +
+  'still never a fake price.'
 
 const jsonBody = (schema: object) => ({ content: { 'application/json': { schema } } })
 
@@ -125,11 +135,16 @@ export const openapi = {
     { name: 'service', description: 'Liveness and status' },
     { name: 'chain', description: 'Tip and protocol parameters' },
     { name: 'account', description: 'Stake-account state, UTxOs, and history' },
-    { name: 'addresses', description: 'Address discovery' },
+    {
+      name: 'addresses',
+      description:
+        'Address discovery, and reads keyed by an address set for wallets with no ' +
+        'resolvable stake credential (Byron, enterprise, pointer).',
+    },
     { name: 'assets', description: 'Native token and NFT metadata' },
     { name: 'pools', description: 'Stake pools' },
     { name: 'governance', description: 'DReps and governance actions' },
-    { name: 'price', description: 'Price and market data. Reserved; every endpoint answers 501.' },
+    { name: 'price', description: 'Price and market data, from CoinGecko and GeckoTerminal.' },
     { name: 'tx', description: 'Submit, status, and output lookups' },
   ],
 
@@ -210,7 +225,11 @@ export const openapi = {
         summary: 'Every UTxO the account controls, in one call',
         description:
           'The whole wallet, not one address. Includes native assets and inline datums, which ' +
-          'the Midnight escrow path depends on.\n\nNever cached.',
+          'the Midnight escrow path depends on.\n\n' +
+          'Provider-specific limit: when served by the Blockfrost provider, an account holding ' +
+          'more than 5,000 UTxOs (far outside any real wallet) answers `502 UPSTREAM_ERROR` ' +
+          'rather than a silently truncated set; exactly 5,000 is returned in full. Other ' +
+          'providers, including Koios, do not impose this bound.\n\nNever cached.',
         parameters: [{ $ref: '#/components/parameters/StakeAddress' }],
         responses: {
           '200': jsonResponse('UTxOs', {
@@ -259,7 +278,11 @@ export const openapi = {
         summary: 'Which of these addresses have been seen on chain',
         description:
           'Drives address discovery (the gap-limit scan). Returns the used subset, in the order ' +
-          'you sent them.',
+          'you sent them.\n\n' +
+          'Accepts bech32 payment addresses (base, pointer, enterprise), Byron base58 addresses, ' +
+          'and bech32 `addr_vkh` payment-key hashes, mixed freely in one call. Payment-key hashes ' +
+          'are queried as credentials, not interpreted as full addresses. Each entry is validated ' +
+          'independently, so a mixed batch is only rejected if one entry is malformed.',
         requestBody: jsonBody({
           type: 'object',
           required: ['addresses'],
@@ -282,24 +305,76 @@ export const openapi = {
       },
     },
 
-    '/v1/address/utxos': {
+    '/v1/addresses/utxos': {
       post: {
         tags: ['addresses'],
-        operationId: 'getAddressUtxos',
-        summary: 'Current unspent outputs at a payment address',
+        operationId: 'getUtxosByAddresses',
+        summary: 'Every UTxO controlled by a set of addresses, in one call',
         description:
-          'Returns UTxOs at one Shelley payment address, including inline datums and full ' +
-          'reference-script CBOR when present. Useful for script addresses that are not owned ' +
-          'by a wallet stake account. Never cached.',
+          'The address-keyed sibling of /v1/account/{stakeAddress}/utxos, for wallets whose ' +
+          'addresses carry no resolvable stake credential: Byron, enterprise, and pointer ' +
+          'addresses are all on that side of the line. A base Shelley wallet, which can derive ' +
+          'a stake key from any of its addresses, should prefer the account endpoint instead: ' +
+          'it reads the whole wallet in one call rather than needing every address enumerated.' +
+          '\n\n' +
+          'Accepts the same address formats as filter-used, mixed freely.\n\nNever cached.',
         requestBody: jsonBody({
           type: 'object',
-          required: ['address'],
-          properties: { address: { type: 'string', maxLength: 1023 } },
+          required: ['addresses'],
+          properties: {
+            addresses: {
+              type: 'array',
+              items: { type: 'string' },
+              minItems: 1,
+              maxItems: 1000,
+            },
+          },
         }),
         responses: {
-          '200': jsonResponse('Current unspent outputs at the address', {
+          '200': jsonResponse('UTxOs across the given addresses', {
             type: 'array',
             items: { $ref: '#/components/schemas/Utxo' },
+          }),
+          ...COMMON_ERRORS,
+        },
+      },
+    },
+
+    '/v1/addresses/txs': {
+      post: {
+        tags: ['addresses'],
+        operationId: 'getTxHistoryByAddresses',
+        summary: 'Transaction history for a set of addresses, oldest first',
+        description:
+          'The address-keyed sibling of /v1/account/{stakeAddress}/txs, for the same wallets ' +
+          '/v1/addresses/utxos serves. A transaction touching more than one of the given ' +
+          'addresses (a self-transfer within the same wallet, most commonly) appears exactly ' +
+          'once, not once per matching address.\n\n' +
+          'Page forward with `after`, set to the `block` of the last transaction you saw, the ' +
+          'same cursor the account endpoint uses. A page is never cut through the middle of a ' +
+          'block.\n\nAccepts the same address formats as filter-used, mixed freely.\n\n' +
+          'Never cached.',
+        requestBody: jsonBody({
+          type: 'object',
+          required: ['addresses'],
+          properties: {
+            addresses: {
+              type: 'array',
+              items: { type: 'string' },
+              minItems: 1,
+              maxItems: 1000,
+            },
+            after: {
+              type: 'integer',
+              minimum: 0,
+              description: 'Return transactions in blocks after this height.',
+            },
+          },
+        }),
+        responses: {
+          '200': jsonResponse('Transactions across the given addresses, oldest first', {
+            type: 'array',
+            items: { $ref: '#/components/schemas/WalletTransaction' },
           }),
           ...COMMON_ERRORS,
         },
@@ -510,10 +585,19 @@ export const openapi = {
       get: {
         tags: ['tx'],
         operationId: 'getTxStatus',
-        summary: 'Whether a transaction is on chain, and how deep',
+        summary: 'Provider-neutral transaction lifecycle',
         description:
-          '`seen: false` means it is not on chain: still pending, or it never landed. The two are ' +
-          'not distinguishable from here, which is why a client keeps its own pending overlay.\n\n' +
+          '`pending` is a positive mempool observation. `unknown` means the provider cannot ' +
+          'distinguish propagation, eviction, rejection, or expiry; absence is never treated as ' +
+          'terminal evidence. Clients **must retain their pending overlay** for both states. ' +
+          '`confirmed` tells a client to refresh authoritative UTxOs and reconcile the overlay. ' +
+          'Only `rejected` or `expired`, each with a stable sanitized terminal code, permits a ' +
+          'rollback.\n\n' +
+          'Provider limits: Koios exposes only on-chain confirmation depth, so an unconfirmed ' +
+          'hash is `unknown`. Hosted Blockfrost can positively report transactions submitted ' +
+          'through its own mempool as `pending`; a mempool miss is still `unknown`. Neither ' +
+          'provider currently exposes durable proof of rejection or enough signed validity data ' +
+          'after mempool eviction to prove expiry, so neither invents those terminal states.\n\n' +
           'Never cached.',
         parameters: [
           {
@@ -594,7 +678,10 @@ export const openapi = {
           'transaction the node rejects and the user sees an unexplained failure. A dApp connector ' +
           "resolving a transaction's inputs needs to see them whether or not they survive.\n\n" +
           'References that are not on chain are simply absent from the result, so it can be ' +
-          'shorter than the request. Order follows the input. Never cached.',
+          'shorter than the request. A reference whose spent state the configured provider cannot ' +
+          'establish is absent for the same reason: on this endpoint a wrong `spent: false` is ' +
+          'acted on, so no answer is safer than a confident wrong one. Order follows the input. ' +
+          'Never cached.',
         requestBody: jsonBody({
           type: 'object',
           required: ['refs'],
@@ -603,8 +690,10 @@ export const openapi = {
               type: 'array',
               items: {
                 type: 'string',
-                pattern: '^[0-9a-fA-F]{64}#\\d{1,5}$',
-                description: 'An output reference: `<txHash>#<outputIndex>`.',
+                pattern:
+                  '^[0-9a-fA-F]{64}#(?:[0-9]{1,4}|0[0-9]{4}|[12][0-9]{4}|3[01][0-9]{3}|32[0-6][0-9]{2}|327[0-5][0-9]|3276[0-7])$',
+                description:
+                  'An output reference: `<txHash>#<outputIndex>`, where outputIndex is 0..32767 (leading zeros are accepted).',
               },
               minItems: 1,
               maxItems: 100,
@@ -712,7 +801,7 @@ export const openapi = {
         tags: ['price'],
         operationId: 'getAdaPrice',
         summary: 'ADA price, in each requested currency',
-        description: PRICE_NOT_IMPLEMENTED,
+        description: PRICE_DESCRIPTION,
         parameters: [
           {
             name: 'currencies',
@@ -735,7 +824,7 @@ export const openapi = {
         tags: ['price'],
         operationId: 'getAdaPriceHistory',
         summary: 'ADA price history, as candles',
-        description: PRICE_NOT_IMPLEMENTED,
+        description: PRICE_DESCRIPTION,
         parameters: [
           {
             name: 'range',
@@ -760,7 +849,7 @@ export const openapi = {
         tags: ['price'],
         operationId: 'getTokenActivity',
         summary: 'Price and activity for a batch of native tokens',
-        description: PRICE_NOT_IMPLEMENTED,
+        description: PRICE_DESCRIPTION,
         requestBody: jsonBody({
           type: 'object',
           required: ['subjects'],
@@ -785,7 +874,7 @@ export const openapi = {
         tags: ['price'],
         operationId: 'getTokenPriceHistory',
         summary: 'Price history for one native token, as candles',
-        description: PRICE_NOT_IMPLEMENTED,
+        description: PRICE_DESCRIPTION,
         requestBody: jsonBody({
           type: 'object',
           required: ['subject'],
@@ -895,7 +984,11 @@ export const openapi = {
         in: 'path',
         required: true,
         schema: { type: 'string', pattern: '^stake(_test)?1[0-9a-z]+$' },
-        description: 'Bech32 stake address. Identifies the whole wallet.',
+        description:
+          'Bech32 Shelley reward address identifying the whole wallet. The address network must ' +
+          'match the deployment: mainnet addresses use network id 1 and testnet addresses use ' +
+          'network id 0. Preprod and preview both use network id 0 and cannot be distinguished ' +
+          'from the address; use /v1/status to identify the configured deployment.',
       },
     },
 
@@ -908,7 +1001,9 @@ export const openapi = {
       ),
       UpstreamTimeout: jsonResponse('The chain data source did not answer in time', ERROR_RESPONSE),
       NotImplemented: jsonResponse(
-        'Reserved but not built yet. Never a fake value: render the field as unavailable.',
+        'No price provider is configured for this deployment. The price routes are live and their ' +
+          'contract is final; this is the answer only when the deployment has wired no market-data ' +
+          'provider. Never a fake value: render the field as unavailable.',
         ERROR_RESPONSE,
       ),
       FeatureUnavailable: jsonResponse(
@@ -923,7 +1018,7 @@ export const openapi = {
 
       Status: {
         type: 'object',
-        required: ['version', 'network', 'provider', 'chain'],
+        required: ['version', 'network', 'provider', 'serverTime', 'chain'],
         properties: {
           version: { type: 'string', description: 'Which build you are talking to.' },
           network: {
@@ -932,6 +1027,16 @@ export const openapi = {
             description: 'A wallet pointed at the wrong network must be able to find out.',
           },
           provider: { type: 'string', description: 'The upstream chain-data source.' },
+          serverTime: {
+            type: 'integer',
+            minimum: 0,
+            maximum: Number.MAX_SAFE_INTEGER,
+            example: 1_784_674_800_123,
+            description:
+              'Unix time in milliseconds when this response was constructed. Present for `ok`, ' +
+              '`stale`, and `down`; safe to pass directly to JavaScript `Date` without a seconds-' +
+              'to-milliseconds conversion.',
+          },
           chain: {
             type: 'string',
             enum: ['ok', 'stale', 'down'],
@@ -964,35 +1069,48 @@ export const openapi = {
           spendableEpoch: {
             type: 'integer',
             description:
-              'The epoch it became withdrawable: `earnedEpoch + 2` on the current protocol. ' +
-              'Both are here because a graph wants the first and a balance projection wants the ' +
-              'second, and they are ten days apart.',
+              'The epoch it became withdrawable. **Do not derive this from `earnedEpoch`:** the ' +
+              'gap depends on the kind. Pool rewards (`member`, `leader`) are paid two epochs in ' +
+              'arrears; `proposal_refund` and `treasury` land the epoch after the one they are ' +
+              'earned for. Both fields are here because a graph wants the first and a balance ' +
+              'projection wants the second.',
           },
           amount: LOVELACE,
           kind: {
             type: 'string',
-            enum: ['member', 'leader', 'treasury', 'reserves', 'refund'],
+            enum: ['member', 'leader', 'treasury', 'reserves', 'refund', 'proposal_refund'],
             description:
               "`member` is a delegator share; `leader` is the pool operator's cut. An operator " +
               'can receive both in the same epoch from the same pool, which is why this is a list ' +
-              'rather than a map keyed by epoch.',
+              'rather than a map keyed by epoch. `refund` is a returned stake-key deposit and ' +
+              '`proposal_refund` a returned governance proposal deposit; they are distinct ' +
+              'because they say different things about where the money came from.',
           },
           poolId: {
             type: 'string',
             description:
-              'The pool that paid it. Absent for treasury, reserves and refunds, which no pool ' +
-              'paid.',
+              'The pool that paid it. Absent for treasury, reserves and both refund kinds, which ' +
+              'no pool paid.',
           },
         },
       },
 
       ResolvedUtxo: {
         type: 'object',
-        required: ['txHash', 'outputIndex', 'address', 'value', 'assets', 'spent'],
+        required: ['txHash', 'outputIndex', 'address', 'blockHeight', 'value', 'assets', 'spent'],
         properties: {
           txHash: HEX(32, 'The transaction that created this output'),
           outputIndex: { type: 'integer', minimum: 0 },
           address: { type: 'string' },
+          blockHeight: {
+            type: 'integer',
+            minimum: 0,
+            description:
+              'Height of the block that created this output. Authoritative provenance from the ' +
+              'chain, never the current tip: persist this rather than stamping a snapshot with ' +
+              'the tip height, which would make every output look as new as the read that ' +
+              'fetched it.',
+          },
           value: LOVELACE,
           assets: { type: 'array', items: { $ref: '#/components/schemas/Asset' } },
           datumHash: { type: 'string' },
@@ -1175,8 +1293,12 @@ export const openapi = {
               'False for a stake key never seen on chain; the account is then all zeros.',
           },
           balance: {
-            ...LOVELACE,
-            description: 'Controlled lovelace: UTxO plus withdrawable rewards.',
+            ...SIGNED_LOVELACE,
+            description:
+              'Controlled lovelace: UTxO plus withdrawable rewards. **Can be negative.** An ' +
+              'account with an outstanding governance proposal deposit reports a negative ' +
+              'balance until that deposit is returned, because the upstream sum excludes the ' +
+              'pending refund. Parse with BigInt and do not assume a non-negative value.',
           },
           rewardsAvailable: { ...LOVELACE, description: 'Withdrawable right now.' },
           rewardsSum: { ...LOVELACE, description: 'Lifetime rewards earned.' },
@@ -1201,8 +1323,8 @@ export const openapi = {
           policyId: HEX(28, 'Minting policy id'),
           assetName: {
             type: 'string',
-            pattern: '^[0-9a-fA-F]{0,64}$',
-            description: 'Hex. May be empty.',
+            pattern: '^(?:[0-9a-fA-F]{2}){0,32}$',
+            description: 'Hex byte string. May be empty.',
           },
           quantity: { type: 'string', pattern: '^\\d+$', description: 'Parse with BigInt.' },
         },
@@ -1210,11 +1332,20 @@ export const openapi = {
 
       Utxo: {
         type: 'object',
-        required: ['txHash', 'outputIndex', 'address', 'value', 'assets'],
+        required: ['txHash', 'outputIndex', 'address', 'blockHeight', 'value', 'assets'],
         properties: {
           txHash: HEX(32, 'The transaction that created this output'),
           outputIndex: { type: 'integer', minimum: 0 },
           address: { type: 'string' },
+          blockHeight: {
+            type: 'integer',
+            minimum: 0,
+            description:
+              'Height of the block that created this output. Authoritative provenance from the ' +
+              'chain, never the current tip: persist this rather than stamping a snapshot with ' +
+              'the tip height, which would make every output look as new as the read that ' +
+              'fetched it.',
+          },
           value: { ...LOVELACE, description: 'Lovelace held by this output.' },
           assets: { type: 'array', items: { $ref: '#/components/schemas/Asset' } },
           datumHash: { type: 'string' },
@@ -1242,6 +1373,26 @@ export const openapi = {
         required: ['value', 'assets'],
         properties: {
           address: { type: 'string' },
+          value: LOVELACE,
+          assets: { type: 'array', items: { $ref: '#/components/schemas/Asset' } },
+        },
+      },
+
+      TxInput: {
+        type: 'object',
+        required: ['txHash', 'outputIndex', 'value', 'assets'],
+        properties: {
+          address: { type: 'string' },
+          txHash: HEX(32, 'The transaction that created the output this input consumed'),
+          outputIndex: {
+            type: 'integer',
+            minimum: 0,
+            description:
+              'Index of the consumed output within that transaction. With `txHash` this ' +
+              'identifies the spent output exactly. Do not match inputs by address and value ' +
+              'instead: a transaction can consume two outputs with the same address and the ' +
+              'same value, and nothing else in the response tells them apart.',
+          },
           value: LOVELACE,
           assets: { type: 'array', items: { $ref: '#/components/schemas/Asset' } },
         },
@@ -1307,7 +1458,7 @@ export const openapi = {
           blockTime: { type: 'integer', description: 'Unix seconds.' },
           fee: LOVELACE,
           ttl: { type: 'integer' },
-          inputs: { type: 'array', items: { $ref: '#/components/schemas/TxIo' } },
+          inputs: { type: 'array', items: { $ref: '#/components/schemas/TxInput' } },
           outputs: { type: 'array', items: { $ref: '#/components/schemas/TxIo' } },
           withdrawals: { type: 'array', items: { $ref: '#/components/schemas/Withdrawal' } },
           certificates: { type: 'array', items: { $ref: '#/components/schemas/TxCertificate' } },
@@ -1318,16 +1469,103 @@ export const openapi = {
       },
 
       TxStatus: {
-        type: 'object',
-        required: ['seen', 'confirmations'],
-        properties: {
-          seen: { type: 'boolean', description: 'Whether the transaction is on chain at all.' },
-          confirmations: {
-            type: 'integer',
-            minimum: 0,
-            description: 'Blocks on top. 0 when unseen.',
+        description:
+          'Transaction lifecycle plus the safe action for a wallet pending-UTxO overlay. `seen` ' +
+          'and `confirmations` remain for backwards compatibility.',
+        oneOf: [
+          {
+            type: 'object',
+            additionalProperties: false,
+            required: ['status', 'seen', 'confirmations', 'overlayAction'],
+            properties: {
+              status: { type: 'string', enum: ['unknown', 'pending'] },
+              seen: { type: 'boolean', const: false },
+              confirmations: { type: 'integer', const: 0 },
+              overlayAction: {
+                type: 'string',
+                const: 'retain',
+                description: 'Keep spent inputs hidden and pending change available.',
+              },
+            },
           },
-        },
+          {
+            type: 'object',
+            additionalProperties: false,
+            required: ['status', 'seen', 'confirmations', 'overlayAction'],
+            properties: {
+              status: { type: 'string', const: 'confirmed' },
+              seen: { type: 'boolean', const: true },
+              confirmations: {
+                type: 'integer',
+                minimum: 0,
+                maximum: Number.MAX_SAFE_INTEGER,
+                description: 'Blocks on top; zero when included in the current tip block.',
+              },
+              overlayAction: {
+                type: 'string',
+                const: 'reconcile',
+                description:
+                  'Refresh authoritative current-state UTxOs, then remove the incorporated overlay.',
+              },
+            },
+          },
+          {
+            type: 'object',
+            additionalProperties: false,
+            required: ['status', 'seen', 'confirmations', 'overlayAction', 'terminal'],
+            properties: {
+              status: { type: 'string', const: 'rejected' },
+              seen: { type: 'boolean', const: false },
+              confirmations: { type: 'integer', const: 0 },
+              overlayAction: {
+                type: 'string',
+                const: 'rollback',
+                description: 'Discard the overlay and refresh authoritative current-state UTxOs.',
+              },
+              terminal: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['code', 'reason'],
+                properties: {
+                  code: { type: 'string', const: 'TX_REJECTED' },
+                  reason: {
+                    type: 'string',
+                    const: 'The transaction was definitively rejected.',
+                    description: 'Stable sanitized text, never a raw provider response.',
+                  },
+                },
+              },
+            },
+          },
+          {
+            type: 'object',
+            additionalProperties: false,
+            required: ['status', 'seen', 'confirmations', 'overlayAction', 'terminal'],
+            properties: {
+              status: { type: 'string', const: 'expired' },
+              seen: { type: 'boolean', const: false },
+              confirmations: { type: 'integer', const: 0 },
+              overlayAction: {
+                type: 'string',
+                const: 'rollback',
+                description: 'Discard the overlay and refresh authoritative current-state UTxOs.',
+              },
+              terminal: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['code', 'reason'],
+                properties: {
+                  code: { type: 'string', const: 'TX_EXPIRED' },
+                  reason: {
+                    type: 'string',
+                    const: 'The transaction validity interval expired before confirmation.',
+                    description: 'Stable sanitized text, never a raw provider response.',
+                  },
+                },
+              },
+            },
+          },
+        ],
       },
 
       TokenMetadata: {
@@ -1338,8 +1576,8 @@ export const openapi = {
           policyId: HEX(28, 'Minting policy id'),
           assetName: {
             type: 'string',
-            pattern: '^[0-9a-fA-F]{0,64}$',
-            description: 'Hex. May be empty.',
+            pattern: '^(?:[0-9a-fA-F]{2}){0,32}$',
+            description: 'Hex byte string. May be empty.',
           },
           assetNameAscii: {
             type: 'string',
@@ -1459,22 +1697,35 @@ export const openapi = {
               'decides the outcome.** Parse with BigInt.',
           },
           noPower: LOVELACE,
-          abstainPower: LOVELACE,
+          abstainPower: {
+            ...LOVELACE,
+            description:
+              'Total abstain voting power, including explicitly cast abstain power and power assigned to always/passive abstain. It can exceed the abstain vote count.',
+          },
+        },
+      },
+
+      CommitteeVoteTally: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['yes', 'no', 'abstain'],
+        description:
+          'Constitutional committee votes by member count. Each current committee member has ' +
+          'one vote; these votes are not weighted by lovelace.',
+        properties: {
+          yes: { type: 'integer', minimum: 0, description: 'Committee members voting yes.' },
+          no: { type: 'integer', minimum: 0, description: 'Committee members voting no.' },
+          abstain: {
+            type: 'integer',
+            minimum: 0,
+            description: 'Committee members explicitly abstaining.',
+          },
         },
       },
 
       Proposal: {
         type: 'object',
-        required: [
-          'proposalId',
-          'txHash',
-          'index',
-          'type',
-          'status',
-          'proposedEpoch',
-          'deposit',
-          'returnAddress',
-        ],
+        required: ['proposalId', 'txHash', 'index', 'type', 'status', 'deposit', 'returnAddress'],
         properties: {
           proposalId: { type: 'string', pattern: '^gov_action1[0-9a-z]+$' },
           txHash: HEX(32, 'The transaction that submitted the action'),
@@ -1499,7 +1750,12 @@ export const openapi = {
               'differently. `enacted` outranks `ratified`, because a proposal is ratified first ' +
               'and enacted afterwards.',
           },
-          proposedEpoch: { type: 'integer' },
+          proposedEpoch: {
+            type: 'integer',
+            description:
+              'The epoch the action was proposed in. Absent when the provider cannot source it ' +
+              '(Blockfrost exposes no proposed epoch); present on Koios-backed responses.',
+          },
           expiryEpoch: {
             type: 'integer',
             description: 'When it lapses if nothing happens.',
@@ -1524,9 +1780,21 @@ export const openapi = {
               'unknown, which is not the same as false.** Check it before showing `title` or ' +
               '`abstract`: those are attacker-supplied text a user reads right before voting.',
           },
-          drepVotes: { $ref: '#/components/schemas/VoteTally' },
-          poolVotes: { $ref: '#/components/schemas/VoteTally' },
-          committeeVotes: { $ref: '#/components/schemas/VoteTally' },
+          drepVotes: {
+            $ref: '#/components/schemas/VoteTally',
+            description: 'DRep votes by count and voting power.',
+          },
+          poolVotes: {
+            $ref: '#/components/schemas/VoteTally',
+            description:
+              'Stake-pool votes. Absent for `TreasuryWithdrawals` and `NewConstitution`, where pools have no vote, or when the tally is unavailable.',
+          },
+          committeeVotes: {
+            $ref: '#/components/schemas/CommitteeVoteTally',
+            description:
+              'Committee votes by member count. Absent for `NewCommittee` and `NoConfidence`, ' +
+              'where the constitutional committee has no vote, or when the tally is unavailable.',
+          },
         },
       },
 

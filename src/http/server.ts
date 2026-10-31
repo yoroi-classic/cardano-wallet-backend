@@ -2,12 +2,13 @@ import cors from '@fastify/cors'
 import rateLimit from '@fastify/rate-limit'
 import Fastify, { type FastifyInstance, type FastifyBaseLogger } from 'fastify'
 import { isAppError } from '../domain/errors.js'
+import type { StatusInfo } from '../domain/types/status.js'
 import type { ChainProvider } from '../providers/provider.js'
 import type { NftcdnSigner } from '../media/nftcdn.js'
+import type { PriceProvider } from '../prices/index.js'
 import type { RemoteConfig } from '../remote-config/index.js'
-import { serializeRequest } from './logging.js'
+import { scrubMessage, serializeRequest } from './logging.js'
 import { routeRegistrars, type RouteDeps } from './routes/index.js'
-import type { StatusInfo } from './routes/status.js'
 
 export interface RateLimitOptions {
   /** Requests allowed per window, per client. */
@@ -27,6 +28,11 @@ export interface BuildServerOptions {
   nftcdn?: NftcdnSigner
   /** Remote config for the clients. Absent means /v1/config answers 503. */
   remoteConfig?: RemoteConfig
+  /**
+   * Price and market data. Absent means every /v1/price/* route answers the 501 it always has;
+   * see RouteDeps.priceProvider.
+   */
+  priceProvider?: PriceProvider
   /** Fastify logger option. False (default) keeps tests quiet. */
   logger?: boolean | { level: string }
   /**
@@ -45,6 +51,11 @@ export interface BuildServerOptions {
   corsOrigins?: string[] | '*'
   /** Anonymous free-tier limit. Omit to disable (tests, and trusted private deployments). */
   rateLimit?: RateLimitOptions
+  /**
+   * Exact proxy IPs/CIDRs allowed to supply `X-Forwarded-For`. Empty/absent is the secure direct
+   * deployment default: forwarded addresses are ignored and the socket peer owns the rate bucket.
+   */
+  trustedProxies?: string[]
 }
 
 const DEFAULT_INFO: StatusInfo = { version: '0.0.0', network: 'unknown', provider: 'unknown' }
@@ -73,9 +84,13 @@ export async function buildServer(opts: BuildServerOptions): Promise<FastifyInst
             // line as the client's IP, which is exactly the link a wallet backend must not keep.
             serializers: { req: serializeRequest },
           },
-    // Behind a load balancer, every client otherwise looks like the proxy, and the rate limiter
-    // would bucket the entire internet into one counter.
-    trustProxy: true,
+    // Never trust forwarded addresses just because they are present. A direct caller controls
+    // those headers and could rotate them to evade the per-IP limiter. Fastify walks the chain
+    // only when the socket peer matches this explicit address/CIDR allowlist.
+    trustProxy:
+      opts.trustedProxies === undefined || opts.trustedProxies.length === 0
+        ? false
+        : opts.trustedProxies,
   })
 
   await app.register(cors, {
@@ -109,8 +124,13 @@ export async function buildServer(opts: BuildServerOptions): Promise<FastifyInst
   }
 
   app.setErrorHandler((error, request, reply) => {
+    // Our own errors name the upstream path that failed, and some upstream paths have to carry a
+    // wallet identifier (see scrubMessage). The endpoint is the useful part of the message and it
+    // survives; the identifier does not need to travel back out in a body.
     if (isAppError(error)) {
-      reply.code(error.statusCode).send({ error: { code: error.code, message: error.message } })
+      reply
+        .code(error.statusCode)
+        .send({ error: { code: error.code, message: scrubMessage(error.message) } })
       return
     }
 
@@ -123,7 +143,7 @@ export async function buildServer(opts: BuildServerOptions): Promise<FastifyInst
       reply.code(statusCode).send({
         error: {
           code: statusCode === 429 ? 'RATE_LIMITED' : 'BAD_REQUEST',
-          message: message ?? 'bad request',
+          message: message === undefined ? 'bad request' : scrubMessage(message),
         },
       })
       return
@@ -146,6 +166,7 @@ export async function buildServer(opts: BuildServerOptions): Promise<FastifyInst
     info: opts.info ?? DEFAULT_INFO,
     ...(opts.nftcdn === undefined ? {} : { nftcdn: opts.nftcdn }),
     ...(opts.remoteConfig === undefined ? {} : { remoteConfig: opts.remoteConfig }),
+    ...(opts.priceProvider === undefined ? {} : { priceProvider: opts.priceProvider }),
   }
   for (const register of routeRegistrars) {
     register(app, opts.provider, deps)

@@ -32,6 +32,49 @@ const reward = (earned: number, amount: string, type = 'member', pool: string | 
 })
 
 describe('koios getRewardHistory', () => {
+  // proposal_refund is absent from Koios's published enum and present in its responses, so
+  // mirroring the specification exactly is what broke this read. Measured against live mainnet on
+  // 2026-09-09: 109 of 1679 reward entries across 20 governance return addresses carried it.
+  it('accepts a governance proposal refund, which Koios does not document', async () => {
+    const rows = [
+      {
+        stake_address: STAKE,
+        rewards: [
+          {
+            earned_epoch: 646,
+            // A refund lands the epoch after the one it is earned for, not two like a pool reward.
+            spendable_epoch: 647,
+            amount: '100000000000',
+            type: 'proposal_refund',
+            pool_id: null,
+          },
+        ],
+      },
+    ]
+    const { fetchImpl } = fakeFetch(async () => rows)
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const history = await provider.getRewardHistory(STAKE)
+
+    expect(history).toEqual([
+      {
+        earnedEpoch: 646,
+        spendableEpoch: 647,
+        amount: '100000000000',
+        kind: 'proposal_refund',
+      },
+    ])
+  })
+
+  // Widening the enum must not turn it into a passthrough: an unknown kind is still malformed.
+  it('still rejects a reward kind Koios has never returned', async () => {
+    const rows = [{ stake_address: STAKE, rewards: [reward(30, '1', 'not_a_real_kind', null)] }]
+    const { fetchImpl } = fakeFetch(async () => rows)
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getRewardHistory(STAKE)).rejects.toBeInstanceOf(MalformedUpstreamError)
+  })
+
   it('maps a reward and orders the history oldest first', async () => {
     // Deliberately out of order: Koios promises no ordering here, and a graph drawn from an
     // unordered series is a scribble.
@@ -147,6 +190,7 @@ describe('koios getUtxosByRef', () => {
     tx_hash: hash,
     tx_index: index,
     address: 'addr_test1qz09v9yfxguvlp0zsnrpa3tdtm7el8xufp3m5lsm7qxzcl',
+    block_height: 10_000_000,
     value: '1000000000000',
     asset_list: [{ policy_id: 'c'.repeat(56), asset_name: '414243', quantity: '5' }],
     datum_hash: null,
@@ -165,6 +209,7 @@ describe('koios getUtxosByRef', () => {
       txHash: TX,
       outputIndex: 0,
       address: 'addr_test1qz09v9yfxguvlp0zsnrpa3tdtm7el8xufp3m5lsm7qxzcl',
+      blockHeight: 10_000_000,
       value: '1000000000000',
       assets: [{ policyId: 'c'.repeat(56), assetName: '414243', quantity: '5' }],
       inlineDatum: 'd87980',
@@ -215,6 +260,16 @@ describe('koios getUtxosByRef', () => {
     ])
 
     expect(resolved.map((u) => `${u.txHash}#${u.outputIndex}`)).toEqual([`${TX}#0`, `${TX_2}#1`])
+  })
+
+  it('preserves repeated canonical references in the request and result order', async () => {
+    const { fetchImpl, calls } = fakeFetch(async () => [utxo(TX, 1, false)])
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const resolved = await provider.getUtxosByRef([`${TX}#1`, `${TX}#1`])
+
+    expect(JSON.parse(String(calls[0]?.body))._utxo_refs).toEqual([`${TX}#1`, `${TX}#1`])
+    expect(resolved.map((u) => `${u.txHash}#${u.outputIndex}`)).toEqual([`${TX}#1`, `${TX}#1`])
   })
 
   it('returns [] without calling upstream for an empty batch', async () => {

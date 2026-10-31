@@ -1,10 +1,18 @@
 import { Ajv2020 } from 'ajv/dist/2020.js'
-import addFormats from 'ajv-formats'
+import addFormatsImport from 'ajv-formats'
 import { bech32 } from '@scure/base'
 import { describe, expect, it } from 'vitest'
 import { openapi } from '../../src/http/openapi.js'
 import { buildServer } from '../../src/http/server.js'
 import { createNftcdnSigner } from '../../src/media/nftcdn.js'
+import type { ProtocolParams } from '../../src/domain/types/chain.js'
+import {
+  confirmedTxStatus,
+  expiredTxStatus,
+  pendingTxStatus,
+  rejectedTxStatus,
+  unknownTxStatus,
+} from '../../src/domain/types/transactions.js'
 import type { ChainProvider } from '../../src/providers/provider.js'
 import { fakeProvider } from '../support/fake-provider.js'
 
@@ -18,8 +26,21 @@ import { fakeProvider } from '../support/fake-provider.js'
  * from the real handlers, against the schemas it publishes.
  */
 
+type FormatsPlugin = (instance: Ajv2020) => unknown
+
+// Node's ESM loader exposes this CommonJS package's default import as the callable plugin. Its
+// declaration file also assigns `module.exports`, which TypeScript 6/NodeNext conservatively models
+// as the module namespace instead. Keep that declaration mismatch at the import boundary; runtime
+// callers use the plugin function directly and never depend on a nested `.default` implementation
+// detail.
+const addFormats = addFormatsImport as unknown as FormatsPlugin
+
+function registerFormats(instance: Ajv2020, plugin: FormatsPlugin = addFormats): void {
+  plugin(instance)
+}
+
 const ajv = new Ajv2020({ strict: false, allErrors: true })
-addFormats.default(ajv)
+registerFormats(ajv)
 ajv.addSchema({ ...openapi.components, $id: 'components' })
 
 /** Validate a value against a named schema from the spec. */
@@ -32,12 +53,41 @@ function validate(schemaName: string, value: unknown): string[] {
   return check(value) ? [] : (check.errors ?? []).map((e) => `${e.instancePath} ${e.message}`)
 }
 
+describe('OpenAPI schema format setup', () => {
+  it('accepts the callable default-import shape without requiring a nested default property', () => {
+    const isolated = new Ajv2020({ strict: false })
+    let called = false
+    const callableOnly: FormatsPlugin = (instance) => {
+      called = true
+      return addFormats(instance)
+    }
+
+    expect('default' in callableOnly).toBe(false)
+    registerFormats(isolated, callableOnly)
+
+    expect(called).toBe(true)
+    expect(isolated.validate({ type: 'string', format: 'uri' }, 'https://example.test/path')).toBe(
+      true,
+    )
+    expect(isolated.validate({ type: 'string', format: 'uri' }, 'not a URI')).toBe(false)
+  })
+})
+
 // Well-formed bech32, so the routes' own validation passes and the responses under test are the
 // real ones rather than a 400.
-const STAKE = bech32.encode('stake_test', bech32.toWords(new Uint8Array(29)), 1023)
-const ADDR = (fill: number): string =>
-  bech32.encode('addr_test', bech32.toWords(new Uint8Array(57).fill(fill)), 1023)
+const STAKE_BYTES = new Uint8Array(29)
+STAKE_BYTES[0] = 0xe0
+const STAKE = bech32.encode('stake_test', bech32.toWords(STAKE_BYTES), 1023)
+const ADDR = (fill: number): string => {
+  const bytes = new Uint8Array(57).fill(fill)
+  bytes[0] = 0 // Base key-key address on a test network.
+  return bech32.encode('addr_test', bech32.toWords(bytes), 1023)
+}
+const ADDR_VKH = bech32.encode('addr_vkh', bech32.toWords(new Uint8Array(28).fill(3)), 1023)
 const TX_HASH = 'ab'.repeat(32)
+// A history input points at a different transaction from the one carrying it, so the fixtures use
+// their own hash for the consumed output rather than reusing TX_HASH.
+const SOURCE_TX_HASH = 'cd'.repeat(32)
 const POLICY = 'a'.repeat(56)
 const POOL = 'pool1wn6a6f23ctq06udwhw27ravdpd6zcr7jlut3yez0wzdackz3222'
 const DREP = 'drep1ygpuetneftlmufa97hm5mf3xvqpdkyw656hyg6h20qaewtg3csnkc'
@@ -114,7 +164,10 @@ describe('real responses validate against the schemas the spec publishes', () =>
     url: string,
     payload?: object,
   ): Promise<{ statusCode: number; body: unknown }> {
-    const app = await buildServer({ provider: fakeProvider(provider) })
+    const app = await buildServer({
+      provider: fakeProvider(provider),
+      info: { version: 'test', network: 'preprod', provider: 'fake' },
+    })
     const res = await app.inject({ method, url, ...(payload === undefined ? {} : { payload }) })
     await app.close()
     return { statusCode: res.statusCode, body: res.json() }
@@ -144,6 +197,41 @@ describe('real responses validate against the schemas the spec publishes', () =>
     expect(validate('Tip', res.body)).toEqual([])
   })
 
+  it('GET /v1/chain/protocol-params', async () => {
+    const params: ProtocolParams = {
+      epoch: 199,
+      minFeeA: 44,
+      minFeeB: 155_381,
+      maxTxSize: 16_384,
+      maxBlockBodySize: 90_112,
+      keyDeposit: '9999999999999999999',
+      poolDeposit: '9999999999999999997',
+      minPoolCost: '9999999999999999993',
+      coinsPerUtxoByte: '9999999999999999989',
+      maxValueSize: 5000,
+      collateralPercent: 150,
+      maxCollateralInputs: 3,
+      priceMem: 0.0577,
+      priceStep: 0.0000721,
+      maxTxExMem: '9999999999999999987',
+      maxTxExSteps: '9999999999999999983',
+      protocolVersion: { major: 9, minor: 0 },
+      costModels: {
+        PlutusV1: [100, -200],
+        PlutusV2: [300],
+        PlutusV3: { '0': 400, '1': -500 },
+      },
+    }
+    const res = await get({ getProtocolParams: async () => params }, '/v1/chain/protocol-params')
+
+    expect(res.statusCode).toBe(200)
+    expect(validate('ProtocolParams', res.body)).toEqual([])
+    expect(res.body).toEqual(params)
+    // Protocol quantities can exceed Number.MAX_SAFE_INTEGER and must remain exact digit strings.
+    expect((res.body as { keyDeposit: string }).keyDeposit).toBe('9999999999999999999')
+    expect((res.body as { maxTxExSteps: string }).maxTxExSteps).toBe('9999999999999999983')
+  })
+
   it('GET /v1/account/{stake}/state', async () => {
     const state = {
       stakeAddress: STAKE,
@@ -163,11 +251,30 @@ describe('real responses validate against the schemas the spec publishes', () =>
     expect((res.body as { balance: string }).balance).toBe('9999999999999999999')
   })
 
+  // The published contract has to accept what the route actually returns for a governance
+  // participant, or the schema and the service disagree about a live case.
+  it('GET /v1/account/{stake}/state with a negative balance', async () => {
+    const state = {
+      stakeAddress: STAKE,
+      registered: true,
+      balance: '-89788495927',
+      rewardsAvailable: '250000',
+      rewardsSum: '900000',
+      withdrawalsSum: '650000',
+    }
+    const res = await get({ getAccountState: async () => state }, `/v1/account/${STAKE}/state`)
+
+    expect(res.statusCode).toBe(200)
+    expect(validate('AccountState', res.body)).toEqual([])
+    expect((res.body as { balance: string }).balance).toBe('-89788495927')
+  })
+
   it('GET /v1/account/{stake}/utxos', async () => {
     const utxo = {
       txHash: TX_HASH,
       outputIndex: 0,
       address: 'addr_test1xyz',
+      blockHeight: 10_000_000,
       value: '2000000',
       assets: [{ policyId: POLICY, assetName: '414243', quantity: '5' }],
       inlineDatum: 'd87980',
@@ -187,7 +294,15 @@ describe('real responses validate against the schemas the spec publishes', () =>
       epoch: 10,
       blockTime: 1_700_000_000,
       fee: '170000',
-      inputs: [{ address: 'addr_test1a', value: '1000000', assets: [] }],
+      inputs: [
+        {
+          address: 'addr_test1a',
+          txHash: SOURCE_TX_HASH,
+          outputIndex: 1,
+          value: '1000000',
+          assets: [],
+        },
+      ],
       outputs: [{ address: 'addr_test1b', value: '830000', assets: [] }],
       withdrawals: [{ stakeAddress: STAKE, amount: '1' }],
       certificates: [{ kind: 'vote_delegation' as const, index: 0 }],
@@ -198,14 +313,38 @@ describe('real responses validate against the schemas the spec publishes', () =>
     eachMatches('WalletTransaction', res.body)
   })
 
-  it('GET /v1/tx/{hash}/status', async () => {
-    const res = await get(
-      { getTxStatus: async () => ({ seen: true, confirmations: 12 }) },
-      `/v1/tx/${TX_HASH}/status`,
-    )
+  it.each([
+    unknownTxStatus(),
+    pendingTxStatus(),
+    confirmedTxStatus(12),
+    rejectedTxStatus(),
+    expiredTxStatus(),
+  ])('GET /v1/tx/{hash}/status validates lifecycle $status', async (status) => {
+    const res = await get({ getTxStatus: async () => status }, `/v1/tx/${TX_HASH}/status`)
 
     expect(res.statusCode).toBe(200)
     expect(validate('TxStatus', res.body)).toEqual([])
+  })
+
+  it('keeps terminal codes paired to their lifecycle state and rejects extra provider fields', () => {
+    expect(
+      validate('TxStatus', {
+        ...rejectedTxStatus(),
+        terminal: {
+          code: 'TX_EXPIRED',
+          reason: 'The transaction validity interval expired before confirmation.',
+        },
+      }),
+    ).not.toEqual([])
+    expect(validate('TxStatus', { ...unknownTxStatus(), rawProviderBody: 'secret' })).not.toEqual(
+      [],
+    )
+    expect(
+      validate('TxStatus', {
+        ...confirmedTxStatus(0),
+        confirmations: Number.MAX_SAFE_INTEGER + 1,
+      }),
+    ).not.toEqual([])
   })
 
   it('POST /v1/assets/info', async () => {
@@ -296,13 +435,68 @@ describe('real responses validate against the schemas the spec publishes', () =>
 
   it('POST /v1/addresses/filter-used', async () => {
     const res = await post(
-      { filterUsedAddresses: async (a: string[]) => a.slice(0, 1) },
+      {
+        filterUsedAddresses: async (a: string[]) => a.slice(0, 1),
+        filterUsedPaymentCredentials: async (credentials: string[]) => credentials,
+      },
       '/v1/addresses/filter-used',
-      { addresses: [ADDR(1), ADDR(2)] },
+      { addresses: [ADDR(1), ADDR(2), ADDR_VKH] },
     )
 
     expect(res.statusCode).toBe(200)
-    expect(res.body).toEqual([ADDR(1)])
+    expect(res.body).toEqual([ADDR(1), ADDR_VKH])
+  })
+
+  // A real Byron address (see test/domain/byron-address.test.ts for provenance), so this also
+  // stands as evidence the route accepts the format the OpenAPI description now claims it does.
+  const BYRON_ADDR = 'Ae2tdPwUPEZFRbyhz3cpfC2CumGzNkFBN2L42rcUc2yjQpEkxDbkPodpMAi'
+
+  it('POST /v1/addresses/utxos', async () => {
+    const utxo = {
+      txHash: TX_HASH,
+      outputIndex: 0,
+      address: BYRON_ADDR,
+      blockHeight: 10_000_000,
+      value: '2000000',
+      assets: [{ policyId: POLICY, assetName: '414243', quantity: '5' }],
+    }
+    const res = await post({ getUtxosByAddresses: async () => [utxo] }, '/v1/addresses/utxos', {
+      addresses: [BYRON_ADDR],
+    })
+
+    expect(res.statusCode).toBe(200)
+    eachMatches('Utxo', res.body)
+  })
+
+  it('POST /v1/addresses/txs', async () => {
+    const tx = {
+      txHash: TX_HASH,
+      block: 1_000,
+      blockHash: 'bb'.repeat(32),
+      slot: 5_000,
+      epoch: 10,
+      blockTime: 1_700_000_000,
+      fee: '170000',
+      inputs: [
+        {
+          address: BYRON_ADDR,
+          txHash: SOURCE_TX_HASH,
+          outputIndex: 0,
+          value: '1000000',
+          assets: [],
+        },
+      ],
+      outputs: [],
+      withdrawals: [],
+      certificates: [{ kind: 'other' as const, index: 0 }],
+    }
+    const res = await post({ getTxHistoryByAddresses: async () => [tx] }, '/v1/addresses/txs', {
+      addresses: [BYRON_ADDR],
+      after: 999,
+    })
+
+    expect(res.statusCode).toBe(200)
+    eachMatches('WalletTransaction', res.body)
   })
 
   it('POST /v1/tx/submit', async () => {
@@ -349,6 +543,30 @@ describe('real responses validate against the schemas the spec publishes', () =>
     expect((res.body as { chain: string }).chain).toBe('down')
   })
 
+  it('requires an exact Unix millisecond server time in every status response', () => {
+    const down = {
+      version: '1.2.3',
+      network: 'preprod',
+      provider: 'koios',
+      serverTime: 1_784_674_800_123,
+      chain: 'down',
+      tip: null,
+    }
+
+    expect(validate('Status', down)).toEqual([])
+    expect(validate('Status', { ...down, serverTime: 1.5 })).not.toEqual([])
+    expect(validate('Status', { ...down, serverTime: Number.MAX_SAFE_INTEGER + 1 })).not.toEqual([])
+    expect(
+      validate('Status', {
+        version: down.version,
+        network: down.network,
+        provider: down.provider,
+        chain: down.chain,
+        tip: down.tip,
+      }),
+    ).not.toEqual([])
+  })
+
   it('GET /v1/account/{stake}/rewards', async () => {
     const res = await get(
       {
@@ -362,6 +580,14 @@ describe('real responses validate against the schemas the spec publishes', () =>
           },
           // A treasury payout has no pool, so poolId is absent rather than an empty string.
           { earnedEpoch: 31, spendableEpoch: 33, amount: '1', kind: 'treasury' as const },
+          // A governance proposal refund. Also the case where the spendable epoch is one after
+          // the earned one rather than two, so a client must not derive it.
+          {
+            earnedEpoch: 646,
+            spendableEpoch: 647,
+            amount: '100000000000',
+            kind: 'proposal_refund' as const,
+          },
         ],
       },
       `/v1/account/${STAKE}/rewards`,
@@ -379,6 +605,7 @@ describe('real responses validate against the schemas the spec publishes', () =>
             txHash: TX_HASH,
             outputIndex: 0,
             address: 'addr_test1x',
+            blockHeight: 10_000_000,
             value: '9999999999999999999', // over 2^53 on purpose
             assets: [{ policyId: POLICY, assetName: '', quantity: '1' }],
             spent: true,
@@ -399,8 +626,8 @@ describe('real responses validate against the schemas the spec publishes', () =>
   it('GET /v1/governance/proposals', async () => {
     const res = await get(
       {
-        getProposals: async () => [
-          {
+        getProposals: async () => {
+          const proposal = {
             proposalId: 'gov_action1jr0g04rwvdz3rrqpm30vwqd5mnjky8l68v0e3g74t6e5apw6wwfqq37hpcl',
             txHash: TX_HASH,
             index: 0,
@@ -421,8 +648,20 @@ describe('real responses validate against the schemas the spec publishes', () =>
               noPower: '0',
               abstainPower: '0',
             },
-          },
-        ],
+            committeeVotes: {
+              yes: 3,
+              no: 0,
+              abstain: 0,
+            },
+          }
+          const noCommitteeVoteProposal = {
+            ...proposal,
+            proposalId: 'gov_action1w2w64uh7g6q8x4n0m3v6q7f9r2s5t8u1y4z7c0d3e6f9h2j5k8m1p4s7v0x3',
+            type: 'NewCommittee' as const,
+            committeeVotes: undefined,
+          }
+          return [proposal, noCommitteeVoteProposal]
+        },
       },
       '/v1/governance/proposals',
     )
@@ -432,6 +671,22 @@ describe('real responses validate against the schemas the spec publishes', () =>
     expect((res.body as { drepVotes: { yesPower: string } }[])[0]?.drepVotes.yesPower).toBe(
       '9999999999999999999',
     )
+    expect((res.body as { committeeVotes: Record<string, unknown> }[])[0]?.committeeVotes).toEqual({
+      yes: 3,
+      no: 0,
+      abstain: 0,
+    })
+    expect((res.body as Record<string, unknown>[])[1]).not.toHaveProperty('committeeVotes')
+    expect(
+      validate('CommitteeVoteTally', {
+        yes: 3,
+        no: 0,
+        abstain: 0,
+        yesPower: '0',
+        noPower: '0',
+        abstainPower: '0',
+      }),
+    ).not.toEqual([])
   })
 
   it('POST /v1/assets/media', async () => {
@@ -460,7 +715,7 @@ describe('real responses validate against the schemas the spec publishes', () =>
   // 501 is the same error envelope as everything else, so an adapter needs no special case.
   it.each([
     ['GET', '/v1/price/ada?currencies=USD', undefined],
-    ['POST', '/v1/price/tokens', { subjects: ['aa'] }],
+    ['POST', '/v1/price/tokens', { subjects: [POLICY] }],
   ])('%s %s answers the documented 501 envelope', async (method, url, payload) => {
     const res = await call({}, method as 'GET' | 'POST', url, payload)
 

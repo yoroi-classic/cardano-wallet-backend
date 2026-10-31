@@ -1,5 +1,5 @@
 # Build stage: the full toolchain, none of which ships.
-FROM node:25-slim AS build
+FROM node:26-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json .npmrc ./
 RUN npm ci
@@ -7,13 +7,13 @@ COPY . .
 RUN npm run build
 
 # Production dependencies, resolved here so npm itself never has to exist in the runtime image.
-FROM node:25-slim AS deps
+FROM node:26-slim AS deps
 WORKDIR /app
 COPY package.json package-lock.json .npmrc ./
 RUN npm ci --omit=dev
 
 # Runtime
-FROM node:25-slim AS runtime
+FROM node:26-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 

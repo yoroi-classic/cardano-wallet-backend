@@ -1,8 +1,9 @@
 # e2e vertical slice
 
 A small end-to-end harness that drives the backend's `/v1` surface against a real
-network, using CML for key derivation and transaction construction. Think of it as a
-richer, live test suite that sits next to the software it exercises.
+network, using CML as the Yoroi clients' migration target. The mobile and extension
+clients still use CSL; this harness exercises the target library, not their current
+implementation.
 
 ## What it does
 
@@ -19,13 +20,10 @@ fund from the faucet, so the read path is still exercised without funds.
 
 ## Why it's built this way
 
-It uses `@dcspark/cardano-multiplatform-lib-nodejs`, the same serialization library used
-by the migrated wallet clients, and derives and signs using CIP-1852. So a transaction it
-builds against our backend's data is the same shape the real wallet would produce. Getting a tx built
-from our `/v1` data to submit and confirm reinforces that our data contract is complete
-and correct enough to drive the real wallet's transaction building. It does not exercise
-the extension's own data-fetch layer, that still moves to `/v1` separately, so this proves
-the primitives and the data, not the whole extension.
+It uses `@dcspark/cardano-multiplatform-lib-nodejs` to derive an account and build and sign a
+transaction from `/v1` data. A successful submission and confirmation verifies that the backend
+contract can drive the CML migration target. It does not exercise the current CSL-based wallet
+implementation or the extension's own data-fetch layer, which still moves to `/v1` separately.
 
 ## Run it
 
@@ -45,6 +43,17 @@ Fund the printed payment address from the preprod faucet
 (https://docs.cardano.org/cardano-testnets/tools/faucet) and re-run to exercise the send.
 
 Use a throwaway, test-only mnemonic. Never point this at a mnemonic that holds real funds.
+
+### Mainnet safety
+
+The harness supports mainnet only for deliberate operator testing because a funded run
+builds, signs, and submits a transaction that spends real ADA. A mainnet run requires both
+`NETWORK=mainnet` and the exact separate opt-in `ALLOW_MAINNET_E2E=true`. Missing, empty,
+or differently spelled values fail during configuration loading, before the mnemonic is
+accepted or signing keys are derived. Preprod and preview do not require this opt-in.
+
+Do not keep the mainnet opt-in in a shared `.env` file. Set it only for the individual
+mainnet command after confirming that the mnemonic and backend are intended for that run.
 
 ## Scope and expansion
 

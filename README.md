@@ -5,9 +5,9 @@ HTTP API and is designed to serve it from any configured Cardano data source, so
 wallet never has to care where the data comes from.
 
 This is early. It covers the barebones reads and writes a wallet needs (chain tip and
-protocol parameters, account state and UTxOs, transaction submit and status), and Koios
-is the only wired provider. Blockfrost and a bring-your-own Dingo node are planned
-behind the same contract, and selecting them today fails fast until their drivers land.
+protocol parameters, account state and UTxOs, transaction submit and status). Koios and
+Blockfrost are both wired today; a bring-your-own Dingo node is planned behind the same
+contract, and selecting it fails fast until its driver lands.
 
 ## Requirements
 
@@ -51,30 +51,81 @@ can exceed 2^53, where `JSON.parse` silently rounds: `7682048683977123456` becom
 
 The summary:
 
-| Method | Path                        | Returns                                                                                                          |
-| ------ | --------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| GET    | `/health`                   | liveness, no upstream call                                                                                       |
-| GET    | `/v1/status`                | `{ version, network, provider, chain, behindSeconds, tip }`                                                      |
-| GET    | `/v1/config`                | client remote config (feature flags, dApp list), served from our own fork                                        |
-| GET    | `/v1/chain/tip`             | `{ block, slot, epoch, hash, blockTime }`                                                                        |
-| GET    | `/v1/chain/protocol-params` | normalized protocol parameters incl. cost models                                                                 |
-| GET    | `/v1/account/{stake}/state` | `{ registered, balance, rewardsAvailable, rewardsSum, withdrawalsSum, ... }`                                     |
-| GET    | `/v1/account/{stake}/utxos` | array of UTxOs incl. assets and inline datums                                                                    |
-| GET    | `/v1/account/{stake}/txs`   | transaction history (oldest first, `?after={block}`)                                                             |
-| POST   | `/v1/addresses/filter-used` | subset of `{ addresses: [...] }` seen on chain, in input order                                                   |
-| POST   | `/v1/address/utxos`         | `{ address }` current unspent outputs at one Shelley payment address, including datum and reference-script bytes |
-| POST   | `/v1/pools/info`            | stake-pool info for `{ poolIds: [...] }`, in input order                                                         |
-| POST   | `/v1/assets/info`           | token metadata for `{ subjects: [...] }` (registry + on-chain), input order                                      |
-| POST   | `/v1/assets/media`          | signed NFTCDN image/metadata URLs for `{ fingerprints: [...], size? }`                                           |
-| GET    | `/v1/assets/{fp}/image`     | 302 to a signed, resized NFTCDN image (`?size=`)                                                                 |
-| POST   | `/v1/tx/submit`             | `{ txHash }` from `{ "cbor": "<hex tx>" }`                                                                       |
-| GET    | `/v1/governance/dreps`      | neutral page of registered DReps: `?limit=&offset=`                                                              |
-| POST   | `/v1/governance/dreps/info` | DRep info for `{ drepIds: [...] }`, in input order                                                               |
-| GET    | `/v1/tx/{hash}/status`      | `{ seen, confirmations }`                                                                                        |
+| Method | Path                          | Returns                                                                      |
+| ------ | ----------------------------- | ---------------------------------------------------------------------------- |
+| GET    | `/health`                     | liveness, no upstream call                                                   |
+| GET    | `/v1/openapi.json`            | OpenAPI 3.1 contract for this running build                                  |
+| GET    | `/v1/status`                  | `{ version, network, provider, serverTime, chain, behindSeconds, tip }`      |
+| GET    | `/v1/config`                  | client remote config (feature flags, dApp list), served from our own fork    |
+| GET    | `/v1/chain/tip`               | `{ block, slot, epoch, hash, blockTime }`                                    |
+| GET    | `/v1/chain/protocol-params`   | normalized protocol parameters incl. cost models                             |
+| GET    | `/v1/account/{stake}/state`   | `{ registered, balance, rewardsAvailable, rewardsSum, withdrawalsSum, ... }` |
+| GET    | `/v1/account/{stake}/utxos`   | array of UTxOs incl. assets and inline datums                                |
+| GET    | `/v1/account/{stake}/txs`     | transaction history (oldest first, `?after={block}`)                         |
+| GET    | `/v1/account/{stake}/rewards` | per-epoch reward history, oldest first                                       |
+| POST   | `/v1/addresses/filter-used`   | subset of `{ addresses: [...] }` seen on chain, in input order               |
+| GET    | `/v1/pools`                   | neutral page of registered stake pools: `?limit=&offset=&ticker=`            |
+| POST   | `/v1/pools/info`              | stake-pool info for `{ poolIds: [...] }`, in input order                     |
+| POST   | `/v1/assets/info`             | token metadata for `{ subjects: [...] }` (registry + on-chain), input order  |
+| POST   | `/v1/assets/media`            | signed NFTCDN image/metadata URLs for `{ fingerprints: [...], size? }`       |
+| GET    | `/v1/assets/{fp}/image`       | 302 to a signed, resized NFTCDN image (`?size=`)                             |
+| GET    | `/v1/price/ada`               | ADA fiat price and 24h change per currency, from CoinGecko                   |
+| GET    | `/v1/price/ada/history`       | ADA fiat OHLC history per currency, from CoinGecko                           |
+| POST   | `/v1/price/tokens`            | native-token price and activity in ADA, from GeckoTerminal                   |
+| POST   | `/v1/price/tokens/history`    | native-token OHLC history in ADA, from GeckoTerminal                         |
+| POST   | `/v1/tx/submit`               | `{ txHash }` from `{ "cbor": "<hex tx>" }`                                   |
+| POST   | `/v1/tx/utxos`                | transaction outputs for `{ refs: ["txHash#index", ...] }`, including `spent` |
+| GET    | `/v1/governance/dreps`        | neutral page of registered DReps: `?limit=&offset=`                          |
+| POST   | `/v1/governance/dreps/info`   | DRep info for `{ drepIds: [...] }`, in input order                           |
+| GET    | `/v1/governance/proposals`    | Conway governance actions with derived status and vote tallies               |
+| GET    | `/v1/tx/{hash}/status`        | lifecycle state and pending-overlay action                                   |
 
 Errors come back as `{ "error": { "code", "message" } }` with a stable status code
 (`502` upstream error, `504` upstream timeout, `429` rate limited, `400` bad request,
 `404` unknown route, `500` otherwise).
+
+### Transaction lifecycle and pending overlays
+
+`GET /v1/tx/{hash}/status` reports one provider-neutral lifecycle state:
+
+- `pending` is a positive mempool observation. `unknown` is only an inconclusive absence. Both
+  return `overlayAction: "retain"`; a wallet must keep spent inputs hidden and keep its pending
+  change available.
+- `confirmed` returns `overlayAction: "reconcile"`. Refresh authoritative current-state UTxOs and
+  remove the overlay only after that state incorporates the transaction.
+- `rejected` and `expired` are reserved for positive terminal proof. They return
+  `overlayAction: "rollback"` and a stable `TX_REJECTED` or `TX_EXPIRED` terminal code. Raw
+  provider response bodies are never returned.
+
+Provider absence is deliberately not terminal. Koios exposes only on-chain confirmation depth, so
+an unconfirmed hash is `unknown`. Hosted Blockfrost can report a transaction submitted through its
+own mempool as `pending`; a miss remains `unknown`, including on compatible/self-hosted deployments
+without that hosted index. Neither provider currently has durable rejection evidence or retains
+enough signed validity data after mempool eviction to prove expiry. Consequently neither reports
+`rejected` or `expired` today. Clients must retain overlays until a provider positively confirms a
+state that permits reconciliation or rollback.
+
+## Client migration status
+
+The migration audit in issue #71 is not a request to recreate every Emurgo-hosted endpoint. The
+`/v1` surface above covers the wallet-critical chain, account, transaction, asset, governance,
+remote-config, media, and contract routes. The remaining blockers are product or provider
+decisions:
+
+- Price data is implemented: CoinGecko supplies ADA fiat prices and history, while GeckoTerminal
+  supplies native-token prices and history in ADA. Production startup always wires both upstreams;
+  a server built without a price provider, primarily in tests, validates the request and returns
+  `501 NOT_IMPLEMENTED`.
+- NFT traits are returned from `/v1/assets/info`, but trait rarity is not. Rarity needs a
+  collection-wide index; it cannot be computed from a one-asset chain read.
+- Catalyst endpoints (`fundInfo` and `lastBlockBySlot`) have no `/v1` replacement yet. Decide
+  whether the clients still need Catalyst before adding backend surface.
+- Mobile's legacy rollback-diff UTxO protocol (`tipStatus`, `utxoAtPoint`,
+  `utxoDiffSincePoint`) is intentionally not implemented. Mobile needs to move to current UTxOs
+  plus its own pending-transaction overlay.
+- Emurgo-business endpoints such as swap fee tiers, Encryptus payout links, backend-zero wallet
+  registration, and curated pool rankings should be removed or owned elsewhere rather than copied
+  into this backend.
 
 `/health` and `/v1/status` are not the same thing, and the difference matters. `/health` is
 liveness for the orchestrator: it makes no upstream call and answers instantly, because a load
@@ -83,6 +134,19 @@ balancer asking "is this process alive" must not be told no merely because Koios
 it does reach upstream and reports `chain: "ok" | "stale" | "down"`. It answers `200` even when
 the chain source is unreachable, so a client can tell "the backend is down" (a network error)
 apart from "the backend is up, its data source is not" (a maintenance notice).
+Every state includes `serverTime`, an exact Unix timestamp in milliseconds captured when the
+response is constructed, so browser clients do not need access to the HTTP `Date` header.
+
+```json
+{
+  "version": "0.7.1",
+  "network": "preprod",
+  "provider": "koios",
+  "serverTime": 1784674800123,
+  "chain": "down",
+  "tip": null
+}
+```
 
 ## Running it
 
@@ -91,13 +155,34 @@ docker compose up -d          # preprod on :3010
 curl localhost:3010/v1/status
 ```
 
+## Kubernetes
+
+An initial Helm chart lives in `charts/cardano-wallet-backend`.
+
+```bash
+helm lint charts/cardano-wallet-backend
+helm template cardano-wallet-backend charts/cardano-wallet-backend
+```
+
+Chart releases are published as OCI artifacts to
+`oci://ghcr.io/yoroi-classic/charts/cardano-wallet-backend` when a chart version reaches `main`.
+New GHCR packages are private by default; see the chart README for the one-time public visibility
+setup, authenticated and anonymous pinned installation examples, and configuration.
+
+See `charts/cardano-wallet-backend/README.md` for local install and secret configuration.
+
 ## Configuration
 
 See `.env.example`. Key values:
 
 - `NETWORK` — `mainnet` | `preprod` | `preview` (default `preprod`)
-- `PROVIDER` — `koios` (others land soon)
+- `PROVIDER` — `koios` | `blockfrost` (`dingo` lands later)
 - `KOIOS_URL` — defaults per network; `KOIOS_TOKEN` optional for higher limits
+- `BLOCKFROST_URL` — defaults per network to Blockfrost's own hosted endpoint; set it only to
+  point at something else (a self-hosted node in Blockfrost's compatibility mode)
+- `BLOCKFROST_PROJECT_ID` — Blockfrost's auth token, sent as the `project_id` header. Required
+  when `PROVIDER=blockfrost`; startup fails loudly if it is missing or blank. Get one at
+  https://blockfrost.io
 - `CACHE_ENABLED` — `true` (default) | `false`. Turn it off only to debug upstream: it exists
   because chain-wide reads are identical for every caller, and serving them from upstream on
   every request makes our load on the provider scale with our user count for no benefit.
@@ -106,6 +191,14 @@ See `.env.example`. Key values:
 - `CORS_ORIGINS` — `*` (default) or a comma-separated list
 - `RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW_MS` — anonymous free tier, per client IP (default 120/min).
   `0` disables the limiter, which is only correct on a private deployment.
+- `TRUST_PROXY` — comma-separated proxy IP addresses/CIDRs allowed to supply `X-Forwarded-For`.
+  Empty by default, which is correct for the directly exposed Docker port. Set it only when those
+  proxies are the exclusive path to the backend; trusting arbitrary forwarding headers lets a
+  direct caller rotate its apparent IP and evade the anonymous limit. No entry may be wider than a
+  `/8` in either family, and no IPv6 entry may contain the IPv4-mapped block `::ffff:0:0/96`, since
+  every IPv4 caller reaches a dual-stack listener as `::ffff:a.b.c.d` and a range covering that
+  block trusts all of them. An entry inside the block, such as `::ffff:10.0.0.0/104`, is read as
+  the IPv4 range it means.
 - `NFTCDN_SUBDOMAIN` / `NFTCDN_KEY` — optional, both or neither. Enables asset media (below).
 - `PORT`, `HOST`, `LOG_LEVEL`
 
@@ -182,6 +275,7 @@ npm run test:coverage  # unit and API contract tests with coverage thresholds
 npm run test:integration  # live preprod integration smoke test
 npm run audit:prod     # production dependency audit
 npm run docker:build   # Docker image build check
+npm run docker:smoke   # start the built image and verify its /health contract
 npm run check:ci       # local mirror of the baseline CI gate
 ```
 

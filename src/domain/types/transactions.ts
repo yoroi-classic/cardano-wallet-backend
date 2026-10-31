@@ -10,6 +10,15 @@ export interface Utxo {
   outputIndex: number
   /** Bech32 address that controls the output. */
   address: string
+  /**
+   * Height of the block that *created* this output.
+   *
+   * Authoritative provenance, read from the upstream that knows it, never inferred from the
+   * current tip or from when we happened to observe the output. A client persisting a UTxO set
+   * needs the creation height to reason about the age of what it holds, and stamping a whole
+   * snapshot with the tip makes every output look as new as the read that fetched it.
+   */
+  blockHeight: number
   /** Lovelace value, as a string. */
   value: string
   /** Native assets in the output. */
@@ -37,6 +46,26 @@ export interface TxIo {
   value: string
   /** Native assets carried on this input/output. */
   assets: Asset[]
+}
+
+/**
+ * One consumed input of a transaction, carrying the output it spent.
+ *
+ * The reference is what separates this from a bare `TxIo`, and it is the whole reason the type
+ * exists. Address and value alone do not identify a spent output: a transaction can consume two
+ * outputs with the same address and the same value, and nothing in the pair distinguishes them.
+ * A client reconstructing history has to match each input to the output it consumed, and without
+ * the reference its only options are to guess by address and amount, or to fail closed.
+ *
+ * Outputs do not carry one. An output's own reference is the containing transaction's hash and its
+ * position, both of which the caller already holds, whereas an input points at a *different*
+ * transaction and cannot be derived from anything else in the response.
+ */
+export interface TxInput extends TxIo {
+  /** Hash of the transaction that created the consumed output. */
+  txHash: string
+  /** Index of the consumed output within that transaction. */
+  outputIndex: number
 }
 
 /** A reward withdrawal within a transaction. */
@@ -89,7 +118,7 @@ export interface WalletTransaction {
   fee: string
   /** Time-to-live (invalid-after slot), if the transaction set one. */
   ttl?: number
-  inputs: TxIo[]
+  inputs: TxInput[]
   outputs: TxIo[]
   withdrawals: Withdrawal[]
   certificates: TxCertificate[]
@@ -97,12 +126,104 @@ export interface WalletTransaction {
   metadata?: unknown
 }
 
-/** Confirmation status for a submitted transaction. */
-export interface TxStatus {
-  /** Whether the transaction has been seen on chain. */
-  seen: boolean
-  /** Number of confirmations (blocks on top), 0 if seen but not yet confirmed. */
+/** A stable, provider-neutral code for a provable terminal failure. */
+export type TxTerminalCode = 'TX_REJECTED' | 'TX_EXPIRED'
+
+/** A sanitized terminal failure. Provider response text never crosses this boundary. */
+export interface TxTerminalReason {
+  code: TxTerminalCode
+  reason: string
+}
+
+interface TxInconclusiveStatus {
+  /** `pending` is positively present in a mempool; `unknown` is merely absent from known sources. */
+  status: 'pending' | 'unknown'
+  /** Kept for backwards compatibility. Inconclusive transactions are not on chain. */
+  seen: false
+  confirmations: 0
+  /** An inconclusive read must never make a wallet expose the inputs again. */
+  overlayAction: 'retain'
+}
+
+interface TxConfirmedStatus {
+  status: 'confirmed'
+  seen: true
+  /** Number of blocks on top. A transaction in the tip block has zero confirmations. */
   confirmations: number
+  /** Refresh authoritative UTxOs, then remove the overlay once that state includes the tx. */
+  overlayAction: 'reconcile'
+}
+
+interface TxRejectedStatus {
+  status: 'rejected'
+  seen: false
+  confirmations: 0
+  /** Only a provider with positive rejection evidence may produce this state. */
+  overlayAction: 'rollback'
+  terminal: TxTerminalReason & { code: 'TX_REJECTED' }
+}
+
+interface TxExpiredStatus {
+  status: 'expired'
+  seen: false
+  confirmations: 0
+  /** Only a provider that can prove the signed validity interval elapsed may produce this state. */
+  overlayAction: 'rollback'
+  terminal: TxTerminalReason & { code: 'TX_EXPIRED' }
+}
+
+/**
+ * Provider-neutral lifecycle for a submitted transaction.
+ *
+ * Absence is never rejection. A provider must return `unknown` unless it has positive evidence
+ * for one of the other states; clients retain their pending overlay for both inconclusive states.
+ */
+export type TxStatus = TxInconclusiveStatus | TxConfirmedStatus | TxRejectedStatus | TxExpiredStatus
+
+/** Canonical unknown status. */
+export function unknownTxStatus(): TxStatus {
+  return { status: 'unknown', seen: false, confirmations: 0, overlayAction: 'retain' }
+}
+
+/** Canonical mempool-pending status. */
+export function pendingTxStatus(): TxStatus {
+  return { status: 'pending', seen: false, confirmations: 0, overlayAction: 'retain' }
+}
+
+/** Canonical confirmed status. */
+export function confirmedTxStatus(confirmations: number): TxStatus {
+  if (!Number.isSafeInteger(confirmations) || confirmations < 0) {
+    throw new RangeError('transaction confirmations must be a non-negative safe integer')
+  }
+  return { status: 'confirmed', seen: true, confirmations, overlayAction: 'reconcile' }
+}
+
+/** Canonical, sanitized terminal rejection. */
+export function rejectedTxStatus(): TxStatus {
+  return {
+    status: 'rejected',
+    seen: false,
+    confirmations: 0,
+    overlayAction: 'rollback',
+    terminal: {
+      code: 'TX_REJECTED',
+      reason: 'The transaction was definitively rejected.',
+    },
+  }
+}
+
+/** Canonical, sanitized validity-interval expiry. */
+export function expiredTxStatus(): TxStatus {
+  return {
+    status: 'expired',
+    seen: false,
+    confirmations: 0,
+    overlayAction: 'rollback',
+    terminal: {
+      code: 'TX_EXPIRED',
+      reason: 'The transaction validity interval expired before confirmation.',
+    },
+  }
 }
 
 /**

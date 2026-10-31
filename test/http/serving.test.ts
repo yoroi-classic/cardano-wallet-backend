@@ -1,12 +1,13 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { buildServer } from '../../src/http/server.js'
 import { fakeProvider } from '../support/fake-provider.js'
 
 const TIP = { block: 3_500_000, slot: 86_400_123, epoch: 199, hash: 'aa11', blockTime: 0 }
 const INFO = { version: '1.2.3', network: 'preprod', provider: 'koios' }
+const SERVER_TIME = 1_784_674_800_123
+const SERVER_TIME_SECONDS = Math.floor(SERVER_TIME / 1000)
 
-/** Seconds since the epoch, as the status route reads the clock. */
-const now = (): number => Math.floor(Date.now() / 1000)
+afterEach(() => vi.restoreAllMocks())
 
 describe('cors', () => {
   // The extension calls from an opaque `chrome-extension://<id>` origin that changes per build,
@@ -90,6 +91,56 @@ describe('rate limit', () => {
     await app.close()
   })
 
+  it('ignores spoofed forwarded addresses from a direct caller', async () => {
+    const app = await buildServer({
+      provider: fakeProvider({ getTip: async () => TIP }),
+      rateLimit: { max: 1, windowMs: 60_000 },
+    })
+
+    const first = await app.inject({
+      method: 'GET',
+      url: '/v1/chain/tip',
+      remoteAddress: '192.0.2.10',
+      headers: { 'x-forwarded-for': '198.51.100.1' },
+    })
+    const rotatedSpoof = await app.inject({
+      method: 'GET',
+      url: '/v1/chain/tip',
+      remoteAddress: '192.0.2.10',
+      headers: { 'x-forwarded-for': '198.51.100.2' },
+    })
+
+    expect([first.statusCode, rotatedSpoof.statusCode]).toEqual([200, 429])
+    await app.close()
+  })
+
+  it('uses the first untrusted address behind an explicitly trusted proxy', async () => {
+    const app = await buildServer({
+      provider: fakeProvider({ getTip: async () => TIP }),
+      rateLimit: { max: 1, windowMs: 60_000 },
+      trustedProxies: ['127.0.0.1'],
+    })
+
+    const request = (forwardedFor: string) =>
+      app.inject({
+        method: 'GET',
+        url: '/v1/chain/tip',
+        remoteAddress: '127.0.0.1',
+        headers: { 'x-forwarded-for': forwardedFor },
+      })
+
+    const firstClient = await request('198.51.100.1, 203.0.113.10')
+    const sameClientWithRotatedSpoof = await request('198.51.100.2, 203.0.113.10')
+    const secondClient = await request('198.51.100.1, 203.0.113.11')
+
+    expect([
+      firstClient.statusCode,
+      sameClientWithRotatedSpoof.statusCode,
+      secondClient.statusCode,
+    ]).toEqual([200, 429, 200])
+    await app.close()
+  })
+
   // An instance that rate-limits its own orchestrator's liveness probe gets declared dead, which
   // turns a traffic spike into an outage. /health is exempt for that reason and must stay so.
   it('never rate-limits the liveness probe', async () => {
@@ -118,8 +169,11 @@ describe('rate limit', () => {
 
 describe('GET /v1/status', () => {
   it('reports the build, the network, and a fresh chain', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(SERVER_TIME)
     const app = await buildServer({
-      provider: fakeProvider({ getTip: async () => ({ ...TIP, blockTime: now() - 20 }) }),
+      provider: fakeProvider({
+        getTip: async () => ({ ...TIP, blockTime: SERVER_TIME_SECONDS - 20 }),
+      }),
       info: INFO,
     })
 
@@ -130,22 +184,31 @@ describe('GET /v1/status', () => {
       version: '1.2.3',
       network: 'preprod',
       provider: 'koios',
+      serverTime: SERVER_TIME,
       chain: 'ok',
+      behindSeconds: 20,
       tip: { block: 3_500_000, epoch: 199 },
     })
+    expect(res.body).toContain(`"serverTime":${SERVER_TIME}`)
     await app.close()
   })
 
   it('calls the chain stale when the tip is lagging', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(SERVER_TIME)
     const app = await buildServer({
-      provider: fakeProvider({ getTip: async () => ({ ...TIP, blockTime: now() - 3_600 }) }),
+      provider: fakeProvider({
+        getTip: async () => ({ ...TIP, blockTime: SERVER_TIME_SECONDS - 3_600 }),
+      }),
       info: INFO,
     })
 
     const res = await app.inject({ method: 'GET', url: '/v1/status' })
 
-    expect(res.json()).toMatchObject({ chain: 'stale' })
-    expect(res.json().behindSeconds).toBeGreaterThan(3_000)
+    expect(res.json()).toMatchObject({
+      serverTime: SERVER_TIME,
+      chain: 'stale',
+      behindSeconds: 3_600,
+    })
     await app.close()
   })
 
@@ -153,6 +216,7 @@ describe('GET /v1/status', () => {
   // source is not": the first is a network error, the second is a maintenance notice. A 5xx here
   // would collapse them into one.
   it('answers 200 with chain: down when upstream is unreachable, not a 502', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(SERVER_TIME)
     const app = await buildServer({
       provider: fakeProvider({
         getTip: async () => {
@@ -165,7 +229,12 @@ describe('GET /v1/status', () => {
     const res = await app.inject({ method: 'GET', url: '/v1/status' })
 
     expect(res.statusCode).toBe(200)
-    expect(res.json()).toMatchObject({ network: 'preprod', chain: 'down', tip: null })
+    expect(res.json()).toMatchObject({
+      network: 'preprod',
+      serverTime: SERVER_TIME,
+      chain: 'down',
+      tip: null,
+    })
     await app.close()
   })
 

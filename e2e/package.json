@@ -9,8 +9,8 @@
   },
   "scripts": {
     "start": "tsx src/run.ts",
-    "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test src/*.test.ts"
+    "test": "tsx --test src/*.test.ts",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@dcspark/cardano-multiplatform-lib-nodejs": "6.2.0",

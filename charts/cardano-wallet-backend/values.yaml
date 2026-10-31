@@ -1,0 +1,105 @@
+replicaCount: 1
+
+image:
+  repository: cardano-wallet-backend
+  pullPolicy: IfNotPresent
+  tag: ''
+
+imagePullSecrets: []
+nameOverride: ''
+fullnameOverride: ''
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ''
+  automountServiceAccountToken: false
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: false
+  className: ''
+  annotations: {}
+  hosts:
+    - host: cardano-wallet-backend.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+config:
+  network: preprod
+  provider: koios
+  host: 0.0.0.0
+  port: 3010
+  logLevel: info
+  cacheEnabled: true
+  corsOrigins: '*'
+  # Comma-separated proxy IPs or CIDRs allowed to supply X-Forwarded-For. Empty means forwarding
+  # headers are ignored entirely. Set it when an ingress or LoadBalancer is the only path to the
+  # pod, otherwise every caller shares one rate-limit bucket. Escape the commas when passing more
+  # than one through --set, or set it from a values file.
+  trustProxy: ''
+  rateLimitMax: 120
+  rateLimitWindowMs: 60000
+  koiosUrl: ''
+  blockfrostUrl: ''
+  remoteConfig:
+    enabled: true
+    url: ''
+
+secrets:
+  existingSecret: ''
+  koiosTokenKey: KOIOS_TOKEN
+  blockfrostProjectIdKey: BLOCKFROST_PROJECT_ID
+  nftcdnSubdomainKey: NFTCDN_SUBDOMAIN
+  nftcdnKeyKey: NFTCDN_KEY
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 30
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3

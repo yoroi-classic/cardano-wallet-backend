@@ -1,0 +1,122 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cardano-wallet-backend.fullname" . | quote }}
+  labels:
+    {{- include "cardano-wallet-backend.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "cardano-wallet-backend.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- with omit .Values.podLabels "app.kubernetes.io/name" "app.kubernetes.io/instance" }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- include "cardano-wallet-backend.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "cardano-wallet-backend.serviceAccountName" . | quote }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ include "cardano-wallet-backend.name" . | quote }}
+          image: {{ include "cardano-wallet-backend.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: "http"
+              containerPort: {{ .Values.config.port }}
+              protocol: TCP
+          env:
+            - name: NETWORK
+              value: {{ .Values.config.network | quote }}
+            - name: PROVIDER
+              value: {{ .Values.config.provider | quote }}
+            - name: HOST
+              value: {{ .Values.config.host | quote }}
+            - name: PORT
+              value: {{ .Values.config.port | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.config.logLevel | quote }}
+            - name: CACHE_ENABLED
+              value: {{ .Values.config.cacheEnabled | quote }}
+            - name: CORS_ORIGINS
+              value: {{ .Values.config.corsOrigins | quote }}
+            - name: TRUST_PROXY
+              value: {{ .Values.config.trustProxy | quote }}
+            - name: RATE_LIMIT_MAX
+              value: {{ .Values.config.rateLimitMax | quote }}
+            - name: RATE_LIMIT_WINDOW_MS
+              value: {{ .Values.config.rateLimitWindowMs | quote }}
+            {{- if .Values.config.koiosUrl }}
+            - name: KOIOS_URL
+              value: {{ .Values.config.koiosUrl | quote }}
+            {{- end }}
+            {{- if eq .Values.config.provider "blockfrost" }}
+            - name: BLOCKFROST_PROJECT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "secrets.existingSecret is required when config.provider=blockfrost" .Values.secrets.existingSecret | quote }}
+                  key: {{ required "secrets.blockfrostProjectIdKey is required when config.provider=blockfrost" .Values.secrets.blockfrostProjectIdKey | quote }}
+            {{- if .Values.config.blockfrostUrl }}
+            - name: BLOCKFROST_URL
+              value: {{ .Values.config.blockfrostUrl | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if not .Values.config.remoteConfig.enabled }}
+            - name: CONFIG_URL
+              value: ""
+            {{- else if .Values.config.remoteConfig.url }}
+            - name: CONFIG_URL
+              value: {{ .Values.config.remoteConfig.url | quote }}
+            {{- end }}
+            {{- if .Values.secrets.existingSecret }}
+            - name: KOIOS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | quote }}
+                  key: {{ .Values.secrets.koiosTokenKey | quote }}
+                  optional: true
+            - name: NFTCDN_SUBDOMAIN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | quote }}
+                  key: {{ .Values.secrets.nftcdnSubdomainKey | quote }}
+                  optional: true
+            - name: NFTCDN_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | quote }}
+                  key: {{ .Values.secrets.nftcdnKeyKey | quote }}
+                  optional: true
+            {{- end }}
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

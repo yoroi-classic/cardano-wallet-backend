@@ -1,7 +1,9 @@
 import type { FastifyInstance } from 'fastify'
 import type { NftcdnSigner } from '../../media/nftcdn.js'
+import type { PriceProvider } from '../../prices/index.js'
 import type { RemoteConfig } from '../../remote-config/index.js'
 import type { ChainProvider } from '../../providers/provider.js'
+import type { StatusInfo } from '../../domain/types/status.js'
 import { registerAccountRoutes } from './account.js'
 import { registerAddressRoutes } from './addresses.js'
 import { registerAssetRoutes } from './assets.js'
@@ -13,7 +15,7 @@ import { registerMediaRoutes } from './media.js'
 import { registerOpenapiRoutes } from './openapi.js'
 import { registerPoolRoutes } from './pools.js'
 import { registerPriceRoutes } from './price.js'
-import { registerStatusRoutes, type StatusInfo } from './status.js'
+import { registerStatusRoutes } from './status.js'
 import { registerTxRoutes } from './tx.js'
 
 /**
@@ -38,6 +40,13 @@ export interface RouteDeps {
    * /v1/config answers 503 and everything else works.
    */
   remoteConfig?: RemoteConfig
+  /**
+   * Price and market data (CoinGecko + GeckoTerminal). Absent means every /v1/price/* route falls
+   * back to the 501 it always answered before a provider existed; see http/routes/price.ts. Unlike
+   * NFTCDN and remote config, a real deployment always has one, since neither upstream needs a
+   * credential at the free tier (see src/index.ts's main()).
+   */
+  priceProvider?: PriceProvider
 }
 
 /**
@@ -61,13 +70,13 @@ export const routeRegistrars: readonly RouteRegistrar[] = [
   registerOpenapiRoutes,
   (app, provider, deps) => registerStatusRoutes(app, provider, deps.info),
   registerChainRoutes,
-  registerAccountRoutes,
-  registerAddressRoutes,
+  (app, provider, deps) => registerAccountRoutes(app, provider, deps.info.network),
+  (app, provider, deps) => registerAddressRoutes(app, provider, deps.info.network),
   registerPoolRoutes,
   registerAssetRoutes,
   (app, _provider, deps) => registerMediaRoutes(app, deps.nftcdn),
   (app, _provider, deps) => registerConfigRoutes(app, deps.remoteConfig),
   registerGovernanceRoutes,
-  registerPriceRoutes,
+  (app, _provider, deps) => registerPriceRoutes(app, deps.priceProvider),
   registerTxRoutes,
 ]

@@ -1,0 +1,76 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "config": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "enum": ["koios", "blockfrost"]
+        },
+        "blockfrostUrl": {
+          "type": "string",
+          "anyOf": [
+            {
+              "const": ""
+            },
+            {
+              "format": "uri"
+            }
+          ]
+        }
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "properties": {
+        "existingSecret": {
+          "type": "string"
+        },
+        "blockfrostProjectIdKey": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "config": {
+            "properties": {
+              "provider": {
+                "const": "blockfrost"
+              }
+            },
+            "required": ["provider"]
+          }
+        },
+        "required": ["config"]
+      },
+      "then": {
+        "properties": {
+          "secrets": {
+            "properties": {
+              "existingSecret": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 253,
+                "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
+              },
+              "blockfrostProjectIdKey": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 253,
+                "pattern": "^[A-Za-z0-9._-]+$"
+              }
+            },
+            "required": ["existingSecret", "blockfrostProjectIdKey"]
+          }
+        },
+        "required": ["secrets"]
+      }
+    }
+  ]
+}

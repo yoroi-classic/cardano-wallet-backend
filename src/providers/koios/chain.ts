@@ -4,11 +4,15 @@ import type { ChainCapability } from '../capabilities/chain.js'
 import type { KoiosClient } from './client.js'
 import { numeric } from './schema.js'
 
+// Chain counters enter the Tip domain shape as numbers, so anything outside JavaScript's exact
+// integer range is already unrecoverably rounded by JSON.parse and must be rejected upstream.
+const tipCounter = z.number().int().nonnegative().safe()
+
 const tipRow = z.object({
   hash: z.string(),
-  epoch_no: z.number(),
-  abs_slot: z.number(),
-  block_no: z.number(),
+  epoch_no: tipCounter,
+  abs_slot: tipCounter,
+  block_no: tipCounter,
   // Unix seconds. See Tip.blockTime: a slot is not a timestamp.
   block_time: z.number().int().nonnegative(),
 })

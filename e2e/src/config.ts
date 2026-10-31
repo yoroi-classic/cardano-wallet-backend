@@ -22,6 +22,7 @@ export interface E2eConfig {
 
 // preprod and preview are both testnets (network id 0); mainnet is 1.
 const NETWORK_ID: Record<E2eConfig['network'], number> = { mainnet: 1, preprod: 0, preview: 0 }
+const MAINNET_OPT_IN = 'ALLOW_MAINNET_E2E'
 
 function required(name: string, value: string | undefined): string {
   const trimmed = value?.trim() ?? ''
@@ -48,6 +49,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): E2eConfig {
   const network = (env.NETWORK ?? 'preprod') as E2eConfig['network']
   if (!(network in NETWORK_ID)) {
     throw new Error(`invalid NETWORK "${network}", expected mainnet | preprod | preview`)
+  }
+  if (network === 'mainnet' && env[MAINNET_OPT_IN] !== 'true') {
+    throw new Error(
+      `refusing mainnet E2E run without explicit ${MAINNET_OPT_IN}=true; ` +
+        'this harness derives signing keys and can submit transactions that spend real ADA',
+    )
   }
   return {
     backendUrl: (env.BACKEND_URL ?? 'http://localhost:3010').replace(/\/+$/, ''),

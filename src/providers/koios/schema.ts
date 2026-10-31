@@ -16,15 +16,35 @@ import type { Asset } from '../../domain/types/common.js'
  */
 export const numeric = z.union([z.number().int().nonnegative().safe(), z.string().regex(/^\d+$/)])
 
+/**
+ * The same value, permitting a negative.
+ *
+ * Reserved for the one field that genuinely goes below zero. Koios computes an account's
+ * `total_balance` without its `proposal_refund` column, so an account with a governance deposit
+ * outstanding reports a negative controlled balance until the deposit returns. That is upstream's
+ * arithmetic and not a malformed value, and rejecting it took the whole account-state read down
+ * with a 502 for every DRep and SPO who had ever submitted a governance action.
+ *
+ * Deliberately not the default. Every other lovelace field here is a quantity that cannot be
+ * negative, and for those a minus sign really is malformed upstream data worth failing on. Both
+ * branches keep the guarantees `numeric` documents above: a safe integer on the number branch,
+ * every digit preserved on the string branch.
+ */
+export const signedNumeric = z.union([
+  z.number().int().safe(),
+  z.string().regex(/^-?(?:0|[1-9]\d*)$/),
+])
+
 /** A minting policy id is the 28-byte hash of the policy script: always 56 hex chars. */
 export const policyId = z.string().regex(/^[0-9a-fA-F]{56}$/)
 
 /**
- * An asset name is up to 32 bytes, hex-encoded, so 0 to 64 hex chars. Empty is deliberate
- * and common: a policy's unnamed asset is a real, valid token, so this cannot demand at
- * least one character the way the policy id does.
+ * An asset name is up to 32 bytes, hex-encoded as complete byte pairs. Empty is deliberate and
+ * common: a policy's unnamed asset is a real, valid token, so this cannot demand at least one
+ * byte the way the policy id does. Case is preserved because both upper- and lowercase hex encode
+ * the same bytes and the domain contract permits either.
  */
-export const assetName = z.string().regex(/^[0-9a-fA-F]{0,64}$/)
+export const assetName = z.string().regex(/^(?:[0-9a-fA-F]{2}){0,32}$/)
 
 /** A native asset as Koios spells it, on a UTxO or on a transaction input/output. */
 export const assetItem = z.object({

@@ -6,6 +6,7 @@ import {
   type RetryEvent,
 } from '../../src/providers/koios/index.js'
 import {
+  ConfigError,
   MalformedUpstreamError,
   ProviderError,
   ProviderTimeoutError,
@@ -116,6 +117,68 @@ function testProvider(script: Script, config: Partial<KoiosConfig> = {}) {
   })
   return { provider, callsTo, delays, retries }
 }
+
+describe('koios read attempt configuration', () => {
+  it.each([
+    ['zero', 0],
+    ['negative', -1],
+    ['fractional', 1.5],
+    ['NaN', Number.NaN],
+    ['positive infinity', Number.POSITIVE_INFINITY],
+    ['unsafe integer', Number.MAX_SAFE_INTEGER + 1],
+    ['over maximum', 101],
+  ])('rejects a %s budget at construction', (_case, readAttempts) => {
+    expect(() => testProvider({}, { readAttempts })).toThrow(
+      new RangeError('readAttempts must be a safe integer in [1, 100]; use 1 to disable retries'),
+    )
+  })
+
+  it.each([1, 100])('accepts the read-attempt boundary %s', async (readAttempts) => {
+    const { provider, callsTo } = testProvider({ '/tip': [{ body: [TIP_ROW] }] }, { readAttempts })
+
+    await expect(provider.getTip()).resolves.toMatchObject({ block: 3_500_000 })
+    expect(callsTo('/tip')).toBe(1)
+  })
+
+  it.each([
+    ['timeoutMs', { timeoutMs: Number.NaN }],
+    ['timeoutMs overflow', { timeoutMs: 2_147_483_648 }],
+    ['heavyTimeoutMs', { heavyTimeoutMs: Number.NaN }],
+    ['retryBackoffMs', { retryBackoffMs: Number.NaN }],
+    ['retryBackoffMs overflow', { retryBackoffMs: 2_147_483_648 }],
+    ['bodyLimitBytes', { bodyLimitBytes: Number.NaN }],
+    ['bodyLimitBytes overflow', { bodyLimitBytes: Number.POSITIVE_INFINITY }],
+    ['timeoutMs zero', { timeoutMs: 0 }],
+    ['timeoutMs negative', { timeoutMs: -1 }],
+    ['timeoutMs fractional', { timeoutMs: 1.5 }],
+    ['heavyTimeoutMs zero', { heavyTimeoutMs: 0 }],
+    ['heavyTimeoutMs negative', { heavyTimeoutMs: -1 }],
+    ['heavyTimeoutMs fractional', { heavyTimeoutMs: 1.5 }],
+    ['retryBackoffMs negative', { retryBackoffMs: -1 }],
+    ['retryBackoffMs fractional', { retryBackoffMs: 1.5 }],
+    ['bodyLimitBytes zero', { bodyLimitBytes: 0 }],
+    ['bodyLimitBytes negative', { bodyLimitBytes: -1 }],
+    ['bodyLimitBytes unsafe integer', { bodyLimitBytes: Number.MAX_SAFE_INTEGER + 1 }],
+  ])('rejects invalid %s at construction', (_case, config) => {
+    expect(() => testProvider({}, config)).toThrow(ConfigError)
+  })
+
+  it.each([
+    ['timeout minimum', { timeoutMs: 1 }],
+    ['timeout maximum', { timeoutMs: 2_147_483_647 }],
+    ['heavy timeout minimum', { heavyTimeoutMs: 1 }],
+    ['heavy timeout maximum', { heavyTimeoutMs: 2_147_483_647 }],
+    ['backoff minimum', { retryBackoffMs: 0 }],
+    ['backoff maximum', { retryBackoffMs: 2_147_483_647 }],
+    ['body limit minimum', { bodyLimitBytes: 1 }],
+    ['body limit maximum', { bodyLimitBytes: Number.MAX_SAFE_INTEGER }],
+  ])('accepts the %s boundary', async (_case, config) => {
+    const { provider, callsTo } = testProvider({ '/tip': [{ body: [TIP_ROW] }] }, config)
+
+    await expect(provider.getTip()).resolves.toMatchObject({ block: 3_500_000 })
+    expect(callsTo('/tip')).toBe(1)
+  })
+})
 
 describe('koios read retry', () => {
   // The case this whole mechanism exists for. Koios serves `active: null` from some instances

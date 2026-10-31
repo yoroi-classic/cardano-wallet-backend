@@ -1,0 +1,10 @@
+cardano-wallet-backend has been installed.
+
+Service:
+  {{ include "cardano-wallet-backend.fullname" . }}:{{ .Values.service.port }}
+
+Port-forward for a local smoke test:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "cardano-wallet-backend.fullname" . }} 3010:{{ .Values.service.port }}
+
+Then check:
+  curl http://127.0.0.1:3010/health

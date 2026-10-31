@@ -2,8 +2,8 @@ import { loadConfig } from './config.js'
 import { deriveWallet } from './wallet.js'
 import { createV1Client } from './v1.js'
 import { buildSelfPayment } from './buildTx.js'
+import { formatAda as ada } from './amount.js'
 
-const ada = (lovelace: string): string => (Number(lovelace) / 1_000_000).toFixed(6)
 const sleep = (seconds: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, seconds * 1000))
 

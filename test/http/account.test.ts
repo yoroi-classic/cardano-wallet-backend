@@ -69,6 +69,35 @@ describe('account routes', () => {
     expect(res.json()).toEqual(UTXOS)
   })
 
+  it('GET /v1/account/:stake/utxos/complete marks the completed provider result', async () => {
+    app = await buildServer({ provider: providerWith({}), info: TEST_INFO })
+    const res = await app.inject({
+      method: 'GET',
+      url: `/v1/account/${STAKE}/utxos/complete`,
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ complete: true, utxos: UTXOS })
+  })
+
+  it('does not return a completeness marker when the provider cannot complete the scan', async () => {
+    app = await buildServer({
+      provider: providerWith({
+        getAccountUtxos: async () => {
+          throw new ProviderError('account UTxO scan failed')
+        },
+      }),
+      info: TEST_INFO,
+    })
+    const res = await app.inject({
+      method: 'GET',
+      url: `/v1/account/${STAKE}/utxos/complete`,
+    })
+
+    expect(res.statusCode).toBe(502)
+    expect(res.json()).not.toHaveProperty('complete')
+  })
+
   it('rejects an invalid stake address with 400 and never calls the provider', async () => {
     let called = false
     app = await buildServer({

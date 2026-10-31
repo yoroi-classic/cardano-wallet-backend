@@ -39,7 +39,10 @@ const addressUtxoRow = z.object({
       hash: z.string().regex(/^[0-9a-fA-F]{56}$/),
       size: z.number().int().nonnegative().optional(),
       type: z.string().optional(),
-      bytes: z.string().regex(/^([0-9a-fA-F]{2})+$/).optional(),
+      bytes: z
+        .string()
+        .regex(/^([0-9a-fA-F]{2})+$/)
+        .optional(),
     })
     .nullish(),
 })

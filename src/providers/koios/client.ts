@@ -115,6 +115,7 @@ const HEAVY_PATHS = [
   '/drep_metadata',
   '/account_utxos',
   '/account_txs',
+  '/address_utxos',
 ]
 
 const timeoutFor = (path: string, base: number, heavy: number): number =>

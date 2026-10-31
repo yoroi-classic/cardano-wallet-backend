@@ -51,25 +51,26 @@ can exceed 2^53, where `JSON.parse` silently rounds: `7682048683977123456` becom
 
 The summary:
 
-| Method | Path                        | Returns                                                                      |
-| ------ | --------------------------- | ---------------------------------------------------------------------------- |
-| GET    | `/health`                   | liveness, no upstream call                                                   |
-| GET    | `/v1/status`                | `{ version, network, provider, chain, behindSeconds, tip }`                  |
-| GET    | `/v1/config`                | client remote config (feature flags, dApp list), served from our own fork    |
-| GET    | `/v1/chain/tip`             | `{ block, slot, epoch, hash, blockTime }`                                    |
-| GET    | `/v1/chain/protocol-params` | normalized protocol parameters incl. cost models                             |
-| GET    | `/v1/account/{stake}/state` | `{ registered, balance, rewardsAvailable, rewardsSum, withdrawalsSum, ... }` |
-| GET    | `/v1/account/{stake}/utxos` | array of UTxOs incl. assets and inline datums                                |
-| GET    | `/v1/account/{stake}/txs`   | transaction history (oldest first, `?after={block}`)                         |
-| POST   | `/v1/addresses/filter-used` | subset of `{ addresses: [...] }` seen on chain, in input order               |
-| POST   | `/v1/pools/info`            | stake-pool info for `{ poolIds: [...] }`, in input order                     |
-| POST   | `/v1/assets/info`           | token metadata for `{ subjects: [...] }` (registry + on-chain), input order  |
-| POST   | `/v1/assets/media`          | signed NFTCDN image/metadata URLs for `{ fingerprints: [...], size? }`       |
-| GET    | `/v1/assets/{fp}/image`     | 302 to a signed, resized NFTCDN image (`?size=`)                             |
-| POST   | `/v1/tx/submit`             | `{ txHash }` from `{ "cbor": "<hex tx>" }`                                   |
-| GET    | `/v1/governance/dreps`      | neutral page of registered DReps: `?limit=&offset=`                          |
-| POST   | `/v1/governance/dreps/info` | DRep info for `{ drepIds: [...] }`, in input order                           |
-| GET    | `/v1/tx/{hash}/status`      | `{ seen, confirmations }`                                                    |
+| Method | Path                        | Returns                                                                                                          |
+| ------ | --------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| GET    | `/health`                   | liveness, no upstream call                                                                                       |
+| GET    | `/v1/status`                | `{ version, network, provider, chain, behindSeconds, tip }`                                                      |
+| GET    | `/v1/config`                | client remote config (feature flags, dApp list), served from our own fork                                        |
+| GET    | `/v1/chain/tip`             | `{ block, slot, epoch, hash, blockTime }`                                                                        |
+| GET    | `/v1/chain/protocol-params` | normalized protocol parameters incl. cost models                                                                 |
+| GET    | `/v1/account/{stake}/state` | `{ registered, balance, rewardsAvailable, rewardsSum, withdrawalsSum, ... }`                                     |
+| GET    | `/v1/account/{stake}/utxos` | array of UTxOs incl. assets and inline datums                                                                    |
+| GET    | `/v1/account/{stake}/txs`   | transaction history (oldest first, `?after={block}`)                                                             |
+| POST   | `/v1/addresses/filter-used` | subset of `{ addresses: [...] }` seen on chain, in input order                                                   |
+| POST   | `/v1/address/utxos`         | `{ address }` current unspent outputs at one Shelley payment address, including datum and reference-script bytes |
+| POST   | `/v1/pools/info`            | stake-pool info for `{ poolIds: [...] }`, in input order                                                         |
+| POST   | `/v1/assets/info`           | token metadata for `{ subjects: [...] }` (registry + on-chain), input order                                      |
+| POST   | `/v1/assets/media`          | signed NFTCDN image/metadata URLs for `{ fingerprints: [...], size? }`                                           |
+| GET    | `/v1/assets/{fp}/image`     | 302 to a signed, resized NFTCDN image (`?size=`)                                                                 |
+| POST   | `/v1/tx/submit`             | `{ txHash }` from `{ "cbor": "<hex tx>" }`                                                                       |
+| GET    | `/v1/governance/dreps`      | neutral page of registered DReps: `?limit=&offset=`                                                              |
+| POST   | `/v1/governance/dreps/info` | DRep info for `{ drepIds: [...] }`, in input order                                                               |
+| GET    | `/v1/tx/{hash}/status`      | `{ seen, confirmations }`                                                                                        |
 
 Errors come back as `{ "error": { "code", "message" } }` with a stable status code
 (`502` upstream error, `504` upstream timeout, `429` rate limited, `400` bad request,

@@ -6,4 +6,7 @@ export interface AddressCapability {
    * result is a filter of the input, so it is never longer than `addresses`.
    */
   filterUsedAddresses(addresses: string[]): Promise<string[]>
+
+  /** Current unspent outputs at one payment address, including datums and reference scripts. */
+  getAddressUtxos(address: string): Promise<import('../../domain/types/transactions.js').Utxo[]>
 }

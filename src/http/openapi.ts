@@ -282,6 +282,30 @@ export const openapi = {
       },
     },
 
+    '/v1/address/utxos': {
+      post: {
+        tags: ['addresses'],
+        operationId: 'getAddressUtxos',
+        summary: 'Current unspent outputs at a payment address',
+        description:
+          'Returns UTxOs at one Shelley payment address, including inline datums and full ' +
+          'reference-script CBOR when present. Useful for script addresses that are not owned ' +
+          'by a wallet stake account. Never cached.',
+        requestBody: jsonBody({
+          type: 'object',
+          required: ['address'],
+          properties: { address: { type: 'string', maxLength: 1023 } },
+        }),
+        responses: {
+          '200': jsonResponse('Current unspent outputs at the address', {
+            type: 'array',
+            items: { $ref: '#/components/schemas/Utxo' },
+          }),
+          ...COMMON_ERRORS,
+        },
+      },
+    },
+
     '/v1/assets/info': {
       post: {
         tags: ['assets'],
@@ -974,6 +998,20 @@ export const openapi = {
           datumHash: { type: 'string' },
           inlineDatum: { type: 'string', description: 'CBOR hex, when the output carries one.' },
           referenceScriptHash: { type: 'string' },
+          referenceScript: {
+            type: 'object',
+            required: ['hash'],
+            properties: {
+              hash: HEX(28, 'The reference script hash'),
+              size: { type: 'integer', minimum: 0 },
+              type: { type: 'string' },
+              bytes: {
+                type: 'string',
+                pattern: '^([0-9a-fA-F]{2})+$',
+                description: 'Reference script CBOR hex.',
+              },
+            },
+          },
           spent: {
             type: 'boolean',
             description:
@@ -1182,6 +1220,20 @@ export const openapi = {
           datumHash: { type: 'string' },
           inlineDatum: { type: 'string', description: 'CBOR hex, when the output carries one.' },
           referenceScriptHash: { type: 'string' },
+          referenceScript: {
+            type: 'object',
+            required: ['hash'],
+            properties: {
+              hash: HEX(28, 'The reference script hash'),
+              size: { type: 'integer', minimum: 0 },
+              type: { type: 'string' },
+              bytes: {
+                type: 'string',
+                pattern: '^([0-9a-fA-F]{2})+$',
+                description: 'Reference script CBOR hex.',
+              },
+            },
+          },
         },
       },
 

@@ -15,6 +15,8 @@ import { assetItem, mapAssets, numeric } from './schema.js'
 
 // How many transactions we detail per page. Matches the extension's request size.
 const HISTORY_PAGE_SIZE = 50
+// Koios defaults list responses to 1,000 rows. Wallets can have more live outputs.
+const ACCOUNT_UTXO_PAGE_SIZE = 1000
 
 const accountInfoRow = z.object({
   stake_address: z.string(),
@@ -37,7 +39,17 @@ const accountUtxoRow = z.object({
   asset_list: z.array(assetItem).nullish(),
   datum_hash: z.string().nullish(),
   inline_datum: z.object({ bytes: z.string() }).nullish(),
-  reference_script: z.object({ hash: z.string() }).nullish(),
+  reference_script: z
+    .object({
+      hash: z.string().regex(/^[0-9a-fA-F]{56}$/),
+      size: z.number().int().nonnegative().optional(),
+      type: z.string().optional(),
+      bytes: z
+        .string()
+        .regex(/^([0-9a-fA-F]{2})+$/)
+        .optional(),
+    })
+    .nullish(),
 })
 
 // One reward, as Koios spells it. `type` is constrained to the set Koios documents rather than
@@ -124,6 +136,7 @@ function mapUtxo(row: z.infer<typeof accountUtxoRow>): Utxo {
     datumHash: row.datum_hash ?? undefined,
     inlineDatum: row.inline_datum?.bytes ?? undefined,
     referenceScriptHash: row.reference_script?.hash ?? undefined,
+    referenceScript: row.reference_script ?? undefined,
   }
 }
 
@@ -190,11 +203,19 @@ export function createAccountMethods(koios: KoiosClient): AccountCapability {
     },
 
     async getAccountUtxos(stakeAddress: string): Promise<Utxo[]> {
-      const rows = await koios.batch(z.array(accountUtxoRow), '/account_utxos', {
-        _stake_addresses: [stakeAddress],
-        _extended: true,
-      })
-      return rows.map(mapUtxo)
+      const utxos: Utxo[] = []
+      for (let offset = 0; ; offset += ACCOUNT_UTXO_PAGE_SIZE) {
+        const query = new URLSearchParams({
+          limit: String(ACCOUNT_UTXO_PAGE_SIZE),
+          offset: String(offset),
+        })
+        const rows = await koios.batch(z.array(accountUtxoRow), `/account_utxos?${query}`, {
+          _stake_addresses: [stakeAddress],
+          _extended: true,
+        })
+        utxos.push(...rows.map(mapUtxo))
+        if (rows.length < ACCOUNT_UTXO_PAGE_SIZE) return utxos
+      }
     },
 
     async getTxHistory(stakeAddress: string, afterBlock?: number): Promise<WalletTransaction[]> {

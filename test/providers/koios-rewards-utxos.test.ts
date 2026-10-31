@@ -175,6 +175,24 @@ describe('koios getUtxosByRef', () => {
     expect(JSON.parse(String(calls[0]?.body))).toMatchObject({ _extended: true })
   })
 
+  it('preserves reference script bytes needed by transaction construction', async () => {
+    const script = {
+      hash: 'c'.repeat(56),
+      size: 3,
+      type: 'plutusV3',
+      bytes: '4e4d01000033222220051200120011',
+    }
+    const { fetchImpl } = fakeFetch(async () => [
+      { ...utxo(TX, 0, false), reference_script: script },
+    ])
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const [resolved] = await provider.getUtxosByRef([`${TX}#0`])
+
+    expect(resolved?.referenceScript).toEqual(script)
+    expect(resolved?.referenceScriptHash).toBe(script.hash)
+  })
+
   // The field the endpoint exists for. A wallet that offers a spent output as collateral builds a
   // transaction the node rejects, and the user sees a failure with no explanation.
   it('reports a spent output as spent, rather than omitting it', async () => {

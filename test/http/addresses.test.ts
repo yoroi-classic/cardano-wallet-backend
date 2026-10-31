@@ -107,3 +107,70 @@ describe('filter-used route', () => {
     expect(res.json()).toMatchObject({ error: { code: 'BAD_REQUEST' } })
   })
 })
+
+describe('address UTxO route', () => {
+  it('returns script-address outputs, including inline datum and reference script CBOR', async () => {
+    const output = {
+      txHash: 'a'.repeat(64),
+      outputIndex: 0,
+      address: USED,
+      value: '18248540',
+      assets: [],
+      inlineDatum: 'd87980',
+      referenceScriptHash: 'c'.repeat(56),
+      referenceScript: {
+        hash: 'c'.repeat(56),
+        size: 3,
+        type: 'plutusV3',
+        bytes: '4e4d01000033222220051200120011',
+      },
+    }
+    app = await buildServer({
+      provider: providerWith({ getAddressUtxos: async () => [output] }),
+    })
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/address/utxos',
+      payload: { address: USED },
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual([output])
+  })
+
+  it('returns an empty list for a valid address with no current UTxOs', async () => {
+    app = await buildServer({
+      provider: providerWith({ getAddressUtxos: async () => [] }),
+    })
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/address/utxos',
+      payload: { address: UNUSED },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual([])
+  })
+
+  it('rejects malformed or non-payment addresses without querying the provider', async () => {
+    app = await buildServer({
+      provider: providerWith({
+        getAddressUtxos: async () => {
+          throw new Error('provider should not be called for invalid address')
+        },
+      }),
+    })
+    const malformed = await app.inject({
+      method: 'POST',
+      url: '/v1/address/utxos',
+      payload: { address: 'not-valid' },
+    })
+    const stake = await app.inject({
+      method: 'POST',
+      url: '/v1/address/utxos',
+      payload: { address: NON_PAYMENT_TYPE },
+    })
+    expect(malformed.statusCode).toBe(400)
+    expect(stake.statusCode).toBe(400)
+  })
+})

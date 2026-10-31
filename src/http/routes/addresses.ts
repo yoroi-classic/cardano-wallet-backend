@@ -27,6 +27,20 @@ function isPaymentAddress(value: string): boolean {
 
 /** Address-level reads. */
 export function registerAddressRoutes(app: FastifyInstance, provider: ChainProvider): void {
+  app.post('/v1/address/utxos', async (request) => {
+    const parsed = z
+      .object({ address: z.string().min(1).max(BECH32_LIMIT) })
+      .safeParse(request.body)
+    if (!parsed.success) {
+      throw new BadRequestError('body must be { "address": "<bech32 payment address>" }')
+    }
+    const { address } = parsed.data
+    if (!isPaymentAddress(address)) {
+      throw new BadRequestError('address must be a bech32 payment address (addr / addr_test)')
+    }
+    return provider.getAddressUtxos(address)
+  })
+
   app.post('/v1/addresses/filter-used', async (request) => {
     const parsed = body.safeParse(request.body)
     if (!parsed.success) {

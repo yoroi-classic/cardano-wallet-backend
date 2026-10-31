@@ -126,6 +126,39 @@ describe('koios getAccountUtxos', () => {
     reference_script: null,
   }
 
+  it('fetches every page for an account with more than Koios’s 1,000-row default', async () => {
+    const calls: Call[] = []
+    const fetchImpl: FetchLike = async (url, init) => {
+      calls.push({
+        url,
+        method: init?.method,
+        body: init?.body,
+        contentType: init?.headers?.['content-type'],
+      })
+      const offset = new URL(url).searchParams.get('offset')
+      const rows = offset === '0' ? 1000 : 1
+      const start = offset === '0' ? 0 : 1000
+      return {
+        ok: true,
+        status: 200,
+        json: async () =>
+          Array.from({ length: rows }, (_, index) => ({
+            ...ROW,
+            tx_hash: (start + index).toString(16).padStart(64, '0'),
+          })),
+        text: async () => '',
+      }
+    }
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const utxos = await provider.getAccountUtxos(STAKE)
+
+    expect(utxos).toHaveLength(1001)
+    expect(utxos[1000]?.txHash).toBe((1000).toString(16).padStart(64, '0'))
+    expect(calls.map((call) => new URL(call.url).searchParams.get('offset'))).toEqual(['0', '1000'])
+    expect(calls.every((call) => new URL(call.url).searchParams.get('limit') === '1000')).toBe(true)
+  })
+
   it('maps a utxo with assets and inline datum (regression)', async () => {
     const { fetchImpl, calls } = fakeFetch({ json: async () => [ROW] })
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
@@ -142,6 +175,7 @@ describe('koios getAccountUtxos', () => {
         inlineDatum: 'd87980',
       },
     ])
+    expect(calls[0]?.url).toBe(`${BASE}/account_utxos?limit=1000&offset=0`)
     expect(JSON.parse(String(calls[0]?.body))).toEqual({
       _stake_addresses: [STAKE],
       _extended: true,
@@ -154,14 +188,18 @@ describe('koios getAccountUtxos', () => {
       asset_list: null,
       inline_datum: null,
       datum_hash: 'beef',
-      reference_script: { hash: 'cafe' },
+      reference_script: { hash: 'c'.repeat(56) },
     }
     const { fetchImpl } = fakeFetch({ json: async () => [row] })
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
     const [utxo] = await provider.getAccountUtxos(STAKE)
 
-    expect(utxo).toMatchObject({ assets: [], datumHash: 'beef', referenceScriptHash: 'cafe' })
+    expect(utxo).toMatchObject({
+      assets: [],
+      datumHash: 'beef',
+      referenceScriptHash: 'c'.repeat(56),
+    })
     expect(utxo?.inlineDatum).toBeUndefined()
   })
 
@@ -449,6 +487,97 @@ describe('koios filterUsedAddresses', () => {
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
 
     await expect(provider.filterUsedAddresses(['a'])).rejects.toBeInstanceOf(ProviderError)
+  })
+})
+
+describe('koios getAddressUtxos', () => {
+  it('fetches every page when an address has more than Koios’s 1,000-row default', async () => {
+    const calls: Call[] = []
+    const fetchImpl: FetchLike = async (url, init) => {
+      calls.push({
+        url,
+        method: init?.method,
+        body: init?.body,
+        contentType: init?.headers?.['content-type'],
+      })
+      const offset = new URL(url).searchParams.get('offset')
+      const rows = offset === '0' ? 1000 : 1
+      const start = offset === '0' ? 0 : 1000
+      return {
+        ok: true,
+        status: 200,
+        json: async () =>
+          Array.from({ length: rows }, (_, index) => ({
+            tx_hash: (start + index).toString(16).padStart(64, '0'),
+            tx_index: 0,
+            address: 'addr_test1script',
+            value: '18248540',
+            asset_list: null,
+            datum_hash: null,
+            inline_datum: null,
+            reference_script: null,
+          })),
+        text: async () => '',
+      }
+    }
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    const outputs = await provider.getAddressUtxos('addr_test1script')
+
+    expect(outputs).toHaveLength(1001)
+    expect(outputs[0]?.txHash).toBe('0'.repeat(64))
+    expect(outputs[1000]?.txHash).toBe((1000).toString(16).padStart(64, '0'))
+    expect(calls.map((call) => new URL(call.url).searchParams.get('offset'))).toEqual(['0', '1000'])
+    expect(calls.every((call) => new URL(call.url).searchParams.get('limit') === '1000')).toBe(true)
+    expect(calls.every((call) => JSON.parse(String(call.body))._extended === true)).toBe(true)
+  })
+
+  it('requests current address outputs with extended datum and script bytes', async () => {
+    const script = {
+      hash: 'c'.repeat(56),
+      size: 3,
+      type: 'plutusV3',
+      bytes: '4e4d01000033222220051200120011',
+    }
+    const { fetchImpl, calls } = fakeFetch({
+      json: async () => [
+        {
+          tx_hash: 'a'.repeat(64),
+          tx_index: 0,
+          address: 'addr_test1script',
+          value: '18248540',
+          asset_list: null,
+          datum_hash: null,
+          inline_datum: { bytes: 'd87980' },
+          reference_script: script,
+        },
+      ],
+    })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+
+    await expect(provider.getAddressUtxos('addr_test1script')).resolves.toEqual([
+      {
+        txHash: 'a'.repeat(64),
+        outputIndex: 0,
+        address: 'addr_test1script',
+        value: '18248540',
+        assets: [],
+        inlineDatum: 'd87980',
+        referenceScriptHash: script.hash,
+        referenceScript: script,
+      },
+    ])
+    expect(calls[0]?.url).toBe(`${BASE}/address_utxos?limit=1000&offset=0`)
+    expect(JSON.parse(String(calls[0]?.body))).toEqual({
+      _addresses: ['addr_test1script'],
+      _extended: true,
+    })
+  })
+
+  it('returns an empty list for an address without current UTxOs', async () => {
+    const { fetchImpl } = fakeFetch({ json: async () => [] })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+    await expect(provider.getAddressUtxos('addr_test1empty')).resolves.toEqual([])
   })
 })
 

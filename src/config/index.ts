@@ -21,8 +21,8 @@ export interface AppConfig {
   corsOrigins: string[] | '*'
   /** Anonymous free-tier limit, per client IP. `undefined` disables it. */
   rateLimit?: { max: number; windowMs: number }
-  /** Exact proxy IPs/CIDRs allowed to supply the client address. Empty means direct traffic. */
-  trustedProxies: string[]
+  /** Proxy IPs/CIDRs, or single-hop for a network-isolated proxy. Empty means direct traffic. */
+  trustedProxies: string[] | 'single-hop'
   /**
    * NFTCDN, for native-asset media. Optional: a deployment without it serves every chain read and
    * only the media routes degrade, to a 503 that says why.
@@ -222,7 +222,8 @@ function sharesPrefix(left: Uint8Array, right: Uint8Array, bits: number): boolea
   return true
 }
 
-function parseTrustedProxies(raw: string): string[] {
+function parseTrustedProxies(raw: string): string[] | 'single-hop' {
+  if (raw.trim() === 'single-hop') return 'single-hop'
   const proxies = raw
     .split(',')
     .map((entry) => entry.trim())

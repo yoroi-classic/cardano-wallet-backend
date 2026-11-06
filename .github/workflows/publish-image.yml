@@ -94,6 +94,7 @@ jobs:
           context: .
           platforms: linux/${{ matrix.arch }}
           load: true
+          pull: true
           tags: cardano-wallet-backend:ci
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}

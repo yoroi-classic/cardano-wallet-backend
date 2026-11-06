@@ -4,6 +4,10 @@ import { createProvider } from '../../src/providers/factory.js'
 import { ConfigError } from '../../src/domain/errors.js'
 
 describe('loadConfig — happy path', () => {
+  it('accepts explicit single-hop mode for a network-isolated reverse proxy', () => {
+    expect(loadConfig({ TRUST_PROXY: 'single-hop' }).trustedProxies).toBe('single-hop')
+  })
+
   it('applies preprod defaults when the env is empty', () => {
     const config = loadConfig({})
 

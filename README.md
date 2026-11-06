@@ -192,7 +192,13 @@ See `.env.example`. Key values:
 - `CORS_ORIGINS` — `*` (default) or a comma-separated list
 - `RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW_MS` — anonymous free tier, per client IP (default 120/min).
   `0` disables the limiter, which is only correct on a private deployment.
-- `TRUST_PROXY` — comma-separated proxy IP addresses/CIDRs allowed to supply `X-Forwarded-For`.
+- `TRUST_PROXY` — comma-separated proxy IP addresses/CIDRs allowed to supply `X-Forwarded-For`,
+  or `single-hop` to use only the address appended by the immediate reverse proxy. Single-hop
+  requires enforced network isolation so that proxy is the only path to the backend, preserves
+  the real client source IP, and appends it even when the client supplies forwarding headers.
+  For Kong behind a Kubernetes LoadBalancer, require `externalTrafficPolicy: Local` and keep
+  arbitrary clients out of Kong's trusted-IP configuration. Earlier forwarded entries are ignored,
+  including for private client IPs. Never enable this mode on a directly reachable backend.
   Empty by default, which is correct for the directly exposed Docker port. Set it only when those
   proxies are the exclusive path to the backend; trusting arbitrary forwarding headers lets a
   direct caller rotate its apparent IP and evade the anonymous limit. No entry may be wider than a

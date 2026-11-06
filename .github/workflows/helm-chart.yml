@@ -122,11 +122,11 @@ jobs:
           | kubectl apply --dry-run=server -f -
 
   publish:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/development' || github.ref == 'refs/heads/main')
     needs: cardano-wallet-backend
     runs-on: ubuntu-latest
     concurrency:
-      group: helm-chart-publish-main
+      group: helm-chart-publish
       queue: max
     permissions:
       contents: read
@@ -177,8 +177,13 @@ jobs:
           fi
 
           if [ "$published" = true ]; then
-            if ! git diff --quiet "$BEFORE" HEAD -- "$chart"; then
-              echo "::error::Chart version $version already exists in GHCR; bump Chart.yaml before changing chart content"
+            mkdir -p "$RUNNER_TEMP/published-chart" "$RUNNER_TEMP/candidate-chart"
+            helm pull "$chart_ref" --version "$version" --destination "$RUNNER_TEMP/published-chart"
+            tar -xzf "$RUNNER_TEMP/published-chart/$archive" -C "$RUNNER_TEMP/published-chart"
+            tar -xzf "$package_path" -C "$RUNNER_TEMP/candidate-chart"
+            if ! diff -qr "$RUNNER_TEMP/published-chart/cardano-wallet-backend" \
+                "$RUNNER_TEMP/candidate-chart/cardano-wallet-backend"; then
+              echo "::error::Chart version $version already contains different chart content; bump Chart.yaml"
               exit 1
             fi
             echo "publish=false" >> "$GITHUB_OUTPUT"

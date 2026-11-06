@@ -125,7 +125,8 @@ async function main(): Promise<void> {
         provider: provider.name,
         cache: config.cacheEnabled,
         rateLimit: config.rateLimit ?? 'disabled',
-        trustedProxyCount: config.trustedProxies === 'single-hop' ? 1 : config.trustedProxies.length,
+        trustedProxyCount:
+          config.trustedProxies === 'single-hop' ? 1 : config.trustedProxies.length,
         // The subdomain, never the key. This line goes to a log that outlives the process.
         media: config.nftcdn === undefined ? 'disabled' : `nftcdn:${config.nftcdn.subdomain}`,
         remoteConfig: config.configUrl ?? 'disabled',

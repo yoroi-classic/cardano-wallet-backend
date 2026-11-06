@@ -21,7 +21,7 @@ const cancelExpression = "cancel-in-progress: ${{ github.ref != 'refs/heads/main
 
 assert.ok(validationJob.includes(groupExpression), 'Helm validation concurrency group changed')
 assert.ok(validationJob.includes(cancelExpression), 'Helm validation cancellation policy changed')
-assert.ok(publishJob.includes('group: helm-chart-publish-main'), 'main publication group changed')
+assert.ok(publishJob.includes('group: helm-chart-publish'), 'chart publication group changed')
 assert.ok(
   publishJob.includes('queue: max'),
   'main publication must remain queued without cancellation',

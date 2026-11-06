@@ -285,6 +285,21 @@ npm run check:ci       # local mirror of the baseline CI gate
 See `CONTRIBUTING.md` for the branch flow, the CI gates, and the testing and
 versioning policy.
 
+## Published deployment artifacts
+
+After successful push CI on `development`, `preview`, `preprod`, or `main`,
+`publish-image` publishes both `linux/amd64` and `linux/arm64` under
+`ghcr.io/yoroi-classic/cardano-wallet-backend:sha-<full-commit>`. It never publishes
+PR code and does not overwrite an existing commit tag. A manual dispatch can
+retry publication of a revision whose push CI has already passed. The job summary
+contains the image reference and manifest digest.
+
+The `helm-chart` workflow publishes changed charts from `development` and `main`
+to `oci://ghcr.io/yoroi-classic/charts/cardano-wallet-backend`. Identical chart
+content can be promoted without overwriting the version. A package administrator
+must make both GHCR packages public for anonymous infrastructure/cluster pulls,
+or configure authenticated pulls separately.
+
 ## License
 
 Apache-2.0.

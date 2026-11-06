@@ -10,8 +10,16 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: publish-image-${{ github.event.workflow_run.head_sha || github.sha }}
+  cancel-in-progress: false
+
+env:
+  SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+  SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch || github.ref_name }}
+
 jobs:
-  publish:
+  prepare:
     if: >-
       (github.event_name == 'workflow_run' &&
        github.event.workflow_run.conclusion == 'success' &&
@@ -20,32 +28,24 @@ jobs:
       (github.event_name == 'workflow_dispatch' &&
        contains(fromJSON('["development","preview","preprod","main"]'), github.ref_name))
     runs-on: ubuntu-latest
-    concurrency:
-      group: publish-image-${{ github.event.workflow_run.head_branch || github.ref_name }}
-      cancel-in-progress: false
     permissions:
       contents: read
       actions: read
-      packages: write
-    env:
-      SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
-      SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch || github.ref_name }}
+      packages: read
+    outputs:
+      ref: ${{ steps.image.outputs.ref }}
+      publish: ${{ steps.image.outputs.publish }}
+      digest: ${{ steps.image.outputs.digest }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ env.SOURCE_SHA }}
-          persist-credentials: false
       - name: Require successful CI for this revision
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           runs=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml \
             --branch "$SOURCE_BRANCH" --commit "$SOURCE_SHA" --event push \
             --status success --json databaseId --jq length)
           test "$runs" -gt 0
-      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
@@ -59,6 +59,9 @@ jobs:
           image="ghcr.io/${GITHUB_REPOSITORY,,}:sha-$SOURCE_SHA"
           echo "ref=$image" >> "$GITHUB_OUTPUT"
           if docker buildx imagetools inspect "$image" > "$RUNNER_TEMP/image-probe" 2>&1; then
+            digest=$(awk '$1 == "Digest:" { print $2; exit }' "$RUNNER_TEMP/image-probe")
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            echo "digest=$digest" >> "$GITHUB_OUTPUT"
             echo 'publish=false' >> "$GITHUB_OUTPUT"
           elif grep -Eq 'not found|manifest unknown' "$RUNNER_TEMP/image-probe"; then
             echo 'publish=true' >> "$GITHUB_OUTPUT"
@@ -66,23 +69,92 @@ jobs:
             cat "$RUNNER_TEMP/image-probe" >&2
             exit 1
           fi
-      - name: Publish tested revision
-        id: build
-        if: steps.image.outputs.publish == 'true'
+
+  build:
+    needs: prepare
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build candidate image
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.image.outputs.ref }}
+          platforms: linux/${{ matrix.arch }}
+          load: true
+          tags: cardano-wallet-backend:ci
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ env.SOURCE_SHA }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-      - name: Report image reference
+          cache-from: type=gha,scope=image-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=image-${{ matrix.arch }}
+      - name: Scan the exact candidate image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: cardano-wallet-backend:ci
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+          format: table
+      - name: Smoke-test the exact candidate image
+        run: bash scripts/smoke-docker-image.sh
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Push the tested architecture image
         env:
-          IMAGE_REF: ${{ steps.image.outputs.ref }}
-          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE_REF: ${{ needs.prepare.outputs.ref }}-${{ matrix.arch }}
         run: |
-          printf 'Image: %s\n\nDigest: %s\n' "$IMAGE_REF" "$IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"
+          docker tag cardano-wallet-backend:ci "$IMAGE_REF"
+          docker push "$IMAGE_REF"
+
+  publish:
+    needs: [prepare, build]
+    if: >-
+      always() && needs.prepare.result == 'success' &&
+      (needs.prepare.outputs.publish == 'false' || needs.build.result == 'success')
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    env:
+      IMAGE_REF: ${{ needs.prepare.outputs.ref }}
+      EXISTING_DIGEST: ${{ needs.prepare.outputs.digest }}
+    steps:
+      - if: needs.prepare.outputs.publish == 'true'
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - if: needs.prepare.outputs.publish == 'true'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Publish multi-architecture manifest
+        if: needs.prepare.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create --tag "$IMAGE_REF" "$IMAGE_REF-amd64" "$IMAGE_REF-arm64"
+      - name: Report image reference and digest
+        run: |
+          set -euo pipefail
+          digest="$EXISTING_DIGEST"
+          if [ -z "$digest" ]; then
+            docker buildx imagetools inspect "$IMAGE_REF" > "$RUNNER_TEMP/image-manifest"
+            digest=$(awk '$1 == "Digest:" { print $2; exit }' "$RUNNER_TEMP/image-manifest")
+          fi
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf 'Image: %s\n\nDigest: %s\n' "$IMAGE_REF" "$digest" >> "$GITHUB_STEP_SUMMARY"

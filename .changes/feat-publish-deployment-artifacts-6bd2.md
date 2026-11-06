@@ -1,6 +1,6 @@
 ### Added
 
-- Publish tested backend image revisions for AMD64 and ARM64 to GHCR, and publish the Helm chart from development for cluster deployment.
+- Publish tested backend image revisions for AMD64 and ARM64 to GHCR, and publish the Helm chart from development and main for cluster deployment.
 
 ### Fixed
 

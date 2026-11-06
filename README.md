@@ -290,7 +290,9 @@ versioning policy.
 After successful push CI on `development`, `preview`, `preprod`, or `main`,
 `publish-image` publishes both `linux/amd64` and `linux/arm64` under
 `ghcr.io/yoroi-classic/cardano-wallet-backend:sha-<full-commit>`. It never publishes
-PR code and does not overwrite an existing commit tag. A manual dispatch can
+PR code. Publication runs are serialized by commit and skip existing commit tags.
+Each architecture image is scanned and smoke-tested before that exact image is
+pushed; the multi-architecture manifest is published only after both succeed. A manual dispatch can
 retry publication of a revision whose push CI has already passed. The job summary
 contains the image reference and manifest digest.
 

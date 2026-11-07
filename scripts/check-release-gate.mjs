@@ -1048,6 +1048,11 @@ for (const required of [
   'git show "$TRUSTED_BASE_SHA:scripts/check-release-gate.mjs"',
   'node "$RUNNER_TEMP/check-release-gate.mjs"',
   'npm run check:release-gate',
+  '      - name: Check publication gate contract',
+  'git cat-file -e "$TRUSTED_BASE_SHA:scripts/check-publication-gate.mjs"',
+  'git show "$TRUSTED_BASE_SHA:scripts/check-publication-gate.mjs"',
+  'node "$RUNNER_TEMP/check-publication-gate.mjs"',
+  'npm run check:publication-gate',
 ]) {
   assert.ok(ciWithoutComments.includes(required), `CI release check missing: ${required}`)
 }

@@ -14,6 +14,7 @@ const image = parse(readFileSync('.github/workflows/publish-image.yml', 'utf8'))
 const chart = parse(readFileSync('.github/workflows/helm-chart.yml', 'utf8'))
 const ci = parse(readFileSync('.github/workflows/ci.yml', 'utf8'))
 assert.deepEqual(Object.keys(image.jobs), ['prepare', 'build', 'publish'])
+assert.deepEqual(Object.keys(chart.jobs), ['cardano-wallet-backend', 'publish'])
 assert.equal(image.env.SOURCE_SHA, '${{ github.event.workflow_run.head_sha || github.sha }}')
 assert.equal(
   image.env.SOURCE_BRANCH,
@@ -23,6 +24,11 @@ const branches = ['development', 'preview', 'preprod', 'main']
 assert.deepEqual(image.on.workflow_run.branches, branches, 'restrict publication branches')
 assert.deepEqual(image.on.workflow_run.workflows, ['ci'])
 assert.deepEqual(image.on.workflow_run.types, ['completed'])
+assert.equal(
+  image.concurrency.group,
+  'publish-image-${{ github.event.workflow_run.head_sha || github.sha }}',
+)
+assert.equal(image.concurrency['cancel-in-progress'], false)
 const fold = (value) => value.trim().replace(/\s+/g, ' ')
 const action = (steps, prefix) => {
   const found = steps.filter((step) => step.uses?.startsWith(prefix + '@'))
@@ -62,7 +68,7 @@ const smoke = named(steps, 'Smoke-test the exact candidate image')
 const push = named(steps, 'Push the tested architecture image')
 for (const step of [build, scan, smoke, push]) mandatory(step)
 assert.ok(
-  build.with.load === true && build.with.push !== true,
+  build.with.load === true && build.with.push === undefined,
   'load the candidate without pushing',
 )
 assert.equal(build.with.pull, true, 'refresh mutable base images')
@@ -99,6 +105,17 @@ const checkout = action(steps, 'actions/checkout')
 assert.equal(checkout.with.ref, '${{ env.SOURCE_SHA }}', 'build the CI-verified source revision')
 const proof = named(image.jobs.prepare.steps, 'Require successful CI for this revision')
 mandatory(proof)
+assert.equal(proof.env.GH_TOKEN, '${{ github.token }}')
+assert.equal(
+  proof.run,
+  `set -euo pipefail
+runs=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml \\
+  --branch "$SOURCE_BRANCH" --commit "$SOURCE_SHA" --event push \\
+  --status success --json databaseId --jq length)
+test "$runs" -gt 0
+`,
+  'CI proof must query successful push runs for the exact source revision',
+)
 const ciCheck = named(ci.jobs['build-test'].steps, 'Check publication gate contract')
 mandatory(ciCheck)
 assert.equal(ciCheck.env.TRUSTED_BASE_SHA, '${{ github.event.pull_request.base.sha }}')
@@ -121,8 +138,46 @@ fi
 `,
   'CI must use the trusted base or immutable bootstrap checker, without a PR-copy fallback',
 )
+assert.equal(
+  fold(chart.jobs.publish.if),
+  "github.event_name == 'push' && (github.ref == 'refs/heads/development' || github.ref == 'refs/heads/main')",
+  'charts publish only from development/main pushes',
+)
+assert.equal(
+  chart.jobs.publish.needs,
+  'cardano-wallet-backend',
+  'chart publication follows validation',
+)
+const chartPush = named(chart.jobs.publish.steps, 'Publish OCI chart')
+assert.equal(
+  chartPush.if,
+  "steps.chart.outputs.publish == 'true'",
+  'only publish newly approved chart contents',
+)
+assert.ok(!chartPush['continue-on-error'], 'chart push errors must fail')
+assert.equal(chartPush.env.PACKAGE_PATH, '${{ steps.chart.outputs.package_path }}')
+assert.equal(chartPush.run, 'helm push "$PACKAGE_PATH" oci://ghcr.io/yoroi-classic/charts\n')
 const chartDecision = named(chart.jobs.publish.steps, 'Decide whether to publish')
 mandatory(chartDecision)
+assert.ok(
+  chartDecision.run.endsWith(`if [ "$published" = true ]; then
+  mkdir -p "$RUNNER_TEMP/published-chart" "$RUNNER_TEMP/candidate-chart"
+  helm pull "$chart_ref" --version "$version" --destination "$RUNNER_TEMP/published-chart"
+  tar -xzf "$RUNNER_TEMP/published-chart/$archive" -C "$RUNNER_TEMP/published-chart"
+  tar -xzf "$package_path" -C "$RUNNER_TEMP/candidate-chart"
+  if ! diff -qr "$RUNNER_TEMP/published-chart/cardano-wallet-backend" \\
+      "$RUNNER_TEMP/candidate-chart/cardano-wallet-backend"; then
+    echo "::error::Chart version $version already contains different chart content; bump Chart.yaml"
+    exit 1
+  fi
+  echo "publish=false" >> "$GITHUB_OUTPUT"
+  exit 0
+fi
+
+echo "publish=true" >> "$GITHUB_OUTPUT"
+`),
+  'chart publication must compare the published archive with the candidate and fail on a content mismatch',
+)
 
 function shell(step, directory, variables = {}) {
   const result = spawnSync(

@@ -61,7 +61,7 @@ jobs:
       - name: Check publication gate contract
         env:
           TRUSTED_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          BOOTSTRAP_GATE_SHA: 56233756df954e26ca1f72b0dce33bf54aacd088
+          BOOTSTRAP_GATE_SHA: cf34f4e81513a82868f545d0b3c4b6a574111258
         run: |
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
             if git cat-file -e "$TRUSTED_BASE_SHA:scripts/check-publication-gate.mjs" 2>/dev/null; then

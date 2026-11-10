@@ -56,18 +56,23 @@ jobs:
           else
             npm run check:release-gate
           fi
+      # The pinned seed handles target branches that predate the checker. Never run
+      # the PR copy when trusted-base validation is unavailable.
       - name: Check publication gate contract
         env:
           TRUSTED_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BOOTSTRAP_GATE_SHA: '1111111111111111111111111111111111111111'
         run: |
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
             if git cat-file -e "$TRUSTED_BASE_SHA:scripts/check-publication-gate.mjs" 2>/dev/null; then
               git show "$TRUSTED_BASE_SHA:scripts/check-publication-gate.mjs" \
                 > "$RUNNER_TEMP/check-publication-gate.mjs"
-              node "$RUNNER_TEMP/check-publication-gate.mjs"
             else
-              npm run check:publication-gate
+              git fetch --no-tags origin "$BOOTSTRAP_GATE_SHA"
+              git show "$BOOTSTRAP_GATE_SHA:scripts/check-publication-gate.mjs" \
+                > "$RUNNER_TEMP/check-publication-gate.mjs"
             fi
+            node "$RUNNER_TEMP/check-publication-gate.mjs"
           else
             npm run check:publication-gate
           fi

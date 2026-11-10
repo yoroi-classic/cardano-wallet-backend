@@ -302,6 +302,11 @@ pushed; the multi-architecture manifest is published only after both succeed. A 
 retry publication of a revision whose push CI has already passed. The job summary
 contains the image reference and manifest digest.
 
+CI validates the image scan, smoke-test and publication ordering, successful-CI
+lookup, and chart-content comparison. Pull requests use the target branch's
+checker. Target branches that predate it use an immutable bootstrap commit,
+which is fetched by SHA; missing trusted code fails the job. It never falls back to the pull request's checker.
+
 The `helm-chart` workflow publishes changed charts from `development` and `main`
 to `oci://ghcr.io/yoroi-classic/charts/cardano-wallet-backend`. Identical chart
 content can be promoted without overwriting the version. A package administrator

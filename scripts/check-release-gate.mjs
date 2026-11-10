@@ -1048,21 +1048,31 @@ for (const required of [
   'git show "$TRUSTED_BASE_SHA:scripts/check-release-gate.mjs"',
   'node "$RUNNER_TEMP/check-release-gate.mjs"',
   'npm run check:release-gate',
+  '      - name: Check publication gate contract',
+  'git cat-file -e "$TRUSTED_BASE_SHA:scripts/check-publication-gate.mjs"',
+  'git show "$TRUSTED_BASE_SHA:scripts/check-publication-gate.mjs"',
+  'node "$RUNNER_TEMP/check-publication-gate.mjs"',
+  'npm run check:publication-gate',
 ]) {
   assert.ok(ciWithoutComments.includes(required), `CI release check missing: ${required}`)
 }
-const trustedCheckStart = ciWithoutComments.indexOf('      - name: Check release gate contract')
-assert.notEqual(trustedCheckStart, -1, 'CI must run the trusted release-gate checker')
-const nextStepStart = ciWithoutComments.indexOf('\n      - name:', trustedCheckStart + 1)
-const trustedCheck = ciWithoutComments.slice(
-  trustedCheckStart,
-  nextStepStart === -1 ? undefined : nextStepStart,
-)
-assert.doesNotMatch(
-  trustedCheck,
-  /^\s+if\s*:/m,
-  'trusted release-gate checker must not be conditionally skipped',
-)
+for (const gate of ['release', 'publication']) {
+  const start = ciWithoutComments.indexOf(`      - name: Check ${gate} gate contract`)
+  assert.notEqual(start, -1, `CI must run the trusted ${gate} checker`)
+  const end = ciWithoutComments.indexOf('\n      - name:', start + 1)
+  const step = ciWithoutComments.slice(start, end === -1 ? undefined : end)
+  assert.doesNotMatch(
+    step,
+    /^\s+(?:if|continue-on-error)\s*:/m,
+    `trusted ${gate} checker must run unconditionally and fail closed`,
+  )
+  for (const command of [
+    `git show "$TRUSTED_BASE_SHA:scripts/check-${gate}-gate.mjs"`,
+    `node "$RUNNER_TEMP/check-${gate}-gate.mjs"`,
+  ]) {
+    assert.ok(step.includes(command), `trusted ${gate} step is missing ${command}`)
+  }
+}
 assert.equal(
   packageJson.scripts['check:release-gate'],
   'node scripts/check-release-gate.mjs',

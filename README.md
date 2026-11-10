@@ -192,7 +192,13 @@ See `.env.example`. Key values:
 - `CORS_ORIGINS` — `*` (default) or a comma-separated list
 - `RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW_MS` — anonymous free tier, per client IP (default 120/min).
   `0` disables the limiter, which is only correct on a private deployment.
-- `TRUST_PROXY` — comma-separated proxy IP addresses/CIDRs allowed to supply `X-Forwarded-For`.
+- `TRUST_PROXY` — comma-separated proxy IP addresses/CIDRs allowed to supply `X-Forwarded-For`,
+  or `single-hop` to use only the address appended by the immediate reverse proxy. Single-hop
+  requires enforced network isolation so that proxy is the only path to the backend, preserves
+  the real client source IP, and appends it even when the client supplies forwarding headers.
+  For Kong behind a Kubernetes LoadBalancer, require `externalTrafficPolicy: Local` and keep
+  arbitrary clients out of Kong's trusted-IP configuration. Earlier forwarded entries are ignored,
+  including for private client IPs. Never enable this mode on a directly reachable backend.
   Empty by default, which is correct for the directly exposed Docker port. Set it only when those
   proxies are the exclusive path to the backend; trusting arbitrary forwarding headers lets a
   direct caller rotate its apparent IP and evade the anonymous limit. No entry may be wider than a
@@ -284,6 +290,28 @@ npm run check:ci       # local mirror of the baseline CI gate
 
 See `CONTRIBUTING.md` for the branch flow, the CI gates, and the testing and
 versioning policy.
+
+## Published deployment artifacts
+
+After successful push CI on `development`, `preview`, `preprod`, or `main`,
+`publish-image` publishes both `linux/amd64` and `linux/arm64` under
+`ghcr.io/yoroi-classic/cardano-wallet-backend:sha-<full-commit>`. It never publishes
+PR code. Publication runs are serialized by commit and skip existing commit tags.
+Each architecture image is scanned and smoke-tested before that exact image is
+pushed; the multi-architecture manifest is published only after both succeed. A manual dispatch can
+retry publication of a revision whose push CI has already passed. The job summary
+contains the image reference and manifest digest.
+
+CI validates the image scan, smoke-test and publication ordering, successful-CI
+lookup, and chart-content comparison. Pull requests use the target branch's
+checker. Target branches that predate it use an immutable bootstrap commit,
+which is fetched by SHA; missing trusted code fails the job. It never falls back to the pull request's checker.
+
+The `helm-chart` workflow publishes changed charts from `development` and `main`
+to `oci://ghcr.io/yoroi-classic/charts/cardano-wallet-backend`. Identical chart
+content can be promoted without overwriting the version. A package administrator
+must make both GHCR packages public for anonymous infrastructure/cluster pulls,
+or configure authenticated pulls separately.
 
 ## License
 

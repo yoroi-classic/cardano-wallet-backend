@@ -60,7 +60,7 @@ function assertExistingImageProbeContract(source) {
       '  [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]',
       '  echo "digest=$digest" >> "$GITHUB_OUTPUT"',
       '  echo \'publish=false\' >> "$GITHUB_OUTPUT"',
-      'elif grep -Eq \'not found|manifest unknown\' "$RUNNER_TEMP/image-probe"; then',
+      'elif grep -Eq "^ERROR: ${image}: (not found|manifest unknown(: manifest unknown)?)$" "$RUNNER_TEMP/image-probe"; then',
       '  echo \'publish=true\' >> "$GITHUB_OUTPUT"',
       'else',
       '  cat "$RUNNER_TEMP/image-probe" >&2',
@@ -89,6 +89,11 @@ function assertArchitectureTagContract(source) {
   const manifest = named(source.jobs.publish.steps, 'Publish multi-architecture manifest')
   assert.equal(manifest.if, "needs.prepare.outputs.publish == 'true'")
   assert.ok(!manifest['continue-on-error'], 'manifest publication errors must fail closed')
+  assert.equal(
+    source.jobs.publish.env.IMAGE_REF,
+    '${{ needs.prepare.outputs.ref }}',
+    'publish the final manifest to the probed commit reference',
+  )
   assert.equal(
     manifest.run,
     [
@@ -152,6 +157,14 @@ assert.throws(
   () => assertArchitectureTagContract(incompleteManifest),
   /manifest must include both tested architecture tags/,
   'contract must reject a manifest missing an architecture',
+)
+
+const wrongManifestDestination = cloneWorkflow(image)
+wrongManifestDestination.jobs.publish.env.IMAGE_REF = '${{ needs.prepare.outputs.ref }}-amd64'
+assert.throws(
+  () => assertArchitectureTagContract(wrongManifestDestination),
+  /publish the final manifest to the probed commit reference/,
+  'contract must reject publishing the manifest to an architecture staging tag',
 )
 
 assert.equal(
@@ -346,6 +359,47 @@ try {
     printf '%s\\n' "$TEST_CI_RUNS"
   `,
   )
+  executable(
+    directory,
+    'docker',
+    `test "$1 $2 $3" = 'buildx imagetools inspect'
+    test "$4" = "ghcr.io/\${GITHUB_REPOSITORY,,}:sha-\${SOURCE_SHA}"
+    printf '%s\\n' "$TEST_PROBE_OUTPUT" >&2
+    exit "\${TEST_PROBE_STATUS:-1}"
+  `,
+  )
+  const probe = named(image.jobs.prepare.steps, 'Check whether this revision is published')
+  writeFileSync(join(directory, 'output'), '')
+  const missingImage = shell(probe, directory, {
+    TEST_PROBE_OUTPUT: `ERROR: ghcr.io/test-only/backend:sha-${'1'.repeat(40)}: manifest unknown`,
+  })
+  assert.equal(missingImage.status, 0, missingImage.stderr)
+  assert.match(
+    readFileSync(join(directory, 'output'), 'utf8'),
+    /^publish=true$/m,
+    'publish only when the target commit manifest is missing',
+  )
+  writeFileSync(join(directory, 'output'), '')
+  const missingManifest = shell(probe, directory, {
+    TEST_PROBE_OUTPUT: `ERROR: ghcr.io/test-only/backend:sha-${'1'.repeat(40)}: not found`,
+  })
+  assert.equal(missingManifest.status, 0, missingManifest.stderr)
+  assert.match(
+    readFileSync(join(directory, 'output'), 'utf8'),
+    /^publish=true$/m,
+    'accept the registry not-found response for the target commit manifest',
+  )
+  writeFileSync(join(directory, 'output'), '')
+  const unrelatedProbeError = shell(probe, directory, {
+    TEST_PROBE_OUTPUT: 'ERROR: registry proxy lookup failed: not found',
+  })
+  assert.notEqual(unrelatedProbeError.status, 0, 'fail closed on unrelated registry errors')
+  assert.doesNotMatch(
+    readFileSync(join(directory, 'output'), 'utf8'),
+    /publish=true/,
+    'an unrelated registry error must not authorize publication',
+  )
+
   assert.equal(
     shell(proof, directory, { TEST_CI_RUNS: '1' }).status,
     0,

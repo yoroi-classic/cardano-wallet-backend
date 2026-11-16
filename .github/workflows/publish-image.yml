@@ -63,7 +63,7 @@ jobs:
             [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
             echo "digest=$digest" >> "$GITHUB_OUTPUT"
             echo 'publish=false' >> "$GITHUB_OUTPUT"
-          elif grep -Eq 'not found|manifest unknown' "$RUNNER_TEMP/image-probe"; then
+          elif grep -Eq "^ERROR: ${image}: (not found|manifest unknown(: manifest unknown)?)$" "$RUNNER_TEMP/image-probe"; then
             echo 'publish=true' >> "$GITHUB_OUTPUT"
           else
             cat "$RUNNER_TEMP/image-probe" >&2

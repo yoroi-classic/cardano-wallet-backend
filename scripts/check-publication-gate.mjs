@@ -45,6 +45,115 @@ const mandatory = (step) => {
   assert.ok(!step['continue-on-error'], `${step.name ?? step.uses} must fail closed`)
 }
 
+function assertExistingImageProbeContract(source) {
+  const probe = named(source.jobs.prepare.steps, 'Check whether this revision is published')
+  mandatory(probe)
+  assert.equal(probe.id, 'image', 'the existing-image decision must feed publication')
+  assert.equal(
+    probe.run,
+    [
+      'set -euo pipefail',
+      'image="ghcr.io/${GITHUB_REPOSITORY,,}:sha-$SOURCE_SHA"',
+      'echo "ref=$image" >> "$GITHUB_OUTPUT"',
+      'if docker buildx imagetools inspect "$image" > "$RUNNER_TEMP/image-probe" 2>&1; then',
+      '  digest=$(awk \'$1 == "Digest:" { print $2; exit }\' "$RUNNER_TEMP/image-probe")',
+      '  [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]',
+      '  echo "digest=$digest" >> "$GITHUB_OUTPUT"',
+      '  echo \'publish=false\' >> "$GITHUB_OUTPUT"',
+      'elif grep -Eq \'not found|manifest unknown\' "$RUNNER_TEMP/image-probe"; then',
+      '  echo \'publish=true\' >> "$GITHUB_OUTPUT"',
+      'else',
+      '  cat "$RUNNER_TEMP/image-probe" >&2',
+      '  exit 1',
+      'fi',
+      '',
+    ].join('\n'),
+    'existing-image lookup must skip published revisions and fail on registry errors',
+  )
+}
+
+function assertArchitectureTagContract(source) {
+  const pushStep = named(source.jobs.build.steps, 'Push the tested architecture image')
+  mandatory(pushStep)
+  assert.equal(
+    pushStep.env.IMAGE_REF,
+    '${{ needs.prepare.outputs.ref }}-${{ matrix.arch }}',
+    'each architecture must be staged under a distinct tag',
+  )
+  assert.equal(
+    pushStep.run,
+    'docker tag cardano-wallet-backend:ci "$IMAGE_REF"\ndocker push "$IMAGE_REF"\n',
+    'push only the architecture-specific candidate tag',
+  )
+
+  const manifest = named(source.jobs.publish.steps, 'Publish multi-architecture manifest')
+  assert.equal(manifest.if, "needs.prepare.outputs.publish == 'true'")
+  assert.ok(!manifest['continue-on-error'], 'manifest publication errors must fail closed')
+  assert.equal(
+    manifest.run,
+    [
+      'set -euo pipefail',
+      'docker buildx imagetools create --tag "$IMAGE_REF" "$IMAGE_REF-amd64" "$IMAGE_REF-arm64"',
+      '',
+    ].join('\n'),
+    'manifest must include both tested architecture tags',
+  )
+}
+
+assertExistingImageProbeContract(image)
+assertArchitectureTagContract(image)
+
+const cloneWorkflow = (workflow) => JSON.parse(JSON.stringify(workflow))
+const changedProbe = cloneWorkflow(image)
+const changedProbeStep = named(
+  changedProbe.jobs.prepare.steps,
+  'Check whether this revision is published',
+)
+changedProbeStep.run = changedProbeStep.run.replace("echo 'publish=false'", "echo 'publish=true'")
+assert.throws(
+  () => assertExistingImageProbeContract(changedProbe),
+  /existing-image lookup must skip published revisions/,
+  'contract must reject rebuilding over an existing commit tag',
+)
+
+const changedProbeError = cloneWorkflow(image)
+const changedProbeErrorStep = named(
+  changedProbeError.jobs.prepare.steps,
+  'Check whether this revision is published',
+)
+changedProbeErrorStep.run = changedProbeErrorStep.run.replace(
+  '  exit 1',
+  '  echo \'publish=true\' >> "$GITHUB_OUTPUT"',
+)
+assert.throws(
+  () => assertExistingImageProbeContract(changedProbeError),
+  /existing-image lookup must skip published revisions/,
+  'contract must reject publishing after a registry lookup error',
+)
+
+const unscopedArchitectureTag = cloneWorkflow(image)
+named(
+  unscopedArchitectureTag.jobs.build.steps,
+  'Push the tested architecture image',
+).env.IMAGE_REF = '${{ needs.prepare.outputs.ref }}'
+assert.throws(
+  () => assertArchitectureTagContract(unscopedArchitectureTag),
+  /each architecture must be staged under a distinct tag/,
+  'contract must reject direct publication of one architecture under the final tag',
+)
+
+const incompleteManifest = cloneWorkflow(image)
+const incompleteManifestStep = named(
+  incompleteManifest.jobs.publish.steps,
+  'Publish multi-architecture manifest',
+)
+incompleteManifestStep.run = incompleteManifestStep.run.replace(' "$IMAGE_REF-arm64"', '')
+assert.throws(
+  () => assertArchitectureTagContract(incompleteManifest),
+  /manifest must include both tested architecture tags/,
+  'contract must reject a manifest missing an architecture',
+)
+
 assert.equal(
   fold(image.jobs.prepare.if),
   `(github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_repository.full_name == github.repository) || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["development","preview","preprod","main"]'), github.ref_name))`,

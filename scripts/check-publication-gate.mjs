@@ -13,6 +13,282 @@ const { parse } = require('yaml')
 const image = parse(readFileSync('.github/workflows/publish-image.yml', 'utf8'))
 const chart = parse(readFileSync('.github/workflows/helm-chart.yml', 'utf8'))
 const ci = parse(readFileSync('.github/workflows/ci.yml', 'utf8'))
+
+// Snapshot the reviewed publication boundaries. Action revisions may be updated,
+// but steps, inputs, conditions, and shell commands require an explicit contract review.
+const reviewedImage = {
+  name: 'publish-image',
+  on: {
+    workflow_run: {
+      workflows: ['ci'],
+      types: ['completed'],
+      branches: ['development', 'preview', 'preprod', 'main'],
+    },
+    workflow_dispatch: null,
+  },
+  permissions: { contents: 'read' },
+  concurrency: {
+    group: 'publish-image-${{ github.event.workflow_run.head_sha || github.sha }}',
+    'cancel-in-progress': false,
+  },
+  env: {
+    SOURCE_SHA: '${{ github.event.workflow_run.head_sha || github.sha }}',
+    SOURCE_BRANCH: '${{ github.event.workflow_run.head_branch || github.ref_name }}',
+  },
+  jobs: {
+    prepare: {
+      if: `(github.event_name == 'workflow_run' &&
+ github.event.workflow_run.conclusion == 'success' &&
+ github.event.workflow_run.event == 'push' &&
+ github.event.workflow_run.head_repository.full_name == github.repository) ||
+(github.event_name == 'workflow_dispatch' &&
+ contains(fromJSON('["development","preview","preprod","main"]'), github.ref_name))`,
+      'runs-on': 'ubuntu-latest',
+      permissions: { contents: 'read', actions: 'read', packages: 'read' },
+      outputs: {
+        ref: '${{ steps.image.outputs.ref }}',
+        publish: '${{ steps.image.outputs.publish }}',
+        digest: '${{ steps.image.outputs.digest }}',
+      },
+      steps: [
+        {
+          name: 'Require successful CI for this revision',
+          env: { GH_TOKEN: '${{ github.token }}' },
+          run: `set -euo pipefail
+runs=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml \\
+  --branch "$SOURCE_BRANCH" --commit "$SOURCE_SHA" --event push \\
+  --status success --json databaseId --jq length)
+test "$runs" -gt 0
+`,
+        },
+        { uses: 'docker/setup-buildx-action' },
+        {
+          uses: 'docker/login-action',
+          with: {
+            registry: 'ghcr.io',
+            username: '${{ github.actor }}',
+            password: '${{ github.token }}',
+          },
+        },
+        {
+          name: 'Check whether this revision is published',
+          id: 'image',
+          run: `set -euo pipefail
+image="ghcr.io/\${GITHUB_REPOSITORY,,}:sha-$SOURCE_SHA"
+echo "ref=$image" >> "$GITHUB_OUTPUT"
+if docker buildx imagetools inspect "$image" > "$RUNNER_TEMP/image-probe" 2>&1; then
+  digest=$(awk '$1 == "Digest:" { print $2; exit }' "$RUNNER_TEMP/image-probe")
+  [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+  echo "digest=$digest" >> "$GITHUB_OUTPUT"
+  echo 'publish=false' >> "$GITHUB_OUTPUT"
+elif grep -Eq "^ERROR: \${image}: (not found|manifest unknown(: manifest unknown)?)$" "$RUNNER_TEMP/image-probe"; then
+  echo 'publish=true' >> "$GITHUB_OUTPUT"
+else
+  cat "$RUNNER_TEMP/image-probe" >&2
+  exit 1
+fi
+`,
+        },
+      ],
+    },
+    build: {
+      needs: 'prepare',
+      if: "needs.prepare.outputs.publish == 'true'",
+      'runs-on': 'ubuntu-latest',
+      strategy: { 'fail-fast': false, matrix: { arch: ['amd64', 'arm64'] } },
+      permissions: { contents: 'read', packages: 'write' },
+      steps: [
+        {
+          uses: 'actions/checkout',
+          with: { ref: '${{ env.SOURCE_SHA }}', 'persist-credentials': false },
+        },
+        { uses: 'docker/setup-qemu-action' },
+        { uses: 'docker/setup-buildx-action' },
+        {
+          name: 'Build candidate image',
+          uses: 'docker/build-push-action',
+          with: {
+            context: '.',
+            platforms: 'linux/${{ matrix.arch }}',
+            load: true,
+            pull: true,
+            tags: 'cardano-wallet-backend:ci',
+            labels:
+              'org.opencontainers.image.source=https://github.com/${{ github.repository }}\n' +
+              'org.opencontainers.image.revision=${{ env.SOURCE_SHA }}\n',
+            'no-cache-filters': 'runtime',
+            'cache-from': 'type=gha,scope=image-${{ matrix.arch }}',
+            'cache-to': 'type=gha,mode=max,scope=image-${{ matrix.arch }}',
+          },
+        },
+        {
+          name: 'Scan the exact candidate image',
+          uses: 'aquasecurity/trivy-action',
+          with: {
+            'image-ref': 'cardano-wallet-backend:ci',
+            scanners: 'vuln',
+            severity: 'HIGH,CRITICAL',
+            'ignore-unfixed': true,
+            'exit-code': '1',
+            format: 'table',
+          },
+        },
+        { name: 'Smoke-test the exact candidate image', run: 'bash scripts/smoke-docker-image.sh' },
+        {
+          uses: 'docker/login-action',
+          with: {
+            registry: 'ghcr.io',
+            username: '${{ github.actor }}',
+            password: '${{ github.token }}',
+          },
+        },
+        {
+          name: 'Push the tested architecture image',
+          env: { IMAGE_REF: '${{ needs.prepare.outputs.ref }}-${{ matrix.arch }}' },
+          run: 'docker tag cardano-wallet-backend:ci "$IMAGE_REF"\ndocker push "$IMAGE_REF"\n',
+        },
+      ],
+    },
+    publish: {
+      needs: ['prepare', 'build'],
+      if: "always() && needs.prepare.result == 'success' && (needs.prepare.outputs.publish == 'false' || needs.build.result == 'success')",
+      'runs-on': 'ubuntu-latest',
+      permissions: { packages: 'write' },
+      env: {
+        IMAGE_REF: '${{ needs.prepare.outputs.ref }}',
+        EXISTING_DIGEST: '${{ needs.prepare.outputs.digest }}',
+      },
+      steps: [
+        { if: "needs.prepare.outputs.publish == 'true'", uses: 'docker/setup-buildx-action' },
+        {
+          if: "needs.prepare.outputs.publish == 'true'",
+          uses: 'docker/login-action',
+          with: {
+            registry: 'ghcr.io',
+            username: '${{ github.actor }}',
+            password: '${{ github.token }}',
+          },
+        },
+        {
+          name: 'Publish multi-architecture manifest',
+          if: "needs.prepare.outputs.publish == 'true'",
+          run: 'set -euo pipefail\ndocker buildx imagetools create --tag "$IMAGE_REF" "$IMAGE_REF-amd64" "$IMAGE_REF-arm64"\n',
+        },
+        {
+          name: 'Report image reference and digest',
+          run: `set -euo pipefail
+digest="$EXISTING_DIGEST"
+if [ -z "$digest" ]; then
+  docker buildx imagetools inspect "$IMAGE_REF" > "$RUNNER_TEMP/image-manifest"
+  digest=$(awk '$1 == "Digest:" { print $2; exit }' "$RUNNER_TEMP/image-manifest")
+fi
+[[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+printf 'Image: %s\\n\\nDigest: %s\\n' "$IMAGE_REF" "$digest" >> "$GITHUB_STEP_SUMMARY"
+`,
+        },
+      ],
+    },
+  },
+}
+
+const reviewedChartPublish = {
+  if: "github.event_name == 'push' && (github.ref == 'refs/heads/development' || github.ref == 'refs/heads/main')",
+  needs: 'cardano-wallet-backend',
+  'runs-on': 'ubuntu-latest',
+  concurrency: { group: 'helm-chart-publish', queue: 'max' },
+  permissions: { contents: 'read', packages: 'write' },
+  steps: [
+    { uses: 'actions/checkout', with: { 'fetch-depth': 0 } },
+    { name: 'Set up Helm', uses: 'azure/setup-helm', with: { version: '3.21.3' } },
+    {
+      name: 'Log in to GHCR',
+      env: { GHCR_TOKEN: '${{ github.token }}' },
+      run: 'echo "$GHCR_TOKEN" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin',
+    },
+    {
+      name: 'Decide whether to publish',
+      id: 'chart',
+      env: { BEFORE: '${{ github.event.before }}' },
+      run: `set -eu
+chart=charts/cardano-wallet-backend
+package_output="$(helm package "$chart" --destination "\${RUNNER_TEMP}")"
+package_path="\${package_output##*: }"
+archive="$(basename "$package_path")"
+version="\${archive#cardano-wallet-backend-}"
+version="\${version%.tgz}"
+echo "version=$version" >> "$GITHUB_OUTPUT"
+echo "package_path=$package_path" >> "$GITHUB_OUTPUT"
+
+BASE_REF="$BEFORE" node scripts/check-chart-version-bump.mjs
+
+chart_ref="oci://ghcr.io/yoroi-classic/charts/cardano-wallet-backend"
+# Helm replaces SemVer build metadata's "+" with "_" in OCI tags.
+registry_version="\${version//+/_}"
+probe_output="\${RUNNER_TEMP}/ghcr-chart-probe.txt"
+if helm show chart "$chart_ref" --version "$version" >"$probe_output" 2>&1; then
+  published=true
+elif grep -Fq "\${chart_ref#oci://}:$registry_version: not found" "$probe_output"; then
+  published=false
+else
+  echo "::error::Unable to determine whether chart version $version exists in GHCR"
+  cat "$probe_output"
+  exit 1
+fi
+
+if [ "$published" = true ]; then
+  mkdir -p "$RUNNER_TEMP/published-chart" "$RUNNER_TEMP/candidate-chart"
+  helm pull "$chart_ref" --version "$version" --destination "$RUNNER_TEMP/published-chart"
+  tar -xzf "$RUNNER_TEMP/published-chart/$archive" -C "$RUNNER_TEMP/published-chart"
+  tar -xzf "$package_path" -C "$RUNNER_TEMP/candidate-chart"
+  if ! diff -qr "$RUNNER_TEMP/published-chart/cardano-wallet-backend" \\
+      "$RUNNER_TEMP/candidate-chart/cardano-wallet-backend"; then
+    echo "::error::Chart version $version already contains different chart content; bump Chart.yaml"
+    exit 1
+  fi
+  echo "publish=false" >> "$GITHUB_OUTPUT"
+  exit 0
+fi
+
+echo "publish=true" >> "$GITHUB_OUTPUT"
+`,
+    },
+    {
+      name: 'Publish OCI chart',
+      if: "steps.chart.outputs.publish == 'true'",
+      env: { PACKAGE_PATH: '${{ steps.chart.outputs.package_path }}' },
+      run: 'helm push "$PACKAGE_PATH" oci://ghcr.io/yoroi-classic/charts\n',
+    },
+  ],
+}
+
+const versionless = (value) =>
+  Array.isArray(value)
+    ? value.map(versionless)
+    : value && typeof value === 'object'
+      ? Object.fromEntries(
+          Object.entries(value).map(([key, nested]) => [
+            key,
+            key === 'uses' && typeof nested === 'string'
+              ? nested.split('@', 1)[0]
+              : versionless(nested),
+          ]),
+        )
+      : value
+
+function assertReviewedPublicationWorkflows(imageWorkflow, chartPublishJob) {
+  assert.deepEqual(
+    versionless(imageWorkflow),
+    reviewedImage,
+    'image publication workflow changed outside action revisions',
+  )
+  assert.deepEqual(
+    versionless(chartPublishJob),
+    reviewedChartPublish,
+    'chart publication job changed outside action revisions',
+  )
+}
+
+assertReviewedPublicationWorkflows(image, chart.jobs.publish)
 assert.deepEqual(Object.keys(image.jobs), ['prepare', 'build', 'publish'])
 assert.deepEqual(Object.keys(chart.jobs), ['cardano-wallet-backend', 'publish'])
 assert.equal(image.env.SOURCE_SHA, '${{ github.event.workflow_run.head_sha || github.sha }}')
@@ -160,6 +436,73 @@ assertArchitectureTagContract(image)
 assertBuildSourceContract(image)
 
 const cloneWorkflow = (workflow) => JSON.parse(JSON.stringify(workflow))
+
+const changedActionVersions = cloneWorkflow(image)
+changedActionVersions.jobs.build.steps[0].uses += '@updated-version'
+const changedChartActionVersion = cloneWorkflow(chart)
+changedChartActionVersion.jobs.publish.steps[1].uses += '@updated-version'
+assert.doesNotThrow(
+  () =>
+    assertReviewedPublicationWorkflows(
+      changedActionVersions,
+      changedChartActionVersion.jobs.publish,
+    ),
+  'allow Dependabot action revision updates without loosening the workflow contract',
+)
+
+const actionSourceOverride = cloneWorkflow(image)
+actionSourceOverride.jobs.build.steps.unshift({
+  uses: 'actions/github-script@v7',
+  with: { script: "core.exportVariable('SOURCE_SHA', context.sha)" },
+})
+assert.throws(
+  () => assertReviewedPublicationWorkflows(actionSourceOverride, chart.jobs.publish),
+  /image publication workflow changed outside action revisions/,
+  'reject an action that overrides the verified source revision',
+)
+
+const checkedOutSourceOverride = cloneWorkflow(image)
+checkedOutSourceOverride.jobs.build.steps.splice(1, 0, {
+  run: 'git fetch --depth=1 origin development && git checkout --force FETCH_HEAD',
+})
+assert.throws(
+  () => assertReviewedPublicationWorkflows(checkedOutSourceOverride, chart.jobs.publish),
+  /image publication workflow changed outside action revisions/,
+  'reject changing the source after the verified checkout',
+)
+
+const candidateImageReplacement = cloneWorkflow(image)
+candidateImageReplacement.jobs.build.steps.splice(6, 0, {
+  run: 'docker tag attacker/image:latest cardano-wallet-backend:ci',
+})
+assert.throws(
+  () => assertReviewedPublicationWorkflows(candidateImageReplacement, chart.jobs.publish),
+  /image publication workflow changed outside action revisions/,
+  'reject replacing the scanned image before the architecture push',
+)
+
+const manifestInputReplacement = cloneWorkflow(image)
+manifestInputReplacement.jobs.publish.steps.splice(2, 0, {
+  run: 'docker tag attacker/image:latest "$IMAGE_REF-amd64"',
+})
+assert.throws(
+  () => assertReviewedPublicationWorkflows(manifestInputReplacement, chart.jobs.publish),
+  /image publication workflow changed outside action revisions/,
+  'reject replacing an architecture input before manifest publication',
+)
+
+const chartProbeFailsOpen = cloneWorkflow(chart)
+const chartDecisionStep = named(chartProbeFailsOpen.jobs.publish.steps, 'Decide whether to publish')
+chartDecisionStep.run = chartDecisionStep.run.replace(
+  '  exit 1\nfi\n\nif [ "$published" = true ]; then',
+  '  echo "publish=false" >> "$GITHUB_OUTPUT"\nfi\n\nif [ "$published" = true ]; then',
+)
+assert.throws(
+  () => assertReviewedPublicationWorkflows(image, chartProbeFailsOpen.jobs.publish),
+  /chart publication job changed outside action revisions/,
+  'reject chart publication after an inconclusive registry probe',
+)
+
 const changedProbe = cloneWorkflow(image)
 const changedProbeStep = named(
   changedProbe.jobs.prepare.steps,

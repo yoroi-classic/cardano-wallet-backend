@@ -54,8 +54,10 @@ export interface BuildServerOptions {
   /**
    * Exact proxy IPs/CIDRs allowed to supply `X-Forwarded-For`. Empty/absent is the secure direct
    * deployment default: forwarded addresses are ignored and the socket peer owns the rate bucket.
+   * `single-hop` trusts only the immediate proxy; enforce that it is the only path to this server
+   * and that it appends the actual client address to X-Forwarded-For.
    */
-  trustedProxies?: string[]
+  trustedProxies?: string[] | 'single-hop'
 }
 
 const DEFAULT_INFO: StatusInfo = { version: '0.0.0', network: 'unknown', provider: 'unknown' }
@@ -86,11 +88,15 @@ export async function buildServer(opts: BuildServerOptions): Promise<FastifyInst
           },
     // Never trust forwarded addresses just because they are present. A direct caller controls
     // those headers and could rotate them to evade the per-IP limiter. Fastify walks the chain
-    // only when the socket peer matches this explicit address/CIDR allowlist.
+    // only when the socket peer matches the allowlist, or for one hop in a deployment that
+    // restricts all backend ingress to its immediate proxy. Single-hop never skips a second
+    // forwarded address, including when a client connects to the proxy from a private IP.
     trustProxy:
-      opts.trustedProxies === undefined || opts.trustedProxies.length === 0
-        ? false
-        : opts.trustedProxies,
+      opts.trustedProxies === 'single-hop'
+        ? (_address: string, hop: number) => hop === 0
+        : opts.trustedProxies === undefined || opts.trustedProxies.length === 0
+          ? false
+          : opts.trustedProxies,
   })
 
   await app.register(cors, {

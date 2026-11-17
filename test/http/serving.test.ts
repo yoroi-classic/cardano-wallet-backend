@@ -141,6 +141,33 @@ describe('rate limit', () => {
     await app.close()
   })
 
+  it('single-hop isolates client budgets and ignores forged earlier hops for public and private clients', async () => {
+    const app = await buildServer({
+      provider: fakeProvider({ getTip: async () => TIP }),
+      rateLimit: { max: 1, windowMs: 60_000 },
+      trustedProxies: 'single-hop',
+    })
+    try {
+      for (const client of ['203.0.113.10', '10.128.0.5']) {
+        const request = (spoof: string, actual: string) =>
+          app.inject({
+            method: 'GET',
+            url: '/v1/chain/tip',
+            remoteAddress: '10.4.0.10',
+            headers: { 'x-forwarded-for': `${spoof}, ${actual}` },
+          })
+        const first = await request('198.51.100.1', client)
+        const rotated = await request('198.51.100.2', client)
+        const independent = await request('198.51.100.1', client.slice(0, -1) + '9')
+        expect([first.statusCode, rotated.statusCode, independent.statusCode]).toEqual([
+          200, 429, 200,
+        ])
+      }
+    } finally {
+      await app.close()
+    }
+  })
+
   // An instance that rate-limits its own orchestrator's liveness probe gets declared dead, which
   // turns a traffic spike into an outage. /health is exempt for that reason and must stay so.
   it('never rate-limits the liveness probe', async () => {

@@ -147,6 +147,10 @@ function assertBuildSourceContract(source) {
           `${jobName}/${step.name ?? step.uses} must not override workflow ${key}`,
         )
       }
+      assert.ok(
+        !String(step.run ?? '').includes('GITHUB_ENV'),
+        `${jobName}/${step.name ?? step.uses} must not mutate runner environment variables`,
+      )
     }
   }
 }
@@ -264,6 +268,17 @@ assert.throws(
   () => assertBuildSourceContract(overriddenStepSource),
   /Build candidate image must not override workflow SOURCE_BRANCH/,
   'contract must reject a step-level override of the verified source branch',
+)
+
+const runnerEnvironmentOverride = cloneWorkflow(image)
+runnerEnvironmentOverride.jobs.build.steps.unshift({
+  name: 'Override source revision',
+  run: 'echo "SOURCE_SHA=$GITHUB_SHA" >> "$GITHUB_ENV"',
+})
+assert.throws(
+  () => assertBuildSourceContract(runnerEnvironmentOverride),
+  /must not mutate runner environment variables/,
+  'contract must reject source overrides through GITHUB_ENV',
 )
 
 assert.equal(

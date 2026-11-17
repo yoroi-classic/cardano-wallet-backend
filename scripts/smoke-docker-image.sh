@@ -14,8 +14,10 @@ trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 
 probe_health() {
-  docker exec "$container" node -e '
-    fetch("http://127.0.0.1:" + (process.env.PORT || 3010) + "/health", {
+  # Keep the client native: starting Node's HTTP client under QEMU can consume
+  # the request deadline before it sends anything to the running server.
+  node -e '
+    fetch(process.argv[1], {
       signal: AbortSignal.timeout(500),
     })
       .then(async response => {
@@ -39,10 +41,13 @@ probe_health() {
         console.error(error.message);
         process.exit(1);
       });
-  '
+  ' "http://$address/health"
 }
 
-docker run --detach --name "$container" "$image" >/dev/null
+# Probe the exposed service through a unique, loopback-only host port. This also
+# verifies that the server accepts traffic outside its container.
+docker run --detach --publish 127.0.0.1::3010 --name "$container" "$image" >/dev/null
+address="$(docker port "$container" 3010/tcp)"
 
 attempt=1
 while [ "$attempt" -le "$max_attempts" ]; do

@@ -37,12 +37,7 @@ const reviewedImage = {
   },
   jobs: {
     prepare: {
-      if: `(github.event_name == 'workflow_run' &&
- github.event.workflow_run.conclusion == 'success' &&
- github.event.workflow_run.event == 'push' &&
- github.event.workflow_run.head_repository.full_name == github.repository) ||
-(github.event_name == 'workflow_dispatch' &&
- contains(fromJSON('["development","preview","preprod","main"]'), github.ref_name))`,
+      if: "(github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_repository.full_name == github.repository) || (github.event_name == 'workflow_dispatch' && contains(fromJSON('[\"development\",\"preview\",\"preprod\",\"main\"]'), github.ref_name))",
       'runs-on': 'ubuntu-latest',
       permissions: { contents: 'read', actions: 'read', packages: 'read' },
       outputs: {
@@ -261,28 +256,36 @@ echo "publish=true" >> "$GITHUB_OUTPUT"
   ],
 }
 
-const versionless = (value) =>
+const normalizeWorkflow = (value) =>
   Array.isArray(value)
-    ? value.map(versionless)
+    ? value.map(normalizeWorkflow)
     : value && typeof value === 'object'
       ? Object.fromEntries(
-          Object.entries(value).map(([key, nested]) => [
-            key,
-            key === 'uses' && typeof nested === 'string'
-              ? nested.split('@', 1)[0]
-              : versionless(nested),
-          ]),
+          Object.entries(value).map(([key, nested]) => {
+            if (key === 'uses' && typeof nested === 'string') {
+              const pinnedAction = /^(.+)@([0-9a-f]{40})$/.exec(nested)
+              assert.ok(
+                pinnedAction,
+                `action reference must be pinned to a 40-character commit SHA: ${nested}`,
+              )
+              return [key, pinnedAction[1]]
+            }
+            if (key === 'if' && typeof nested === 'string') {
+              return [key, nested.trim().replace(/\s+/g, ' ')]
+            }
+            return [key, normalizeWorkflow(nested)]
+          }),
         )
       : value
 
 function assertReviewedPublicationWorkflows(imageWorkflow, chartPublishJob) {
   assert.deepEqual(
-    versionless(imageWorkflow),
+    normalizeWorkflow(imageWorkflow),
     reviewedImage,
     'image publication workflow changed outside action revisions',
   )
   assert.deepEqual(
-    versionless(chartPublishJob),
+    normalizeWorkflow(chartPublishJob),
     reviewedChartPublish,
     'chart publication job changed outside action revisions',
   )
@@ -438,9 +441,11 @@ assertBuildSourceContract(image)
 const cloneWorkflow = (workflow) => JSON.parse(JSON.stringify(workflow))
 
 const changedActionVersions = cloneWorkflow(image)
-changedActionVersions.jobs.build.steps[0].uses += '@updated-version'
+changedActionVersions.jobs.build.steps[0].uses =
+  changedActionVersions.jobs.build.steps[0].uses.split('@')[0] + '@' + 'a'.repeat(40)
 const changedChartActionVersion = cloneWorkflow(chart)
-changedChartActionVersion.jobs.publish.steps[1].uses += '@updated-version'
+changedChartActionVersion.jobs.publish.steps[1].uses =
+  changedChartActionVersion.jobs.publish.steps[1].uses.split('@')[0] + '@' + 'b'.repeat(40)
 assert.doesNotThrow(
   () =>
     assertReviewedPublicationWorkflows(
@@ -450,9 +455,24 @@ assert.doesNotThrow(
   'allow Dependabot action revision updates without loosening the workflow contract',
 )
 
+const mutableActionTag = cloneWorkflow(image)
+mutableActionTag.jobs.build.steps[0].uses = 'actions/checkout@v7'
+assert.throws(
+  () => assertReviewedPublicationWorkflows(mutableActionTag, chart.jobs.publish),
+  /must be pinned to a 40-character commit SHA/,
+  'reject mutable action tags in publication workflows',
+)
+
+const reindentedCondition = cloneWorkflow(image)
+reindentedCondition.jobs.prepare.if = `  ${image.jobs.prepare.if.replace(/\n/g, '   ')}  `
+assert.doesNotThrow(
+  () => assertReviewedPublicationWorkflows(reindentedCondition, chart.jobs.publish),
+  'ignore formatting-only whitespace changes to workflow conditions',
+)
+
 const actionSourceOverride = cloneWorkflow(image)
 actionSourceOverride.jobs.build.steps.unshift({
-  uses: 'actions/github-script@v7',
+  uses: `actions/github-script@${'c'.repeat(40)}`,
   with: { script: "core.exportVariable('SOURCE_SHA', context.sha)" },
 })
 assert.throws(

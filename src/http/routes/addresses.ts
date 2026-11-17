@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { bech32 } from '@scure/base'
 import { z } from 'zod'
 import { isByronAddress } from '../../domain/byron-address.js'
-import { BadRequestError } from '../../domain/errors.js'
+import { BadRequestError, ProviderError } from '../../domain/errors.js'
 import type { ChainProvider } from '../../providers/provider.js'
 
 // A wallet asks about a batch of derived addresses at once; cap it to keep upstream
@@ -20,9 +20,9 @@ const ENTERPRISE_ADDRESS_BYTES = 1 + CREDENTIAL_BYTES
 const POINTER_PREFIX_BYTES = 1 + CREDENTIAL_BYTES
 const MAX_POINTER_UINT_BYTES = 10
 
-const PAYMENT_ADDRESS_ERROR =
-  'addresses must be valid payment addresses (bech32 addr / addr_test, or Byron base58)'
 const FILTER_USED_ERROR =
+  'addresses must be valid payment addresses or bech32 payment key hashes (addr_vkh)'
+const ADDRESS_READ_ERROR =
   'addresses must be valid payment addresses or bech32 payment key hashes (addr_vkh)'
 
 function configuredNetworkId(network: string): number | undefined {
@@ -119,6 +119,41 @@ function distinct(addresses: string[]): string[] {
   return [...new Set(addresses)]
 }
 
+function partitionAddresses(inputs: string[], expectedNetworkId?: number) {
+  const paymentAddresses: string[] = []
+  const paymentCredentials: string[] = []
+  for (const input of distinct(inputs)) {
+    const credential = paymentCredentialHex(input)
+    if (credential !== undefined) paymentCredentials.push(credential)
+    else if (isPaymentAddress(input, expectedNetworkId)) paymentAddresses.push(input)
+    else throw new BadRequestError(ADDRESS_READ_ERROR)
+  }
+  return { paymentAddresses, paymentCredentials: distinct(paymentCredentials) }
+}
+
+function mergeUtxos<T extends { txHash: string; outputIndex: number }>(...sets: T[][]): T[] {
+  const unique = new Map<string, T>()
+  for (const item of sets.flat()) {
+    const key = `${item.txHash}#${item.outputIndex}`
+    const previous = unique.get(key)
+    if (previous !== undefined && JSON.stringify(previous) !== JSON.stringify(item)) {
+      throw new ProviderError(`provider returned conflicting UTxO rows for ${key}`)
+    }
+    unique.set(key, item)
+  }
+  return [...unique.values()]
+}
+
+function mergeHistory<T extends { txHash: string; block: number }>(...sets: T[][]): T[] {
+  const unique = new Map<string, T>()
+  for (const item of sets.flat()) unique.set(item.txHash, item)
+  const sorted = [...unique.values()].sort((left, right) => left.block - right.block)
+  let end = Math.min(50, sorted.length)
+  const boundary = sorted[end - 1]?.block
+  while (end < sorted.length && sorted[end]?.block === boundary) end += 1
+  return sorted.slice(0, end)
+}
+
 /** Address-level reads: discovery, and reads keyed by an address set rather than a stake key. */
 export function registerAddressRoutes(
   app: FastifyInstance,
@@ -162,22 +197,31 @@ export function registerAddressRoutes(
    *
    * For a wallet with no resolvable stake credential to read `/v1/account/{stake}/utxos`
    * with: Byron, enterprise, and pointer addresses are all on that side of the line. Accepts
-   * the same address formats as filter-used, mixed freely.
+   * the same address formats and payment credentials as filter-used, mixed freely. When an
+   * address and credential overlap, output references are returned once.
    */
   app.post('/v1/addresses/utxos', async (request) => {
     const parsed = addressesBody.safeParse(request.body)
     if (!parsed.success) {
       throw new BadRequestError('body must be { "addresses": [<address>, ...] } (1 to 1000)')
     }
-    if (!parsed.data.addresses.every((address) => isPaymentAddress(address, expectedNetworkId))) {
-      throw new BadRequestError(PAYMENT_ADDRESS_ERROR)
-    }
-    return provider.getUtxosByAddresses(distinct(parsed.data.addresses))
+    const { paymentAddresses, paymentCredentials } = partitionAddresses(
+      parsed.data.addresses,
+      expectedNetworkId,
+    )
+    const [addressUtxos, credentialUtxos] = await Promise.all([
+      paymentAddresses.length === 0 ? [] : provider.getUtxosByAddresses(paymentAddresses),
+      paymentCredentials.length === 0
+        ? []
+        : provider.getUtxosByPaymentCredentials(paymentCredentials),
+    ])
+    return mergeUtxos(addressUtxos, credentialUtxos)
   })
 
   /**
    * Transaction history for a set of addresses, oldest first. The address-keyed sibling of
-   * `/v1/account/{stake}/txs`, for the same wallets `/v1/addresses/utxos` serves. `after`
+   * `/v1/account/{stake}/txs`, for the same wallets `/v1/addresses/utxos` serves. Payment
+   * credentials and full addresses may be mixed; a transaction is returned once. `after`
    * pages forward the same way: pass the `block` of the last transaction already seen.
    */
   app.post('/v1/addresses/txs', async (request) => {
@@ -188,9 +232,18 @@ export function registerAddressRoutes(
           '(1 to 1000 addresses)',
       )
     }
-    if (!parsed.data.addresses.every((address) => isPaymentAddress(address, expectedNetworkId))) {
-      throw new BadRequestError(PAYMENT_ADDRESS_ERROR)
-    }
-    return provider.getTxHistoryByAddresses(distinct(parsed.data.addresses), parsed.data.after)
+    const { paymentAddresses, paymentCredentials } = partitionAddresses(
+      parsed.data.addresses,
+      expectedNetworkId,
+    )
+    const [addressHistory, credentialHistory] = await Promise.all([
+      paymentAddresses.length === 0
+        ? []
+        : provider.getTxHistoryByAddresses(paymentAddresses, parsed.data.after),
+      paymentCredentials.length === 0
+        ? []
+        : provider.getTxHistoryByPaymentCredentials(paymentCredentials, parsed.data.after),
+    ])
+    return mergeHistory(addressHistory, credentialHistory)
   })
 }

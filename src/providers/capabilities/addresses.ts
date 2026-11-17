@@ -26,6 +26,9 @@ export interface AddressCapability {
    */
   getUtxosByAddresses(addresses: string[]): Promise<Utxo[]>
 
+  /** Every UTxO controlled by any of the given 28-byte payment-key credentials (lowercase hex). */
+  getUtxosByPaymentCredentials(paymentCredentials: string[]): Promise<Utxo[]>
+
   /**
    * Transaction history for a set of addresses, oldest first. `afterBlock` pages forward:
    * pass the block height of the last transaction already seen to get the next page.
@@ -34,4 +37,10 @@ export interface AddressCapability {
    * same wallet, most commonly) appears exactly once, not once per matching address.
    */
   getTxHistoryByAddresses(addresses: string[], afterBlock?: number): Promise<WalletTransaction[]>
+
+  /** Transaction history controlled by any of the given payment-key credentials. */
+  getTxHistoryByPaymentCredentials(
+    paymentCredentials: string[],
+    afterBlock?: number,
+  ): Promise<WalletTransaction[]>
 }

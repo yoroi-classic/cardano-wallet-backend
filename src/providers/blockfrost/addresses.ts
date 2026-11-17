@@ -231,6 +231,13 @@ export function createAddressMethods(client: BlockfrostClient): AddressCapabilit
       })
     },
 
+    async getUtxosByPaymentCredentials(_paymentCredentials: string[]): Promise<Utxo[]> {
+      return notImplemented(
+        'getUtxosByPaymentCredentials',
+        'blockfrost exposes no payment-credential UTxO index; use Koios for credential-keyed reads',
+      )
+    },
+
     async getTxHistoryByAddresses(
       addresses: string[],
       afterBlock?: number,
@@ -239,6 +246,16 @@ export function createAddressMethods(client: BlockfrostClient): AddressCapabilit
       // each address's transactions, dedup a self-transfer by hash, page oldest-first on afterBlock,
       // and hydrate. Empty input short-circuits inside.
       return addressSetTxHistory(client, addresses, afterBlock)
+    },
+
+    async getTxHistoryByPaymentCredentials(
+      _paymentCredentials: string[],
+      _afterBlock?: number,
+    ): Promise<WalletTransaction[]> {
+      return notImplemented(
+        'getTxHistoryByPaymentCredentials',
+        'blockfrost exposes no payment-credential history index; use Koios for credential-keyed reads',
+      )
     },
   }
 }

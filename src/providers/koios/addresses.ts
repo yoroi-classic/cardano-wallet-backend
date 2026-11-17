@@ -332,6 +332,19 @@ export function createAddressMethods(koios: KoiosClient): AddressCapability {
       return rows.map(mapAddressUtxo)
     },
 
+    async getUtxosByPaymentCredentials(paymentCredentials: string[]): Promise<Utxo[]> {
+      if (paymentCredentials.length === 0) return []
+      const rows = await pagedBatchAll(
+        koios,
+        addressUtxoRow,
+        '/credential_utxos?order=tx_hash.asc,tx_index.asc',
+        [...new Set(paymentCredentials)],
+        (chunk) => ({ _payment_credentials: chunk, _extended: true }),
+        (row) => `${row.tx_hash}#${row.tx_index}`,
+      )
+      return rows.map(mapAddressUtxo)
+    },
+
     async getTxHistoryByAddresses(
       addresses: string[],
       afterBlock?: number,
@@ -365,6 +378,66 @@ export function createAddressMethods(koios: KoiosClient): AddressCapability {
       const hashes = sorted.slice(0, end).map((r) => r.tx_hash)
 
       return hydrateTxHistory(koios, hashes)
+    },
+
+    async getTxHistoryByPaymentCredentials(
+      paymentCredentials: string[],
+      afterBlock?: number,
+    ): Promise<WalletTransaction[]> {
+      if (paymentCredentials.length === 0) return []
+      const path = '/credential_txs?order=block_height.asc,tx_hash.asc'
+      const credentials = [...new Set(paymentCredentials)]
+      const streams = await koios.readWithRetry('/credential_txs', () =>
+        koios.packAdaptively<AddressHistoryStream, string>(
+          credentials,
+          (chunk) => ({
+            _payment_credentials: chunk,
+            ...(afterBlock === undefined ? {} : { _after_block_height: afterBlock }),
+          }),
+          async (body) => {
+            const stream: AddressHistoryStream = {
+              body,
+              rows: [],
+              index: 0,
+              offset: 0,
+              done: false,
+            }
+            await fillAddressHistoryStream(koios, stream, path)
+            return [stream]
+          },
+        ),
+      )
+      const distinctRows = new Map<string, AddressTxRow>()
+      let boundaryBlock: number | undefined
+      for (;;) {
+        const heads = await Promise.all(
+          streams.map(async (stream) => ({
+            stream,
+            row: await peekAddressHistoryStream(koios, stream, path),
+          })),
+        )
+        let next: { stream: AddressHistoryStream; row: AddressTxRow } | undefined
+        for (const head of heads) {
+          if (
+            head.row !== undefined &&
+            (next === undefined || compareAddressTxRows(head.row, next.row) < 0)
+          ) {
+            next = { stream: head.stream, row: head.row }
+          }
+        }
+        if (
+          next === undefined ||
+          (boundaryBlock !== undefined && next.row.block_height > boundaryBlock)
+        )
+          break
+        next.stream.index += 1
+        if (!distinctRows.has(next.row.tx_hash)) {
+          distinctRows.set(next.row.tx_hash, next.row)
+          if (distinctRows.size === HISTORY_PAGE_SIZE) boundaryBlock = next.row.block_height
+        }
+      }
+      const hashes = [...distinctRows.values()].map((row) => row.tx_hash)
+      return hashes.length === 0 ? [] : hydrateTxHistory(koios, hashes)
     },
   }
 }

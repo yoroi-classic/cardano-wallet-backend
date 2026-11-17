@@ -58,6 +58,18 @@ describe('koios getUtxosByAddresses', () => {
     reference_script: null,
   }
 
+  it('reads payment-credential UTxOs through the paged credential endpoint', async () => {
+    const { fetchImpl, calls } = fakeFetch(async () => [{ ...ROW, value: '9007199254740993' }])
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+    const result = await provider.getUtxosByPaymentCredentials(['03'.repeat(28)])
+    expect(result[0]?.value).toBe('9007199254740993')
+    expect(calls[0]?.url).toBe(`${BASE}/credential_utxos?order=tx_hash.asc,tx_index.asc&limit=1000`)
+    expect(JSON.parse(String(calls[0]?.body))).toEqual({
+      _payment_credentials: ['03'.repeat(28)],
+      _extended: true,
+    })
+  })
+
   it('maps a utxo with assets and inline datum (regression) and posts _extended', async () => {
     const { fetchImpl, calls } = fakeFetch(async () => [ROW])
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
@@ -423,6 +435,21 @@ describe('koios getTxHistoryByAddresses', () => {
     { tx_hash: 'aa', block_height: 10, block_time: 100, epoch_no: 1 },
   ]
   const TX_INFO = [txInfoRowFor('bb', 9), txInfoRowFor('aa', 10)]
+
+  it('reads payment-credential history and hydrates transaction details', async () => {
+    const { fetchImpl, calls } = fakeFetchByPath({
+      '/credential_txs': ADDRESS_TXS,
+      '/tx_info': TX_INFO,
+    })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+    const history = await provider.getTxHistoryByPaymentCredentials(['03'.repeat(28)], 8)
+    expect(history.map((transaction) => transaction.txHash)).toEqual(['bb', 'aa'])
+    const listCall = calls.find((call) => call.url.includes('/credential_txs'))
+    expect(JSON.parse(String(listCall?.body))).toEqual({
+      _payment_credentials: ['03'.repeat(28)],
+      _after_block_height: 8,
+    })
+  })
 
   it('lists then details transactions, mapped and oldest-first (regression)', async () => {
     const { fetchImpl, calls } = fakeFetchByPath({

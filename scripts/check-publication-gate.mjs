@@ -46,6 +46,15 @@ const mandatory = (step) => {
 }
 
 function assertExistingImageProbeContract(source) {
+  assert.deepEqual(
+    source.jobs.prepare.outputs,
+    {
+      ref: '${{ steps.image.outputs.ref }}',
+      publish: '${{ steps.image.outputs.publish }}',
+      digest: '${{ steps.image.outputs.digest }}',
+    },
+    'publication outputs must preserve the image probe decision',
+  )
   const probe = named(source.jobs.prepare.steps, 'Check whether this revision is published')
   mandatory(probe)
   assert.equal(probe.id, 'image', 'the existing-image decision must feed publication')
@@ -90,7 +99,7 @@ function assertArchitectureTagContract(source) {
   assert.equal(manifest.if, "needs.prepare.outputs.publish == 'true'")
   assert.ok(!manifest['continue-on-error'], 'manifest publication errors must fail closed')
   assert.equal(
-    source.jobs.publish.env.IMAGE_REF,
+    manifest.env?.IMAGE_REF ?? source.jobs.publish.env.IMAGE_REF,
     '${{ needs.prepare.outputs.ref }}',
     'publish the final manifest to the probed commit reference',
   )
@@ -136,6 +145,22 @@ assert.throws(
   'contract must reject publishing after a registry lookup error',
 )
 
+const forcedPreparePublish = cloneWorkflow(image)
+forcedPreparePublish.jobs.prepare.outputs.publish = 'true'
+assert.throws(
+  () => assertExistingImageProbeContract(forcedPreparePublish),
+  /publication outputs must preserve the image probe decision/,
+  'contract must reject bypassing the existing-image decision',
+)
+
+const wrongPrepareRef = cloneWorkflow(image)
+wrongPrepareRef.jobs.prepare.outputs.ref = '${{ steps.image.outputs.ref }}-amd64'
+assert.throws(
+  () => assertExistingImageProbeContract(wrongPrepareRef),
+  /publication outputs must preserve the image probe decision/,
+  'contract must reject redirecting publication away from the probed image',
+)
+
 const unscopedArchitectureTag = cloneWorkflow(image)
 named(
   unscopedArchitectureTag.jobs.build.steps,
@@ -165,6 +190,16 @@ assert.throws(
   () => assertArchitectureTagContract(wrongManifestDestination),
   /publish the final manifest to the probed commit reference/,
   'contract must reject publishing the manifest to an architecture staging tag',
+)
+
+const stepManifestDestination = cloneWorkflow(image)
+named(stepManifestDestination.jobs.publish.steps, 'Publish multi-architecture manifest').env = {
+  IMAGE_REF: '${{ needs.prepare.outputs.ref }}-amd64',
+}
+assert.throws(
+  () => assertArchitectureTagContract(stepManifestDestination),
+  /publish the final manifest to the probed commit reference/,
+  'contract must reject overriding the manifest destination at the step level',
 )
 
 assert.equal(

@@ -470,6 +470,14 @@ assert.throws(
   'reject top-level environment that can execute before chart safeguards',
 )
 
+const topLevelChartWritePermissions = cloneWorkflow(chart)
+topLevelChartWritePermissions.permissions = { contents: 'read', packages: 'write' }
+assert.throws(
+  () => assertChartWorkflowBoundary(topLevelChartWritePermissions),
+  /chart workflow must not grant top-level write permissions/,
+  'reject top-level package-write permission on the chart workflow',
+)
+
 const customRunShell = cloneWorkflow(chart)
 customRunShell.defaults = { run: { shell: 'bash -e {0} && helm push ...' } }
 assert.throws(
@@ -490,6 +498,18 @@ assert.throws(
   () => assertChartWorkflowBoundary(privilegedValidationJob),
   /chart validation job must not gain publication permissions/,
   'reject package publication permissions on the validation job',
+)
+
+const validationActionRevisionBumps = cloneWorkflow(chart)
+for (const step of validationActionRevisionBumps.jobs['cardano-wallet-backend'].steps) {
+  if (typeof step.uses === 'string') {
+    const actionName = step.uses.split('@')[0]
+    step.uses = `${actionName}@${'d'.repeat(40)}`
+  }
+}
+assert.doesNotThrow(
+  () => assertChartWorkflowBoundary(validationActionRevisionBumps),
+  'allow pinned action SHA updates in the validation job',
 )
 
 const changedActionVersions = cloneWorkflow(image)

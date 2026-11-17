@@ -291,6 +291,25 @@ function assertReviewedPublicationWorkflows(imageWorkflow, chartPublishJob) {
   )
 }
 
+function assertChartWorkflowBoundary(source) {
+  assert.deepEqual(
+    Object.keys(source),
+    ['name', 'on', 'permissions', 'jobs'],
+    'chart workflow top-level settings changed',
+  )
+  assert.deepEqual(
+    source.permissions,
+    { contents: 'read' },
+    'chart workflow must not grant top-level write permissions',
+  )
+  assert.equal(
+    source.jobs['cardano-wallet-backend'].permissions,
+    undefined,
+    'chart validation job must not gain publication permissions',
+  )
+}
+
+assertChartWorkflowBoundary(chart)
 assertReviewedPublicationWorkflows(image, chart.jobs.publish)
 assert.deepEqual(Object.keys(image.jobs), ['prepare', 'build', 'publish'])
 assert.deepEqual(Object.keys(chart.jobs), ['cardano-wallet-backend', 'publish'])
@@ -439,6 +458,39 @@ assertArchitectureTagContract(image)
 assertBuildSourceContract(image)
 
 const cloneWorkflow = (workflow) => JSON.parse(JSON.stringify(workflow))
+
+const chartBashEnvOverride = cloneWorkflow(chart)
+chartBashEnvOverride.env = {
+  BASH_ENV:
+    '$(helm package charts/cardano-wallet-backend -d "$RUNNER_TEMP" && helm push "$RUNNER_TEMP"/cardano-wallet-backend-*.tgz oci://ghcr.io/yoroi-classic/charts 2>&1; echo /dev/null)',
+}
+assert.throws(
+  () => assertChartWorkflowBoundary(chartBashEnvOverride),
+  /chart workflow top-level settings changed/,
+  'reject top-level environment that can execute before chart safeguards',
+)
+
+const customRunShell = cloneWorkflow(chart)
+customRunShell.defaults = { run: { shell: 'bash -e {0} && helm push ...' } }
+assert.throws(
+  () => assertChartWorkflowBoundary(customRunShell),
+  /chart workflow top-level settings changed/,
+  'reject workflow-wide shell overrides',
+)
+
+const privilegedValidationJob = cloneWorkflow(chart)
+privilegedValidationJob.jobs['cardano-wallet-backend'].permissions = {
+  contents: 'read',
+  packages: 'write',
+}
+privilegedValidationJob.jobs['cardano-wallet-backend'].steps.push({
+  run: 'helm push candidate.tgz oci://ghcr.io/yoroi-classic/charts',
+})
+assert.throws(
+  () => assertChartWorkflowBoundary(privilegedValidationJob),
+  /chart validation job must not gain publication permissions/,
+  'reject package publication permissions on the validation job',
+)
 
 const changedActionVersions = cloneWorkflow(image)
 changedActionVersions.jobs.build.steps[0].uses =

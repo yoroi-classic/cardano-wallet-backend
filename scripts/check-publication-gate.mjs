@@ -114,8 +114,46 @@ function assertArchitectureTagContract(source) {
   )
 }
 
+function assertBuildSourceContract(source) {
+  const jobs = source.jobs
+  const steps = jobs.build.steps
+  const build = action(steps, 'docker/build-push-action')
+  assert.deepEqual(
+    build.with,
+    {
+      context: '.',
+      platforms: 'linux/${{ matrix.arch }}',
+      load: true,
+      pull: true,
+      tags: 'cardano-wallet-backend:ci',
+      labels:
+        'org.opencontainers.image.source=https://github.com/${{ github.repository }}\n' +
+        'org.opencontainers.image.revision=${{ env.SOURCE_SHA }}\n',
+      'no-cache-filters': 'runtime',
+      'cache-from': 'type=gha,scope=image-${{ matrix.arch }}',
+      'cache-to': 'type=gha,mode=max,scope=image-${{ matrix.arch }}',
+    },
+    'build the checked-out source with the pinned candidate image settings',
+  )
+  for (const [jobName, job] of Object.entries(jobs)) {
+    for (const key of ['SOURCE_SHA', 'SOURCE_BRANCH']) {
+      assert.equal(job.env?.[key], undefined, `${jobName} must not override workflow ${key}`)
+    }
+    for (const step of job.steps ?? []) {
+      for (const key of ['SOURCE_SHA', 'SOURCE_BRANCH']) {
+        assert.equal(
+          step.env?.[key],
+          undefined,
+          `${jobName}/${step.name ?? step.uses} must not override workflow ${key}`,
+        )
+      }
+    }
+  }
+}
+
 assertExistingImageProbeContract(image)
 assertArchitectureTagContract(image)
+assertBuildSourceContract(image)
 
 const cloneWorkflow = (workflow) => JSON.parse(JSON.stringify(workflow))
 const changedProbe = cloneWorkflow(image)
@@ -200,6 +238,32 @@ assert.throws(
   () => assertArchitectureTagContract(stepManifestDestination),
   /publish the final manifest to the probed commit reference/,
   'contract must reject overriding the manifest destination at the step level',
+)
+
+const missingBuildContext = cloneWorkflow(image)
+delete action(missingBuildContext.jobs.build.steps, 'docker/build-push-action').with.context
+assert.throws(
+  () => assertBuildSourceContract(missingBuildContext),
+  /build the checked-out source with the pinned candidate image settings/,
+  'contract must reject a build that falls back to the action default Git context',
+)
+
+const overriddenBuildSource = cloneWorkflow(image)
+overriddenBuildSource.jobs.build.env = { SOURCE_SHA: '${{ github.sha }}' }
+assert.throws(
+  () => assertBuildSourceContract(overriddenBuildSource),
+  /build must not override workflow SOURCE_SHA/,
+  'contract must reject a job-level override of the verified source revision',
+)
+
+const overriddenStepSource = cloneWorkflow(image)
+named(overriddenStepSource.jobs.build.steps, 'Build candidate image').env = {
+  SOURCE_BRANCH: '${{ github.ref_name }}',
+}
+assert.throws(
+  () => assertBuildSourceContract(overriddenStepSource),
+  /Build candidate image must not override workflow SOURCE_BRANCH/,
+  'contract must reject a step-level override of the verified source branch',
 )
 
 assert.equal(

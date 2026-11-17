@@ -183,6 +183,7 @@ export const HEAVY_PATHS = [
   '/address_utxos',
   '/address_txs',
   '/credential_txs',
+  '/credential_utxos',
 ]
 
 export const timeoutFor = (path: string, base: number, heavy: number): number =>

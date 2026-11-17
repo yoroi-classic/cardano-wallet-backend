@@ -339,7 +339,13 @@ export const openapi = {
           'a stake key from any of its addresses, should prefer the account endpoint instead: ' +
           'it reads the whole wallet in one call rather than needing every address enumerated.' +
           '\n\n' +
-          'Accepts the same address formats as filter-used, mixed freely.\n\nNever cached.',
+          'Accepts bech32 payment addresses, Byron base58 addresses, and bech32 `addr_vkh` ' +
+          'payment-key hashes, mixed freely. Credential-only reads require a provider with a ' +
+          'payment-credential index; providers without one answer 501 rather than returning an ' +
+          'incomplete result. Overlapping address/credential results are deduplicated by output ' +
+          'reference. The request accepts 1–1000 entries. Koios pages each request chunk up to ' +
+          '100,000 rows; results exceeding a provider safety limit fail rather than return a ' +
+          'partial result. Never cached.',
         requestBody: jsonBody({
           type: 'object',
           required: ['addresses'],
@@ -357,6 +363,7 @@ export const openapi = {
             type: 'array',
             items: { $ref: '#/components/schemas/Utxo' },
           }),
+          '501': { $ref: '#/components/responses/CredentialReadUnavailable' },
           ...COMMON_ERRORS,
         },
       },
@@ -372,9 +379,14 @@ export const openapi = {
           '/v1/addresses/utxos serves. A transaction touching more than one of the given ' +
           'addresses (a self-transfer within the same wallet, most commonly) appears exactly ' +
           'once, not once per matching address.\n\n' +
+          'Accepts bech32 payment addresses, Byron base58 addresses, and bech32 `addr_vkh` ' +
+          'payment-key hashes, mixed freely. Credential-only reads require a provider with a ' +
+          'payment-credential index; providers without one answer 501. Transactions matching ' +
+          'more than one address or credential are deduplicated. The request accepts 1–1000 ' +
+          'entries.\n\n' +
           'Page forward with `after`, set to the `block` of the last transaction you saw, the ' +
-          'same cursor the account endpoint uses. A page is never cut through the middle of a ' +
-          'block.\n\nAccepts the same address formats as filter-used, mixed freely.\n\n' +
+          'same cursor the account endpoint uses. Each response contains up to 50 transactions ' +
+          'when available and includes the entire final block; it is never cut through a block. ' +
           'Never cached.',
         requestBody: jsonBody({
           type: 'object',
@@ -398,6 +410,7 @@ export const openapi = {
             type: 'array',
             items: { $ref: '#/components/schemas/WalletTransaction' },
           }),
+          '501': { $ref: '#/components/responses/CredentialReadUnavailable' },
           ...COMMON_ERRORS,
         },
       },
@@ -1026,6 +1039,10 @@ export const openapi = {
         'No price provider is configured for this deployment. The price routes are live and their ' +
           'contract is final; this is the answer only when the deployment has wired no market-data ' +
           'provider. Never a fake value: render the field as unavailable.',
+        ERROR_RESPONSE,
+      ),
+      CredentialReadUnavailable: jsonResponse(
+        'The configured chain provider does not support lookup by payment credential. Use a provider with a payment-credential index.',
         ERROR_RESPONSE,
       ),
       FeatureUnavailable: jsonResponse(

@@ -447,7 +447,7 @@ describe('filter-used route', () => {
 
 describe('POST /v1/addresses/utxos', () => {
   const utxo = (address: string): Utxo => ({
-    txHash: 'a'.repeat(64),
+    txHash: address === USED ? 'b'.repeat(64) : 'a'.repeat(64),
     outputIndex: 0,
     address,
     blockHeight: 10_000_000,
@@ -512,6 +512,54 @@ describe('POST /v1/addresses/utxos', () => {
 
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual([utxo(BYRON_ICARUS), utxo(USED)])
+  })
+
+  it('accepts credential-only and mixed batches and deduplicates overlapping output references', async () => {
+    const output = utxo(USED)
+    let addressCalls = 0
+    const credentialCalls: string[][] = []
+    app = await buildServer({
+      provider: fakeProvider({
+        getUtxosByAddresses: async () => {
+          addressCalls += 1
+          return [output]
+        },
+        getUtxosByPaymentCredentials: async (credentials) => {
+          credentialCalls.push(credentials)
+          return [output]
+        },
+      }),
+    })
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/addresses/utxos',
+      payload: { addresses: [USED, USED_CREDENTIAL, USED_CREDENTIAL] },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual([output])
+    expect(addressCalls).toBe(1)
+    expect(credentialCalls).toEqual([['03'.repeat(28)]])
+
+    const credentialOnly = await app.inject({
+      method: 'POST',
+      url: '/v1/addresses/utxos',
+      payload: { addresses: [USED_CREDENTIAL] },
+    })
+    expect(credentialOnly.statusCode).toBe(200)
+    expect(credentialOnly.json()).toEqual([output])
+    expect(addressCalls).toBe(1)
+    expect(credentialCalls).toEqual([['03'.repeat(28)], ['03'.repeat(28)]])
+  })
+
+  it('rejects a malformed credential before querying either provider method', async () => {
+    const malformed = bech32.encode('addr_vkh', bech32.toWords(new Uint8Array(27)), 1023)
+    app = await buildServer({ provider: fakeProvider({}) })
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/addresses/utxos',
+      payload: { addresses: [malformed] },
+    })
+    expect(res.statusCode).toBe(400)
   })
 
   // A repeated address in a batch large enough for the Koios provider to split by body size lands
@@ -637,6 +685,33 @@ describe('POST /v1/addresses/txs', () => {
 
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual([tx('aa')])
+  })
+
+  it('accepts mixed address and credential history and deduplicates transaction hashes', async () => {
+    const transaction = tx('ab')
+    const addressCalls: string[][] = []
+    const credentialCalls: string[][] = []
+    app = await buildServer({
+      provider: fakeProvider({
+        getTxHistoryByAddresses: async (addresses) => {
+          addressCalls.push(addresses)
+          return [transaction]
+        },
+        getTxHistoryByPaymentCredentials: async (credentials) => {
+          credentialCalls.push(credentials)
+          return [transaction]
+        },
+      }),
+    })
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/addresses/txs',
+      payload: { addresses: [USED, USED_CREDENTIAL] },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual([transaction])
+    expect(addressCalls).toEqual([[USED]])
+    expect(credentialCalls).toEqual([['03'.repeat(28)]])
   })
 
   it('passes the after cursor through as a block height', async () => {

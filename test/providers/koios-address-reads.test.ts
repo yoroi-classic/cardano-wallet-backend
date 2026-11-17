@@ -58,6 +58,56 @@ describe('koios getUtxosByAddresses', () => {
     reference_script: null,
   }
 
+  it('reads payment-credential UTxOs through the paged credential endpoint', async () => {
+    const { fetchImpl, calls } = fakeFetch(async () => [{ ...ROW, value: '9007199254740993' }])
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+    const result = await provider.getUtxosByPaymentCredentials(['03'.repeat(28)])
+    expect(result[0]?.value).toBe('9007199254740993')
+    expect(calls[0]?.url).toBe(`${BASE}/credential_utxos?order=tx_hash.asc,tx_index.asc&limit=1000`)
+    expect(JSON.parse(String(calls[0]?.body))).toEqual({
+      _payment_credentials: ['03'.repeat(28)],
+      _extended: true,
+    })
+  })
+
+  it('follows credential UTxO pages past the 1000-row response limit', async () => {
+    const rows = Array.from({ length: 1_001 }, (_, index) => ({
+      ...ROW,
+      tx_hash: index.toString(16).padStart(64, '0'),
+      tx_index: 0,
+      value: String(index + 1),
+      asset_list: null,
+      inline_datum: null,
+    }))
+    const calls: Call[] = []
+    const fetchImpl: FetchLike = async (url, init) => {
+      calls.push({ url, method: init?.method, body: init?.body, headers: init?.headers })
+      const query = new URL(url).searchParams
+      if (query.get('or') === null) {
+        return {
+          ok: true,
+          status: 206,
+          headers: { get: (name) => (name === 'content-range' ? '0-999/1001' : null) },
+          json: async () => rows.slice(0, 1_000),
+          text: async () => '',
+        }
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (name) => (name === 'content-range' ? '0-0/1' : null) },
+        json: async () => rows.slice(1_000),
+        text: async () => '',
+      }
+    }
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+    const result = await provider.getUtxosByPaymentCredentials(['03'.repeat(28)])
+    expect(result).toHaveLength(1_001)
+    expect(result[1_000]?.value).toBe('1001')
+    expect(calls).toHaveLength(2)
+    expect(new URL(calls[1]!.url).searchParams.get('or')).toContain('tx_hash.gt.')
+  })
+
   it('maps a utxo with assets and inline datum (regression) and posts _extended', async () => {
     const { fetchImpl, calls } = fakeFetch(async () => [ROW])
     const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
@@ -423,6 +473,24 @@ describe('koios getTxHistoryByAddresses', () => {
     { tx_hash: 'aa', block_height: 10, block_time: 100, epoch_no: 1 },
   ]
   const TX_INFO = [txInfoRowFor('bb', 9), txInfoRowFor('aa', 10)]
+
+  it('reads payment-credential history and hydrates transaction details', async () => {
+    const { fetchImpl, calls } = fakeFetchByPath({
+      '/credential_txs': ADDRESS_TXS,
+      '/tx_info': TX_INFO,
+    })
+    const provider = createKoiosProvider({ baseUrl: BASE, fetchImpl })
+    const history = await provider.getTxHistoryByPaymentCredentials(['03'.repeat(28)], 8)
+    expect(history.map((transaction) => transaction.txHash)).toEqual(['bb', 'aa'])
+    expect(history[0]).toMatchObject({ blockHash: 'h9', fee: '150000' })
+    const listCall = calls.find((call) => call.url.includes('/credential_txs'))
+    expect(JSON.parse(String(listCall?.body))).toEqual({
+      _payment_credentials: ['03'.repeat(28)],
+      _after_block_height: 8,
+    })
+    const detailsCall = calls.find((call) => call.url.includes('/tx_info'))
+    expect(JSON.parse(String(detailsCall?.body))).toMatchObject({ _tx_hashes: ['bb', 'aa'] })
+  })
 
   it('lists then details transactions, mapped and oldest-first (regression)', async () => {
     const { fetchImpl, calls } = fakeFetchByPath({

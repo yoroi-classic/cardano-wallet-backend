@@ -343,8 +343,9 @@ export const openapi = {
           'payment-key hashes, mixed freely. Credential-only reads require a provider with a ' +
           'payment-credential index; providers without one answer 501 rather than returning an ' +
           'incomplete result. Overlapping address/credential results are deduplicated by output ' +
-          'reference. The request accepts 1–1000 entries; upstream response pages are followed ' +
-          'until complete. Never cached.',
+          'reference. The request accepts 1–1000 entries. Koios pages each request chunk up to ' +
+          '100,000 rows; results exceeding a provider safety limit fail rather than return a ' +
+          'partial result. Never cached.',
         requestBody: jsonBody({
           type: 'object',
           required: ['addresses'],
@@ -362,7 +363,7 @@ export const openapi = {
             type: 'array',
             items: { $ref: '#/components/schemas/Utxo' },
           }),
-          '501': { $ref: '#/components/responses/NotImplemented' },
+          '501': { $ref: '#/components/responses/CredentialReadUnavailable' },
           ...COMMON_ERRORS,
         },
       },
@@ -409,7 +410,7 @@ export const openapi = {
             type: 'array',
             items: { $ref: '#/components/schemas/WalletTransaction' },
           }),
-          '501': { $ref: '#/components/responses/NotImplemented' },
+          '501': { $ref: '#/components/responses/CredentialReadUnavailable' },
           ...COMMON_ERRORS,
         },
       },
@@ -1038,6 +1039,10 @@ export const openapi = {
         'No price provider is configured for this deployment. The price routes are live and their ' +
           'contract is final; this is the answer only when the deployment has wired no market-data ' +
           'provider. Never a fake value: render the field as unavailable.',
+        ERROR_RESPONSE,
+      ),
+      CredentialReadUnavailable: jsonResponse(
+        'The configured chain provider does not support lookup by payment credential. Use a provider with a payment-credential index.',
         ERROR_RESPONSE,
       ),
       FeatureUnavailable: jsonResponse(

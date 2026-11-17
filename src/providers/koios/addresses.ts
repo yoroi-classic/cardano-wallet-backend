@@ -204,22 +204,17 @@ function pagedBatchAll<Row>(
   )
 }
 
-async function boundedAddressHistoryRows(
+async function boundedHistoryRows(
   koios: KoiosClient,
-  addresses: string[],
-  afterBlock?: number,
+  values: string[],
+  path: string,
+  toBody: (chunk: string[]) => unknown,
 ): Promise<AddressTxRow[]> {
-  const path = '/address_txs?order=block_height.asc,tx_hash.asc'
-  const toBody = (chunk: string[]): unknown => ({
-    _addresses: chunk,
-    ...(afterBlock === undefined ? {} : { _after_block_height: afterBlock }),
-  })
-
   // Start one incrementally paged, ordered stream per adaptively packed request body. Returning
   // the stream in a one-item array lets packAdaptively retain its 413 limit learning without
   // forcing any stream to walk its irrelevant tail.
   const streams = await koios.packAdaptively<AddressHistoryStream, string>(
-    addresses,
+    values,
     toBody,
     async (body) => {
       const stream: AddressHistoryStream = {
@@ -262,6 +257,34 @@ async function boundedAddressHistoryRows(
   }
 
   return [...distinct.values()]
+}
+
+async function historyForSet(
+  koios: KoiosClient,
+  values: string[],
+  path: string,
+  toBody: (chunk: string[]) => unknown,
+): Promise<WalletTransaction[]> {
+  if (values.length === 0) return []
+  const rows = await koios.readWithRetry(path, () =>
+    boundedHistoryRows(koios, values, path, toBody),
+  )
+  if (rows.length === 0) return []
+
+  // A transaction can match several members of the set. Collapse it before choosing the page,
+  // then preserve the whole final block so the caller's block-height cursor cannot skip a tie.
+  const byHash = new Map<string, AddressTxRow>()
+  for (const row of rows) byHash.set(row.tx_hash, row)
+  const sorted = [...byHash.values()].sort(
+    (left, right) => left.block_height - right.block_height || compareAddressTxRows(left, right),
+  )
+  let end = Math.min(HISTORY_PAGE_SIZE, sorted.length)
+  const boundaryBlock = sorted[end - 1]?.block_height
+  while (end < sorted.length && sorted[end]?.block_height === boundaryBlock) end += 1
+  return hydrateTxHistory(
+    koios,
+    sorted.slice(0, end).map((row) => row.tx_hash),
+  )
 }
 
 export function createAddressMethods(koios: KoiosClient): AddressCapability {
@@ -349,95 +372,23 @@ export function createAddressMethods(koios: KoiosClient): AddressCapability {
       addresses: string[],
       afterBlock?: number,
     ): Promise<WalletTransaction[]> {
-      if (addresses.length === 0) return []
-
-      // Each packed address body is an ordered stream. Merge their oldest heads incrementally
-      // until the first 50 distinct transactions and the whole boundary block are known, instead
-      // of walking every active address to the end before throwing almost all of it away.
-      const rows = await koios.readWithRetry('/address_txs', () =>
-        boundedAddressHistoryRows(koios, addresses, afterBlock),
-      )
-      if (rows.length === 0) return []
-
-      // A transaction touching more than one of the requested addresses (a self-transfer within
-      // the same wallet, most commonly) comes back once per matching address, since Koios
-      // answers per address and the set is batched independently. Collapse to one row per
-      // tx_hash before paging, or the same transaction would occupy more than one slot in the
-      // page and /tx_info would see it requested twice.
-      const byHash = new Map<string, z.infer<typeof addressTxRow>>()
-      for (const row of rows) byHash.set(row.tx_hash, row)
-      const distinct = [...byHash.values()]
-
-      // The bounded merge already selected one page, oldest first, without cutting through its
-      // boundary block. Keep the final sort/window here as a defensive statement of the public
-      // contract and to make the selection independent of stream scheduling.
-      const sorted = distinct.sort((a, b) => a.block_height - b.block_height)
-      let end = Math.min(HISTORY_PAGE_SIZE, sorted.length)
-      const boundaryBlock = sorted[end - 1]?.block_height
-      while (end < sorted.length && sorted[end]?.block_height === boundaryBlock) end += 1
-      const hashes = sorted.slice(0, end).map((r) => r.tx_hash)
-
-      return hydrateTxHistory(koios, hashes)
+      const path = '/address_txs?order=block_height.asc,tx_hash.asc'
+      return historyForSet(koios, addresses, path, (chunk) => ({
+        _addresses: chunk,
+        ...(afterBlock === undefined ? {} : { _after_block_height: afterBlock }),
+      }))
     },
 
     async getTxHistoryByPaymentCredentials(
       paymentCredentials: string[],
       afterBlock?: number,
     ): Promise<WalletTransaction[]> {
-      if (paymentCredentials.length === 0) return []
       const path = '/credential_txs?order=block_height.asc,tx_hash.asc'
       const credentials = [...new Set(paymentCredentials)]
-      const streams = await koios.readWithRetry('/credential_txs', () =>
-        koios.packAdaptively<AddressHistoryStream, string>(
-          credentials,
-          (chunk) => ({
-            _payment_credentials: chunk,
-            ...(afterBlock === undefined ? {} : { _after_block_height: afterBlock }),
-          }),
-          async (body) => {
-            const stream: AddressHistoryStream = {
-              body,
-              rows: [],
-              index: 0,
-              offset: 0,
-              done: false,
-            }
-            await fillAddressHistoryStream(koios, stream, path)
-            return [stream]
-          },
-        ),
-      )
-      const distinctRows = new Map<string, AddressTxRow>()
-      let boundaryBlock: number | undefined
-      for (;;) {
-        const heads = await Promise.all(
-          streams.map(async (stream) => ({
-            stream,
-            row: await peekAddressHistoryStream(koios, stream, path),
-          })),
-        )
-        let next: { stream: AddressHistoryStream; row: AddressTxRow } | undefined
-        for (const head of heads) {
-          if (
-            head.row !== undefined &&
-            (next === undefined || compareAddressTxRows(head.row, next.row) < 0)
-          ) {
-            next = { stream: head.stream, row: head.row }
-          }
-        }
-        if (
-          next === undefined ||
-          (boundaryBlock !== undefined && next.row.block_height > boundaryBlock)
-        )
-          break
-        next.stream.index += 1
-        if (!distinctRows.has(next.row.tx_hash)) {
-          distinctRows.set(next.row.tx_hash, next.row)
-          if (distinctRows.size === HISTORY_PAGE_SIZE) boundaryBlock = next.row.block_height
-        }
-      }
-      const hashes = [...distinctRows.values()].map((row) => row.tx_hash)
-      return hashes.length === 0 ? [] : hydrateTxHistory(koios, hashes)
+      return historyForSet(koios, credentials, path, (chunk) => ({
+        _payment_credentials: chunk,
+        ...(afterBlock === undefined ? {} : { _after_block_height: afterBlock }),
+      }))
     },
   }
 }

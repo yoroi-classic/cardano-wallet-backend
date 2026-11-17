@@ -539,6 +539,16 @@ describe('POST /v1/addresses/utxos', () => {
     expect(res.json()).toEqual([output])
     expect(addressCalls).toBe(1)
     expect(credentialCalls).toEqual([['03'.repeat(28)]])
+
+    const credentialOnly = await app.inject({
+      method: 'POST',
+      url: '/v1/addresses/utxos',
+      payload: { addresses: [USED_CREDENTIAL] },
+    })
+    expect(credentialOnly.statusCode).toBe(200)
+    expect(credentialOnly.json()).toEqual([output])
+    expect(addressCalls).toBe(1)
+    expect(credentialCalls).toEqual([['03'.repeat(28)], ['03'.repeat(28)]])
   })
 
   it('rejects a malformed credential before querying either provider method', async () => {
@@ -679,10 +689,18 @@ describe('POST /v1/addresses/txs', () => {
 
   it('accepts mixed address and credential history and deduplicates transaction hashes', async () => {
     const transaction = tx('ab')
+    const addressCalls: string[][] = []
+    const credentialCalls: string[][] = []
     app = await buildServer({
       provider: fakeProvider({
-        getTxHistoryByAddresses: async () => [transaction],
-        getTxHistoryByPaymentCredentials: async () => [transaction],
+        getTxHistoryByAddresses: async (addresses) => {
+          addressCalls.push(addresses)
+          return [transaction]
+        },
+        getTxHistoryByPaymentCredentials: async (credentials) => {
+          credentialCalls.push(credentials)
+          return [transaction]
+        },
       }),
     })
     const res = await app.inject({
@@ -692,6 +710,8 @@ describe('POST /v1/addresses/txs', () => {
     })
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual([transaction])
+    expect(addressCalls).toEqual([[USED]])
+    expect(credentialCalls).toEqual([['03'.repeat(28)]])
   })
 
   it('passes the after cursor through as a block height', async () => {

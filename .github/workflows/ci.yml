@@ -104,3 +104,34 @@ jobs:
           ignore-unfixed: true
           exit-code: '1'
           format: table
+
+  # Exercise the same ARM64 emulation used by publication before a PR is merged.
+  arm64-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build ARM64 image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/arm64
+          load: true
+          pull: true
+          tags: cardano-wallet-backend:ci
+      - name: ARM64 runtime health check
+        timeout-minutes: 5
+        run: npm run docker:smoke
+      - name: Scan ARM64 image for known vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: cardano-wallet-backend:ci
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+          format: table
